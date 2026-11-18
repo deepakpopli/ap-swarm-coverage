@@ -1,0 +1,8 @@
+run/
+logs/
+__pycache__/
+*.pyc
+*.BIN
+*.tlog*
+eeprom.bin
+mav.parm
