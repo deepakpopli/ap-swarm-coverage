@@ -94,18 +94,19 @@ def head_on(**kw):
 class TestRadius(unittest.TestCase):
     def test_numbers(self):
         p = SafetyParams()
-        self.assertAlmostEqual(p.t_go, 4.3)
+        self.assertAlmostEqual(p.t_go, 4.4)
         self.assertAlmostEqual(p.radius(0.0), 9.0)
-        self.assertAlmostEqual(p.radius(1.0), 11.0)
-        self.assertAlmostEqual(p.radius(3.0), 27.0)
-        self.assertAlmostEqual(p.radius(10.0), 9.0 + 0.5 * 4 * 4.3 ** 2 + 24.0)
+        self.assertAlmostEqual(p.radius(1.0), 9.0 + 0.5 * 8 * 1.0)                 # accel phase
+        t1 = 12.5 / 8.0
+        self.assertAlmostEqual(p.radius(3.0), 9.0 + 0.5 * 8 * t1 ** 2 + 12.5 * (3.0 - t1))  # |dv| capped
+        self.assertAlmostEqual(p.radius(10.0), 9.0 + 0.5 * 8 * t1 ** 2 + 12.5 * (4.4 - t1) + 24.0)
         self.assertAlmostEqual(p.radius(100.0), p.radius(10.0))           # bounded
         ages = [i * 0.05 for i in range(300)]
         self.assertTrue(all(p.radius(a) <= p.radius(b) for a, b in zip(ages, ages[1:])))  # monotone
 
     def test_v_stop_is_braking_curve(self):
         p = SafetyParams()
-        for gap in (3.5, 5.0, 30.6, 80.0):
+        for gap in (4.5, 5.0, 32.8, 80.0):          # all above stop_offset (4 m)
             v = p.v_stop(gap)
             self.assertAlmostEqual(p.stop_offset + v * p.t_react + v * v / (2 * p.a_brake), gap, places=6)
         self.assertEqual(p.v_stop(p.stop_offset), 0.0)

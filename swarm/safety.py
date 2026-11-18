@@ -31,25 +31,26 @@ Neighbour j last sent its state at t_s (message stamp "t"; we use t_ref = min(t_
 clock skew can only make us more conservative). age = now - t_ref; it includes the 200 ms radio delay.
 Predicted centre: c = p0 + v0 * min(age, T_GO)  (horizontal).
   uncertainty(age): how far j can be from c.
-  * Up to T_GO, j may fly anything with |accel| <= A_MAX (4 m/s^2, upper bound to be measured on the
-    autopilot; the FakeVehicle uses 3). Then |v(t) - v0| <= A_MAX*t, so the deviation from the
-    constant-velocity prediction is <= 0.5 * A_MAX * age^2.
-  * T_GO = T_GAP + DEAF_STOP_S + T_REACT = 1.0 + 3.0 + 0.3 = 4.3 s is the latest time at which a
+  * Up to T_GO, j may fly anything with |v(t) - v0| <= min(A_MAX*t, DV_MAX) (A_MAX = 8 m/s^2,
+    DV_MAX = 12.5 m/s, both from measurements, see SafetyParams). The deviation from the
+    constant-velocity prediction is then <= deviation(age): 0.5*A_MAX*age^2 up to t1 = DV_MAX/A_MAX
+    = 1.56 s, then growing by DV_MAX per second.
+  * T_GO = T_GAP + DEAF_STOP_S + T_REACT = 1.0 + 3.0 + 0.4 = 4.4 s is the latest time at which a
     silent neighbour must have started to brake:
       T_GAP = 1.0 s: we stop hearing j because its radio failed (blackouts are two-way), but the last
         few of its messages before the failure may have been lost by chance. At 5 Hz and 20 % loss,
         5 consecutive losses (1 s) has probability 0.2^5 = 3e-4. So j went deaf at most ~1 s after
         its last message that reached us.
       DEAF_STOP_S = 3.0 s: j then hears nobody for 3 s and commands zero horizontal speed.
-      T_REACT = 0.3 s: one 10 Hz control period + ~0.2 s autopilot response (to be measured).
-    0.5 * 4 * 4.3^2 = 36.98 m.
+      T_REACT = 0.4 s: one 10 Hz control period + 0.2-0.3 s measured autopilot response.
+    deviation(4.4) = 9.77 + 12.5 * 2.84 = 45.23 m.
   * After T_GO the centre is frozen and j can add at most its braking distance from <= V_MAX:
     V_MAX^2 / (2*A_BRAKE) = 144 / 6 = 24 m, travelled at <= V_MAX, i.e. the term grows at <= 12 m/s.
-  uncertainty(age) = 0.5*A_MAX*age^2                                   for age <= T_GO
-                   = 36.98 + min(V_MAX*(age - T_GO), 24.0)              for age >  T_GO
-  The bound saturates at 60.98 m from age 6.3 s on.
+  uncertainty(age) = deviation(age)                                    for age <= T_GO
+                   = 45.23 + min(V_MAX*(age - T_GO), 24.0)              for age >  T_GO
+  The bound saturates at 69.23 m from age 6.4 s on.
   R(age) = D_MIN + MARGIN + uncertainty(age), MARGIN = 1.0 m (position estimate error of both agents).
-    R(0.2 s) = 9.08 m, R(1 s) = 11.0 m, R(3 s) = 27.0 m, R(10 s) = 69.98 m (saturated).
+    R(0.2 s) = 9.16 m, R(1 s) = 13.0 m, R(3 s) = 36.7 m, R(10 s) = 78.23 m (saturated).
   Assumptions behind the bound: neighbours obey A_MAX and the deaf rule, and a radio failure is
   two-way. A neighbour whose transmitter dies but whose receiver works keeps flying: residual risk.
 
@@ -58,13 +59,14 @@ Own braking and reaction (the speed-dependent part of the margin)
 We do not add our own stopping distance to R as a constant (24 m + 3.6 m would make R >= 37 m even
 when stationary). Instead the allowed closing speed toward a disc depends on the gap to its edge:
   v_stop(gap) = largest v with  STOP_OFFSET + v*T_REACT + v^2/(2*A_BRAKE) <= gap
-  (STOP_OFFSET = 3 m, T_REACT = 0.3 s, A_BRAKE = 3 m/s^2)
-i.e. at any moment we could react and brake before the edge. At 12 m/s this reserves 3 + 3.6 + 24 =
-30.6 m. STOP_OFFSET exists because MavVehicle flies a position target ("rabbit") that leads the
+  (STOP_OFFSET = 4 m, T_REACT = 0.4 s, A_BRAKE = 3 m/s^2)
+i.e. at any moment we could react and brake before the edge. At 12 m/s this reserves 4 + 4.8 + 24 =
+32.8 m. STOP_OFFSET exists because MavVehicle flies a position target ("rabbit") that leads the
 vehicle; on a stop command the vehicle still flies to the rabbit. Its computed lead (shaper_lag()
 + 1 m trailing, WP_ACC 6, jerk 12) is 2.9 / 6.0 / 10.6 / 14.6 / 19.2 m at 2 / 5 / 8 / 10 / 12 m/s,
-plus up to LEAD_MARGIN_M = 2 m when the vehicle lags the command. Our model gives 4.3 / 8.7 /
-16.1 / 22.7 / 30.6 m. These are formula values, NOT measured: measure SITL stopping distance.
+plus up to LEAD_MARGIN_M = 2 m when the vehicle lags the command. Our model gives 5.5 / 10.2 /
+17.9 / 24.7 / 32.8 m. Measured (results/spike/speed_cap.md): 13.9-15.0 m from 10 m/s, overshoot
+past the rest point <= 1.23 m.
 Responsibility is shared: each agent closes at no more than v_stop(gap)/2 toward each neighbour, so together they close at no more than v_stop(gap). The braking curve is the
 "short horizon": a neighbour only constrains us once our stopping distance reaches its disc.
 
@@ -74,7 +76,7 @@ Being inside R(age) is a violation (-> fallback). The velocity filter plans agai
 larger R_plan = R(age + PLAN_AHEAD), PLAN_AHEAD = 0.6 s: the disc as it will be if the next three
 STATE messages (5 Hz) are lost. Otherwise an agent that brakes exactly onto the edge of R would be
 pushed "inside" by the first lost message (the disc grows while the info ages). Fresh (age 0.2 s):
-R = 9.08 m, R_plan = 10.28 m, so the filter stops about 1.2 m outside the violation radius.
+R = 9.16 m, R_plan = 11.56 m, so the filter stops about 2.4 m outside the violation radius.
 
 Filtering (NORMAL mode)
 -----------------------
@@ -112,7 +114,7 @@ Neighbour table housekeeping
 ----------------------------
 Silent > SUSPECT_S: "suspect" event (kept, disc keeps inflating). Silent > LOST_S (12 s): dropped,
 "lost" event. The mission model is that a dead drone falls; until it is dropped its disc grows to
-the 61 m bound around its last predicted position. Residual risks: (1) if the companion dies but
+the 69 m bound (R = 78 m) around its last predicted position. Residual risks: (1) if the companion dies but
 the airframe keeps flying, MavVehicle's last position target is at most ~20 m ahead (its rabbit
 lead), so the vehicle should stop there and hover silently: covered by the disc until LOST_S, then
 invisible; (2) anything that keeps flying silently after 12 s is invisible to the filter.
@@ -120,7 +122,7 @@ invisible; (2) anything that keeps flying silently after 12 s is invisible to th
 Ground / takeoff neighbours: treated exactly like airborne ones (disc + altitude interval
 hull(z0, 60, layer) which covers the climb). They do not move horizontally by rule (autopilot
 takeoff holds position). The start line (10 m) is just above R(fresh) = 9.1 m but below
-R_plan = 10.3 m, which is why the filter starts LAYERED: after takeoff the agents spread
+R_plan = 11.6 m, which is why the filter starts LAYERED: after takeoff the agents spread
 vertically (50/60/70) before anyone moves horizontally, and no fallback is raised at the start.
 
 Known weakness: the middle layer equals ALT_NOMINAL (60 m), so agent 2's fallback gives it no
@@ -145,10 +147,27 @@ class SafetyParams:
     d_min: float = C.D_MIN
     margin: float = 1.0          # static: position estimate error of both agents
     v_max: float = C.V_MAX
+    # Values checked against results/spike/speed_cap.md and its logs (run/speedcap_*_b/log.json,
+    # gazebo + sitl, final MavVehicle parameters):
+    # a_brake: measured stop from 10 m/s takes 13.9-15.0 m (2.4-2.9 s); the model below with
+    #   a_brake 3 gives 4 + 4 + 16.7 = 24.7 m, so 3 stays a safe lower bound.
     a_brake: float = 3.0         # deceleration every agent achieves when told to stop (lower bound)
-    a_max: float = 4.0           # horizontal acceleration no agent exceeds (upper bound)
-    t_react: float = 0.3         # command period + autopilot response
-    stop_offset: float = 3.0     # constant part of the stopping distance (position-target lag, see docstring)
+    # a_max / dv_max bound how far a neighbour can deviate from its constant-velocity prediction.
+    #   The old a_max = 4 was a guess and is NOT an upper bound: measured deviation in plain
+    #   cruise/stop was 3.7 m after 1 s (model 2.0) and 11.8 m after 2 s (model 8.0); the peak
+    #   acceleration (0.5 s windows) is 7.8 m/s^2 (gazebo) / 6.6 (sitl) when starting from rest.
+    #   The deviation then grows only linearly because the speed is capped (WP_SPD 12, peak 12.34
+    #   measured), so: |dv| <= min(a_max*t, dv_max). a_max 8, dv_max 12.5 envelope every measured
+    #   horizon 0.3-4.3 s, including a hard stop from 12 m/s (41.7 m at 4.3 s; model 44.0 m).
+    #   Not measured: a full-speed reversal (|dv| up to 24); the controller never commands one
+    #   (coverage slows to 2 m/s before turns > 30 deg), but a filter sidestep can turn by 90 deg.
+    a_max: float = 8.0           # horizontal acceleration no agent exceeds (upper bound, measured 7.8)
+    dv_max: float = 12.5         # largest velocity change vs the last report (speed cap 12 + 0.35 peak)
+    # t_react: measured, speed starts to fall 0.2-0.3 s after the zero setpoint is sent; + one 0.1 s tick.
+    t_react: float = 0.4         # command period + autopilot response
+    # stop_offset: the vehicle flies to the rabbit, up to shaper_lag(v) + 2 m ahead, plus the measured
+    #   overshoot (1.23 m sitl). For 0.5-4 m/s that needs up to 3.8 m on top of v*t_react + v^2/2a.
+    stop_offset: float = 4.0     # constant part of the stopping distance (position-target lag, see docstring)
     t_gap: float = 1.0           # last delivered message -> radio failure (see docstring)
     deaf_stop_s: float = C.DEAF_STOP_S
     suspect_s: float = C.SUSPECT_S
@@ -174,12 +193,20 @@ class SafetyParams:
     def brake_dist_vmax(self) -> float:
         return self.v_max ** 2 / (2.0 * self.a_brake)
 
+    def deviation(self, t: float) -> float:
+        """Max distance from the constant-velocity prediction after t s with |dv| <= min(a_max t, dv_max)."""
+        t = max(t, 0.0)
+        t1 = self.dv_max / self.a_max
+        if t <= t1:
+            return 0.5 * self.a_max * t * t
+        return 0.5 * self.a_max * t1 * t1 + self.dv_max * (t - t1)
+
     def uncertainty(self, age: float) -> float:
         """How far (m) a neighbour can be from its predicted centre after `age` s of silence."""
         age = max(age, 0.0)
         if age <= self.t_go:
-            return 0.5 * self.a_max * age ** 2
-        return 0.5 * self.a_max * self.t_go ** 2 + min(self.v_max * (age - self.t_go), self.brake_dist_vmax)
+            return self.deviation(age)
+        return self.deviation(self.t_go) + min(self.v_max * (age - self.t_go), self.brake_dist_vmax)
 
     def radius(self, age: float) -> float:
         """Keep-out radius (m) around a neighbour's predicted centre."""
