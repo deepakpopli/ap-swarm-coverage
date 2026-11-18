@@ -208,7 +208,8 @@ def plot_gap_map(runs, out):
     cb.set_label("longest unseen time in phase (s)")
     synth = " (SYNTHETIC)" if aggregate.is_synthetic(r["m"]) else ""
     fig.suptitle(f"Per-cell worst revisit gap, run {r['m']['run']}{synth}, "
-                 f"agent {r['m'].get('victim')} lost at {r['m'].get('t_loss_s')} s",
+                 f"agent {r['m'].get('victim')} lost at "
+                 + (f"{r['m']['t_loss_s']:.1f} s" if r['m'].get('t_loss_s') is not None else "(no loss)"),
                  x=0.01, ha="left", fontweight="bold", fontsize=11)
     fig.savefig(os.path.join(out, "gap_map.png"), bbox_inches="tight")
     plt.close(fig)
