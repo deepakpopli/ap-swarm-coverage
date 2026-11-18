@@ -147,8 +147,9 @@ class SafetyParams:
     d_min: float = C.D_MIN
     margin: float = 1.0          # static: position estimate error of both agents
     v_max: float = C.V_MAX
-    # Values checked against results/spike/speed_cap.md and its logs (run/speedcap_*_b/log.json,
-    # gazebo + sitl, final MavVehicle parameters):
+    # Values checked against results/spike/speed_cap.md and its logs (copied to
+    # results/spike/speedcap_{gazebo,sitl}_b_log.json, final MavVehicle parameters); the numbers
+    # below are in results/spike/motion_bounds.json (tools/motion_bounds.py):
     # a_brake: measured stop from 10 m/s takes 13.9-15.0 m (2.4-2.9 s); the model below with
     #   a_brake 3 gives 4 + 4 + 16.7 = 24.7 m, so 3 stays a safe lower bound.
     a_brake: float = 3.0         # deceleration every agent achieves when told to stop (lower bound)
@@ -158,7 +159,8 @@ class SafetyParams:
     #   acceleration (0.5 s windows) is 7.8 m/s^2 (gazebo) / 6.6 (sitl) when starting from rest.
     #   The deviation then grows only linearly because the speed is capped (WP_SPD 12, peak 12.34
     #   measured), so: |dv| <= min(a_max*t, dv_max). a_max 8, dv_max 12.5 envelope every measured
-    #   horizon 0.3-4.3 s, including a hard stop from 12 m/s (41.7 m at 4.3 s; model 44.0 m).
+    #   horizon 0.8-4.4 s, including a hard stop from 12 m/s (42.9 m at 4.4 s; model 45.2 m); at
+    #   0.3 / 0.5 s the measured excess over the model is 0.17 / 0.02 m, inside `margin`.
     #   Not measured: a full-speed reversal (|dv| up to 24); the controller never commands one
     #   (coverage slows to 2 m/s before turns > 30 deg), but a filter sidestep can turn by 90 deg.
     a_max: float = 8.0           # horizontal acceleration no agent exceeds (upper bound, measured 7.8)
