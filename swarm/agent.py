@@ -10,7 +10,9 @@ Sequence: connect -> arm_and_takeoff(ALT_NOMINAL) in a background thread (the ma
 broadcasting STATE "takeoff" and only reads vehicle.state() meanwhile; it does not call poll()) ->
 "ready": hold through the filter (which puts each agent on its own altitude layer) -> once START has
 been received, wall time >= its t0, and an ASSIGN is held: cover.
-Autopilot link dead (state().link_ok False) for > 2 s: exit at once, sending nothing.
+Autopilot link down (state().link_ok False): from that moment the agent sends nothing (no STATE, so
+neighbours never get a stale position with a fresh timestamp; no setpoints, no INFEASIBLE, no goodbye)
+and logs "autopilot_link_down" locally. Still down after 2 s: exit. Back within 2 s: resume.
 Ground silent: keep flying the last assignment (only the deaf rule stops us, and neighbours' STATE
 messages keep us from being deaf).
 
@@ -127,14 +129,18 @@ class Agent:
             self.vehicle.poll()
         st = self.vehicle.state()
         # None = no position fix yet (not a dead link; a dead link during takeoff makes
-        # arm_and_takeoff raise, which exits below). Afterwards link_ok False for > 2 s = gone.
-        if st is not None and not st.link_ok:
+        # arm_and_takeoff raise, which exits below). Afterwards link_ok False = our drone may be
+        # gone: go silent at once (no STATE / setpoints), exit if it lasts > LINK_DEAD_S.
+        link_down = st is not None and not st.link_ok
+        if link_down:
             if self._link_bad_since is None:
                 self._link_bad_since = now
+                self.event(now, {"event": "autopilot_link_down"})
             elif now - self._link_bad_since > LINK_DEAD_S:
                 self.event(now, {"event": "autopilot_link_lost", "exit": True})
                 return False
-        else:
+        elif self._link_bad_since is not None:
+            self.event(now, {"event": "autopilot_link_back", "down_s": round(now - self._link_bad_since, 3)})
             self._link_bad_since = None
 
         for msg in self.link.recv_all():
@@ -153,13 +159,13 @@ class Agent:
             self.phase = "mission"
             self.event(now, {"event": "mission_start", "epoch": self.coverage.epoch})
 
-        if self._next_state is not None and now >= self._next_state and st is not None:
+        if self._next_state is not None and now >= self._next_state and st is not None and not link_down:
             self._broadcast_state(st)
             self._next_state += 1.0 / C.STATE_HZ
             if self._next_state < now:
                 self._next_state = now + 1.0 / C.STATE_HZ
 
-        if self.phase in ("ready", "mission") and now >= self._next_ctrl and st is not None:
+        if self.phase in ("ready", "mission") and now >= self._next_ctrl and st is not None and not link_down:
             self._control_tick(now, st)
             self._next_ctrl += 1.0 / C.CONTROL_HZ
             if self._next_ctrl < now:          # we fell more than one period behind: resync

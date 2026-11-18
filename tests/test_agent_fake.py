@@ -170,10 +170,34 @@ class TestAgentStack(unittest.TestCase):
             self.assertLess(clock() - t_kill, 3.0)
         self.assertGreater(clock() - t_kill, 2.0)
         self.assertLessEqual(clock() - t_kill, 2.0 + 2 * DT)
-        # STATE broadcasts continued only while the link was < 2 s dead? No: nothing is sent at exit.
-        sent_after = a.link.sent[n_sent:]
-        self.assertFalse([m for m in sent_after if m["type"] != "STATE"])
+        # silent from the first step with the link down: no STATE (stale position), no goodbye
+        self.assertEqual(a.link.sent[n_sent:], [])
         a.log.close()
+        ev = [json.loads(l)["event"] for l in open(os.path.join(self.dir, "agent_1.events.jsonl"))]
+        self.assertEqual(ev[-2:], ["autopilot_link_down", "autopilot_link_lost"])
+
+    def test_short_autopilot_link_blip_resumes(self):
+        clock, radio, ground, agents = self._make(n=1, loss=0.0, delay=0.0)
+        a = agents[0]
+        a.start(clock())
+        a._takeoff.join(1.0)
+        for _ in range(100):
+            clock.advance(DT)
+            self.assertTrue(a.step(clock()))
+        a.vehicle.kill_link()
+        n_sent = len(a.link.sent)
+        for _ in range(10):                       # 1 s down: silent, still running
+            clock.advance(DT)
+            self.assertTrue(a.step(clock()))
+        self.assertEqual(a.link.sent[n_sent:], [])
+        a.vehicle.link_ok = True
+        for _ in range(10):
+            clock.advance(DT)
+            self.assertTrue(a.step(clock()))
+        self.assertTrue([m for m in a.link.sent[n_sent:] if m["type"] == "STATE"])
+        a.log.close()
+        ev = [json.loads(l)["event"] for l in open(os.path.join(self.dir, "agent_1.events.jsonl"))]
+        self.assertIn("autopilot_link_back", ev)
 
     def test_real_time_loop_rate(self):
         """3 s of the real-time loop (FakeVehicle near altitude, so takeoff completes at once)."""
@@ -198,7 +222,9 @@ class TestAgentStack(unittest.TestCase):
         periods = sorted(b - a_ for a_, b in zip(ts, ts[1:]))
         self.assertAlmostEqual(sum(periods) / len(periods), 0.1, delta=0.005)
         self.assertLess(periods[-1], 0.13)
-        self.assertGreaterEqual(len(rows), 30)
+        # ~1.5 s at 10 Hz before the link died; no control ticks (rows) while it is down
+        self.assertGreaterEqual(len(rows), 13)
+        self.assertLessEqual(ts[-1], t_end + 0.11)
 
 
 if __name__ == "__main__":
