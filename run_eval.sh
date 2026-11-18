@@ -13,7 +13,8 @@
 #   N           number of drones                                 (default 3)
 #   OUT         run root  (default runs/eval_<backend>; run/eval_fake for the fake backend,
 #               because fake runs are not measurements and never go under runs/ or results/)
-#   ANALYSIS_OUT  aggregate table + plots                       (default $OUT/analysis)
+#   ANALYSIS_OUT  aggregate table, plots and the animation      (default results/ for measured
+#               backends, $OUT/analysis for fake: results/ only ever holds measured data)
 #   ANIM_SEED   seed whose run is animated                       (default: first of SEEDS)
 #   RETRIES     extra attempts for a tainted/failed run          (default 2)
 #   RUN_ARGS    extra run_mission.py flags, e.g. "--kill-window 20 30 --port-base 500"
@@ -36,11 +37,12 @@ RETRIES=${RETRIES:-2}
 RUN_ARGS=${RUN_ARGS:-}
 SKIP_RUNS=${SKIP_RUNS:-0}
 if [ "$BACKEND" = fake ]; then OUT=${OUT:-run/eval_fake}; else OUT=${OUT:-runs/eval_$BACKEND}; fi
-ANALYSIS_OUT=${ANALYSIS_OUT:-$OUT/analysis}
+if [ "$BACKEND" = fake ]; then ANALYSIS_OUT=${ANALYSIS_OUT:-$OUT/analysis}; else ANALYSIS_OUT=${ANALYSIS_OUT:-results}; fi
 ANIM_SEED=${ANIM_SEED:-$(echo $SEEDS | awk '{print $1}')}
 PY=${PYTHON:-python3}
 GUARD_PID_FILE="$ROOT/run/guard.pid"
 SUMMARY="$OUT/summary.txt"
+VIDEO="$ANALYSIS_OUT/replay_seed_$ANIM_SEED.mp4"
 
 say() { echo "[run_eval $(date +%H:%M:%S)] $*"; }
 
@@ -133,8 +135,8 @@ analyse() {
   nice -n 19 $PY -m analysis.plots "${good[@]}" --out "$ANALYSIS_OUT" || { say "plots FAILED"; fail=1; }
   dir="$OUT/seed_$ANIM_SEED"
   if run_ok "$dir"; then
-    say "animation of seed $ANIM_SEED -> $dir/replay.mp4"
-    nice -n 19 $PY -m analysis.animate "$dir" --out "$dir/replay.mp4" || { say "animate FAILED"; fail=1; }
+    say "animation of seed $ANIM_SEED -> $VIDEO"
+    nice -n 19 $PY -m analysis.animate "$dir" --out "$VIDEO" || { say "animate FAILED"; fail=1; }
   else
     say "seed $ANIM_SEED has no valid run: no animation"
   fi
@@ -167,7 +169,7 @@ analysis_rc=1
   echo "  runs:     $OUT/seed_<s>/   (failed attempts: $OUT/failed/)"
   echo "  table:    $ANALYSIS_OUT/results.md"
   echo "  plots:    $ANALYSIS_OUT/*.png"
-  if [ -f "$OUT/seed_$ANIM_SEED/replay.mp4" ]; then echo "  video:    $OUT/seed_$ANIM_SEED/replay.mp4"
+  if [ -f "$VIDEO" ]; then echo "  video:    $VIDEO"
   else echo "  video:    none (seed $ANIM_SEED has no valid run or animate failed)"; fi
 } | tee "$SUMMARY"
 
