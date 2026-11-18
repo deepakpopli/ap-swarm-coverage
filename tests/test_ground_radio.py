@@ -198,6 +198,11 @@ class TestGroundRadio(unittest.TestCase):
         self.assertEqual([r["trigger"] for r in assigns], ["start", "lost", "infeasible"])
         self.assertEqual([r["epoch"] for r in assigns], [1, 2, 3])
         self.assertEqual(assigns[1]["changed"], [1, 2, 3])
+        # the infeasible re-plan changes only the reporting agent; the other keeps its plan verbatim
+        self.assertEqual(len(assigns[2]["changed"]), 1)
+        other = [a for a in assigns[2]["assignments"] if int(a) not in assigns[2]["changed"]]
+        self.assertEqual(len(other), 1)
+        self.assertEqual(assigns[2]["assignments"][other[0]], assigns[1]["assignments"][other[0]])
         self.assertTrue(all("t_wall" in r and "t_mission" in r for r in g))
         live = [(r["agent"], r["from"], r["to"]) for r in g if r["event"] == "liveness"]
         self.assertIn((2, "alive", "suspect"), live)

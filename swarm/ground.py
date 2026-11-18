@@ -19,7 +19,8 @@ Liveness per agent, from the wall time of its last STATE:
   heard. lost -> alive when heard = "rejoin". Agents never heard since a restart are "unknown".
   The allocator's live set = agents that are alive or suspect.
 
-Re-plan triggers (each bumps the global epoch and logs a full "assign" record):
+Re-plan triggers (each bumps the global epoch and logs a full "assign" record; an agent whose share
+is unchanged and whose plan has no blacklisted point keeps its previous plan verbatim):
   "lost"       an agent went suspect -> lost
   "rejoin"     a lost/unknown agent was heard again
   "infeasible" INFEASIBLE for the CURRENT epoch. Reports for any other epoch are ignored, so
@@ -220,8 +221,16 @@ class Ground:
         alive = self.live_ids()
         positions = {a: self.agents[a].pos for a in alive if self.agents[a].pos}
         new = allocate(alive, positions, set(self.blacklist), self.params) if alive else {}
-        self.epoch += 1
         old = self.assignments
+        # Stability: an agent whose share did not change and whose current plan has no blacklisted
+        # point keeps that plan verbatim. allocate() rebuilds the slot list from the agent's current
+        # position (a rotated copy of the same lanes), which the agent would follow identically but
+        # which would count as an assignment change (churn) for no reason.
+        for a in new:
+            if (a in old and old[a].share == new[a].share
+                    and not any((a, slot_key(p)) in self.blacklist for p in old[a].slots)):
+                new[a] = old[a]
+        self.epoch += 1
         changed = sorted(a for a in set(old) | set(new)
                          if a not in old or a not in new
                          or old[a].share != new[a].share or old[a].slots != new[a].slots)
