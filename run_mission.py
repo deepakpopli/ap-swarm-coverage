@@ -347,10 +347,8 @@ class Mission:
         self.children.remove_pid_file()          # so the guard cannot re-pause them meanwhile
         names = list(self.children.procs)
         agents = [n for n in names if n.startswith("agent_")]
-        # agents first so they flush their CSVs. swarm/agent.py closes its logs on
-        # KeyboardInterrupt but has no SIGTERM handler (SIGTERM would lose the last second
-        # of rows), so agents get SIGINT.
-        self.children.stop(agents, signal.SIGINT)
+        # agents first so they close their logs (they handle SIGINT and SIGTERM the same way)
+        self.children.stop(agents, signal.SIGTERM)
         self.children.stop(["ground", "radio"])
         if self.fleet is not None:
             for pid in self.fleet.pids.values():  # undo a thermal pause before stop()

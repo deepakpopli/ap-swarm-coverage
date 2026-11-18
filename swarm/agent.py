@@ -14,13 +14,15 @@ Autopilot link dead (state().link_ok False) for > 2 s: exit at once, sending not
 Ground silent: keep flying the last assignment (only the deaf rule stops us, and neighbours' STATE
 messages keep us from being deaf).
 
-Logs (onboard, the only input for offline metrics), flushed at least every second:
+Logs (onboard, the only input for offline metrics), CSV flushed every control tick (so a SIGKILLed
+agent loses at most the row being written); SIGTERM and SIGINT both end the loop cleanly:
     DIR/agent_<id>.csv           one row per control tick, header CSV_HEADER
     DIR/agent_<id>.events.jsonl  discrete events, each with t_wall and t_mission
 """
 import argparse
 import json
 import os
+import signal
 import sys
 import threading
 import time
@@ -35,7 +37,6 @@ CSV_HEADER = ("t_wall,t_mission,x,y,z,vx,vy,vz,yaw,status,epoch,slot,cmd_vx,cmd_
 LINK_DEAD_S = 2.0
 MAIN_HZ = 50.0
 STATS_EVERY_S = 10.0
-FLUSH_EVERY_S = 1.0
 
 
 def _f(x, nd=3) -> str:
@@ -43,7 +44,7 @@ def _f(x, nd=3) -> str:
 
 
 class AgentLog:
-    """CSV + JSONL writer. CSV flushed every FLUSH_EVERY_S; events flushed immediately."""
+    """CSV + JSONL writer. Both flushed on every write (10 rows/s: cheap, and a SIGKILL loses nothing)."""
 
     def __init__(self, log_dir: str, agent_id: int):
         os.makedirs(log_dir, exist_ok=True)
@@ -51,13 +52,10 @@ class AgentLog:
         self.csv.write(CSV_HEADER + "\n")
         self.csv.flush()
         self.ev = open(os.path.join(log_dir, f"agent_{agent_id}.events.jsonl"), "w")
-        self._last_flush = None
 
     def row(self, fields, now: float) -> None:
         self.csv.write(",".join(fields) + "\n")
-        if self._last_flush is None or now - self._last_flush >= FLUSH_EVERY_S:
-            self.csv.flush()
-            self._last_flush = now
+        self.csv.flush()
 
     def event(self, rec: dict) -> None:
         self.ev.write(json.dumps(rec, separators=(",", ":")) + "\n")
@@ -268,9 +266,9 @@ class Agent:
     def run(self, clock=time.time, sleep=time.sleep) -> int:
         """Real-time main loop at MAIN_HZ. Returns the process exit code."""
         code = 0
-        self.start(clock())
-        nxt = clock()
         try:
+            self.start(clock())          # inside try: a SIGTERM while connecting still closes the logs
+            nxt = clock()
             while True:
                 now = clock()
                 if not self.step(now):
@@ -310,6 +308,11 @@ def main(argv=None) -> int:
         vehicle = FakeVehicle(a.id, start=(x, y, 0.0))
     from swarm.net import RadioLink
     link = RadioLink(a.id, port_base=a.port_base)
+
+    # SIGTERM ends the loop the same way as Ctrl-C (run() closes the logs in its finally).
+    def _on_term(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_term)
     return Agent(a.id, a.n, vehicle, link, a.log_dir).run()
 
 
