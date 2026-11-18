@@ -104,6 +104,7 @@ class Fleet:
         self.gz = None           # Popen of `gz sim` (session leader) or None
         self._pid_files = []
         self.t_start = None      # wall time start() began
+        self.removed_models = {} # gazebo: agent id -> True if its model was removed after kill_vehicle()
         atexit.register(self.stop)
 
     # ---- ids / positions -------------------------------------------------------------
@@ -213,7 +214,16 @@ class Fleet:
 
     # ---- kill / stop -----------------------------------------------------------------
     def kill_vehicle(self, agent_id):
-        """SIGKILL agent `agent_id`'s arducopter (simulated sudden autopilot loss). Returns kill wall time."""
+        """SIGKILL agent `agent_id`'s arducopter (simulated sudden autopilot loss). Returns kill wall time.
+
+        gazebo: the dead vehicle's model is then removed from the world. Reason: once its
+        ArduPilot is gone, ardupilot_gazebo's ArduPilotPlugin (lock_step=0) waits 1 ms in recv()
+        on every 1 ms physics step for that model (ReceiveServoPacket, waitMs = 1 when offline),
+        which slows the whole world: measured RTF 0.45 -> 0.29 after one kill, 0.55-0.65 after
+        removing the model. Every agent works in wall time, so a slowed world makes the survivors'
+        position targets run ahead of the sim and they fly at the autopilot's 12 m/s cap.
+        The removed drone just disappears (with motors off it would have fallen).
+        """
         p = self.procs.get(agent_id)
         if p is None:
             raise KeyError(agent_id)
@@ -222,7 +232,21 @@ class Fleet:
             os.kill(p.pid, signal.SIGKILL)
         p.wait(timeout=5)
         self._unregister(f"sitl{agent_id}")
+        if self.backend == "gazebo":
+            self.removed_models[agent_id] = self._remove_model(f"iris_{self.instance(agent_id)}")
         return t
+
+    def _remove_model(self, name):
+        """Remove a model from the running world (gz service). Returns True on success."""
+        env = dict(os.environ, GZ_PARTITION=self.tag)
+        try:
+            r = subprocess.run(["gz", "service", "-s", "/world/swarm/remove", "--reqtype", "gz.msgs.Entity",
+                                "--reptype", "gz.msgs.Boolean", "--timeout", "3000",
+                                "--req", f'name: "{name}" type: MODEL'],
+                               env=env, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return "data: true" in r.stdout
 
     def alive(self, agent_id):
         """True while agent `agent_id`'s arducopter process is running."""
