@@ -3,12 +3,16 @@
 
     python run_mission.py --mission A --backend gazebo --n 3 --seed 1 --out runs/eval/seed_1
         [--mission-s 180] [--port-base 0] [--base-instance 0] [--no-kill] [--kill-window 60 90]
+        [--kill-agent-too]
 
 Missions
   A  At a seeded mission time in --kill-window (default [60, 90] s) a seeded victim (1..N)
-     loses its whole drone at once: SIGKILL of its arducopter (Fleet.kill_vehicle) and SIGKILL
-     of its agent process, back to back. With --backend fake only the agent process is killed.
-     --no-kill runs the same mission without the kill (baseline).
+     loses its SITL instance: SIGKILL of its arducopter only (Fleet.kill_vehicle). Its onboard
+     agent is not touched: it sees its autopilot link die, goes silent at once and exits by
+     itself about 2 s later (swarm/agent.py); that exit is expected and recorded in meta.json
+     ("victim_agent_exit"). --kill-agent-too also SIGKILLs the agent right after (old "whole
+     drone lost" behaviour). With --backend fake there is no arducopter, so the agent process
+     is SIGKILLed instead. --no-kill runs the same mission without the kill (baseline).
   B  Needs a weights/priority-zone option in the ground station. Not implemented: exits 2.
   C  No kill. The radio blacks out a seeded agent for 10 s starting at a seeded time in
      --kill-window (chosen before launch because the radio needs it on its command line).
@@ -316,15 +320,38 @@ class Mission:
 
     def kill_drone(self, t0):
         a = self.kill_agent
-        self.killed.add(a)
-        t_kill = self.children.sigkill(f"agent_{a}")
+        self.killed.add(a)            # from now on its agent may exit by itself
         if self.fleet is not None:
-            self.fleet.kill_vehicle(a)       # SIGKILL of its arducopter, right after
-        log(f"KILLED agent {a} at t_mission {t_kill - t0:.2f} (planned {self.kill_t:.2f})")
-        self.children.procs[f"agent_{a}"].wait(timeout=5)
-        self.children.write_pid_file()
+            t_kill = self.fleet.kill_vehicle(a)          # SIGKILL of its arducopter only
+            if self.a.kill_agent_too:
+                self.children.sigkill(f"agent_{a}")
+        else:
+            t_kill = self.children.sigkill(f"agent_{a}")  # fake backend: no autopilot to kill
+        log(f"KILLED {'agent' if self.fleet is None else 'arducopter of agent'} {a} at t_mission "
+            f"{t_kill - t0:.2f} (planned {self.kill_t:.2f})"
+            + (" + its agent" if self.fleet is not None and self.a.kill_agent_too else ""))
         self.meta["kill_wall"] = t_kill
+        if self.fleet is not None and self.fleet.backend == "gazebo":
+            ok = self.fleet.removed_models.get(a)
+            self.meta["gz_model_removed"] = ok
+            log(f"gazebo model of agent {a} removed: {ok}")
+        self.meta["kill_agent_too"] = bool(self.a.kill_agent_too or self.fleet is None)
         self.save_meta()
+
+    def check_victim_exit(self, t0):
+        """Record when the victim's agent process exited after the kill (expected ~2 s after)."""
+        a = self.kill_agent
+        if a not in self.killed or "victim_agent_exit" in self.meta:
+            return
+        p = self.children.procs[f"agent_{a}"]
+        if p.poll() is not None:
+            now = time.time()
+            self.meta["victim_agent_exit"] = {"code": p.returncode, "t_mission": round(now - t0, 2),
+                                              "after_kill_s": round(now - self.meta["kill_wall"], 2)}
+            log(f"victim agent {a} exited (code {p.returncode}) {now - self.meta['kill_wall']:.1f} s "
+                "after the kill")
+            self.children.write_pid_file()
+            self.save_meta()
 
     def fly(self, t0):
         t_end = t0 + self.a.mission_s + END_GRACE_S
@@ -338,6 +365,8 @@ class Mission:
             self.check_children(t_mission)
             if self.kill_agent and self.kill_agent not in self.killed and t_mission >= self.kill_t:
                 self.kill_drone(t0)
+            if self.kill_agent:
+                self.check_victim_exit(t0)
             if now >= next_report:
                 log(f"t_mission {t_mission:.0f} / {self.a.mission_s:.0f} s")
                 next_report += 30.0
@@ -427,6 +456,8 @@ def parse_args(argv=None):
     ap.add_argument("--port-base", type=int, default=0)
     ap.add_argument("--base-instance", type=int, default=0)
     ap.add_argument("--no-kill", action="store_true", help="mission A without the kill")
+    ap.add_argument("--kill-agent-too", action="store_true",
+                    help="mission A: also SIGKILL the victim's agent process (default: only its arducopter)")
     ap.add_argument("--kill-window", type=float, nargs=2, default=[60.0, 90.0],
                     metavar=("T_MIN", "T_MAX"),
                     help="mission-time window for the A kill / C blackout start (default 60 90)")
@@ -453,6 +484,14 @@ def main(argv=None):
             print("mission B: not implemented (swarm/ground.py has no weights/priority-zone "
                   "option)", file=sys.stderr)
         return 2
+    if a.backend == "fake":
+        out = os.path.abspath(a.out)
+        for reserved in ("runs", "results"):     # measured data only
+            r = os.path.join(ROOT, reserved)
+            if out == r or out.startswith(r + os.sep):
+                print(f"--backend fake is not a measurement: refusing to write into {reserved}/ "
+                      "(use run/...)", file=sys.stderr)
+                return 2
     if os.path.isdir(a.out) and os.listdir(a.out):
         print(f"{a.out} exists and is not empty; refusing to mix runs "
               "(the ground would read an old ground.jsonl)", file=sys.stderr)

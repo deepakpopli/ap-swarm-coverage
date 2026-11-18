@@ -6,3 +6,4 @@ __pycache__/
 *.tlog*
 eeprom.bin
 mav.parm
+runs/*/failed/
