@@ -19,6 +19,8 @@
 #   RETRIES     extra attempts for a tainted/failed run          (default 2)
 #   RUN_ARGS    extra run_mission.py flags, e.g. "--kill-window 20 30 --port-base 500"
 #   SKIP_RUNS=1 analysis only
+#   SWARM_ALT   nominal altitude, m (default 60; swarm/config.py). A run flown at another
+#               altitude (meta.json alt_nominal) does not count as done.
 #
 # Runs are SEQUENTIAL: never two simulators at once. A seed whose run already finished OK
 # (meta.json outcome "ok") is not run again; delete its directory to redo it. A failed or
@@ -73,9 +75,11 @@ wait_cool() {
 # ---------------------------------------------------------------- runs
 run_ok() {  # $1 = run dir; true if its meta.json says outcome ok and not tainted
   [ -f "$1/meta.json" ] && $PY - "$1/meta.json" <<'EOF'
-import json, sys
+import json, os, sys
 m = json.load(open(sys.argv[1]))
-sys.exit(0 if m.get("outcome") == "ok" and not m.get("tainted") else 1)
+alt = float(os.environ.get("SWARM_ALT", "60"))   # never mix runs flown at another altitude
+sys.exit(0 if m.get("outcome") == "ok" and not m.get("tainted")
+         and float(m.get("alt_nominal", 60.0)) == alt else 1)
 EOF
 }
 
@@ -163,7 +167,7 @@ analysis_rc=1
 [ "$interrupted" = 0 ] && { analyse; analysis_rc=$?; }
 
 {
-  echo "evaluation $(date '+%F %T')  backend=$BACKEND mission=$MISSION mission_s=$MISSION_S n=$N"
+  echo "evaluation $(date '+%F %T')  backend=$BACKEND mission=$MISSION mission_s=$MISSION_S n=$N alt=${SWARM_ALT:-60}"
   for s in $SEEDS; do printf '  seed %-4s %s\n' "$s" "${STATUS[$s]:-not run}"; done
   if [ "$analysis_rc" = 0 ]; then echo "  analysis: ok"; else echo "  analysis: INCOMPLETE (see output above)"; fi
   echo "  runs:     $OUT/seed_<s>/   (failed attempts: $OUT/failed/)"

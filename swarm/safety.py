@@ -14,6 +14,8 @@ two ways, per neighbour:
 
 Altitude intervals (the swarm rule that makes (a) work)
 --------------------------------------------------------
+(Numbers below are for the default SWARM_ALT = 60; ALT_NOMINAL and ALT_BAND = nominal +- 10 m move
+together, so at 50 m the layers are 40/50/60 and everything else is the same.)
 An agent only ever targets two altitudes: ALT_NOMINAL (60 m) in normal flight, or its own LAYER in
 hold/fallback/deaf/pre-start. Layers are spaced LAYER_SPACING = 10 m inside ALT_BAND, assigned by ID:
 id 1 -> 50, id 2 -> 60, id 3 -> 70, id 4 -> 50, ... (index (id-1) mod n_layers). With ALT_BAND

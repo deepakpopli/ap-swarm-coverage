@@ -1,5 +1,9 @@
-"""Shared constants. Every process imports these; nothing here is tuned per run."""
+"""Shared constants. Every process imports these; nothing here is tuned per run, except the
+nominal altitude: SWARM_ALT=<metres> in the environment (default 60) moves ALT_NOMINAL and the
++-10 m ALT_BAND with it. run_mission.py passes its environment to every child, so all processes
+of a run agree."""
 import math
+import os
 
 # ---- area / mission (local ENU metres, origin = SW corner of the area, x east, y north)
 AREA = (0.0, 300.0, 0.0, 300.0)            # xmin, xmax, ymin, ymax
@@ -15,8 +19,19 @@ def start_xy(i, n):
 # ---- flight
 V_MAX = 12.0            # hard limit, m/s (also set on the autopilot)
 V_CRUISE = 10.0         # nominal coverage speed
-ALT_NOMINAL = 60.0      # m above the area origin
-ALT_BAND = (50.0, 70.0) # the "fixed altitude band"; the safety fallback separates inside it by ID
+ALT_BAND_HALF = 10.0
+
+
+def _alt_nominal(env=os.environ):
+    v = float(env.get("SWARM_ALT", "60"))
+    if not ALT_BAND_HALF < v <= 110.0:      # above ~112 m the camera misses the GSD requirement
+        raise ValueError(f"SWARM_ALT={v}: must be in ({ALT_BAND_HALF:g}, 110]")
+    return v
+
+
+ALT_NOMINAL = _alt_nominal()   # m above the area origin (default 60)
+# the "fixed altitude band"; the safety fallback separates inside it by ID (default (50, 70))
+ALT_BAND = (ALT_NOMINAL - ALT_BAND_HALF, ALT_NOMINAL + ALT_BAND_HALF)
 CONTROL_HZ = 10.0       # setpoint rate to the autopilot (requirement: >= 10 Hz)
 
 # ---- safety

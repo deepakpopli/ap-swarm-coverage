@@ -95,6 +95,14 @@ def footprint_size(alt):
     return (2.0 * a * TAN_H, 2.0 * a * TAN_V)
 
 
+def lane_footprint(alt):
+    """Footprint (across_m, along_m) the allocator plans lanes with: footprint_size(alt) rounded
+    DOWN to whole metres (conservative: lanes a little closer, ends a little nearer the edges).
+    60 m -> (102, 57), 50 m -> (85, 48)."""
+    w, l = footprint_size(alt)
+    return (float(math.floor(w + 1e-9)), float(math.floor(l + 1e-9)))
+
+
 def gsd(alt, width_px=IMAGE_W_PX):
     """Ground sample distance, metres per pixel, across track."""
     return footprint_size(alt)[0] / width_px

@@ -42,7 +42,7 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from swarm import config  # noqa: E402
+from swarm import config, sensor  # noqa: E402
 
 PID_DIR = os.path.join(ROOT, "run", "pids")
 TAINT_FILE = os.path.join(ROOT, "run", "TAINTED")
@@ -52,6 +52,7 @@ BLACKOUT_S = 10.0
 END_GRACE_S = 1.0           # keep running this long past mission_s so the last samples land
 STOP_WAIT_S = 10.0          # SIGTERM -> SIGKILL grace per child
 LOOP_S = 0.05
+LANE_FOOTPRINT = sensor.lane_footprint(config.ALT_NOMINAL)   # (across, along) m at the flown altitude
 
 
 class Abort(Exception):
@@ -237,6 +238,9 @@ class Mission:
             "kill_window": list(args.kill_window),
             "radio": {"loss": args.loss, "delay": args.delay, "seed": args.seed},
             "port_base": args.port_base, "base_instance": args.base_instance,
+            # altitude flown (SWARM_ALT, swarm/config.py) and the lane footprint the ground plans with
+            "alt_nominal": config.ALT_NOMINAL, "alt_band": list(config.ALT_BAND),
+            "swath_across": LANE_FOOTPRINT[0], "footprint_along": LANE_FOOTPRINT[1],
             "tainted": False, "outcome": "running", "git_commit": git_commit(),
             "started": now_iso(), "finished": None,
         }
@@ -290,6 +294,7 @@ class Mission:
         self.children.start("ground", [
             sys.executable, "-m", "swarm.ground", "--n", str(self.a.n),
             "--port-base", str(self.a.port_base), "--mission-s", str(self.a.mission_s),
+            "--swath-across", str(LANE_FOOTPRINT[0]), "--footprint-along", str(LANE_FOOTPRINT[1]),
             "--log", os.path.join(self.run_dir, "ground.jsonl")])
 
     def start_agents(self):

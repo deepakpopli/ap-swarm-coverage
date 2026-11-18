@@ -42,12 +42,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from swarm import config
+from swarm import config, sensor
 
-# Sensor footprint at ALT_NOMINAL (SIYI A8 mini at 60 m; numbers to be confirmed by the sensor
-# model). Only used as defaults here: pass the real values in AllocParams.
-DEFAULT_SWATH_ACROSS_M = 102.0
-DEFAULT_FOOTPRINT_ALONG_M = 57.0
+# Sensor footprint at config.ALT_NOMINAL (SIYI A8 mini, swarm.sensor), whole metres rounded down:
+# 102 x 57 at the default 60 m, 85 x 48 at 50 m. Defaults only: AllocParams can override them.
+DEFAULT_SWATH_ACROSS_M, DEFAULT_FOOTPRINT_ALONG_M = sensor.lane_footprint(config.ALT_NOMINAL)
 DEFAULT_MAX_SLOT_SPACING_M = 90.0
 
 _SPACING_MARGIN_M = 0.5     # legs are cut at spacing - margin, so 1 cm rounding never breaks the bound
