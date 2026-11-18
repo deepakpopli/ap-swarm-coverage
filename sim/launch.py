@@ -45,10 +45,11 @@ if ROOT not in sys.path:
 from swarm import config                       # noqa: E402
 from sim.gazebo import gen_world               # noqa: E402
 
-ARDUPILOT = os.path.expanduser("~/ardupilot")
+# same env vars and defaults as setup.sh
+ARDUPILOT = os.path.expanduser(os.environ.get("ARDUPILOT_HOME", "~/ardupilot"))
 ARDUCOPTER = os.path.join(ARDUPILOT, "build/sitl/bin/arducopter")
 DEFAULTS_DIR = os.path.join(ARDUPILOT, "Tools/autotest/default_params")
-AP_GAZEBO = os.path.expanduser("~/ardupilot_gazebo")
+AP_GAZEBO = os.path.expanduser(os.environ.get("ARDUPILOT_GAZEBO", "~/ardupilot_gazebo"))
 PID_DIR = os.path.join(ROOT, "run", "pids")
 
 

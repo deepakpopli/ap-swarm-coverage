@@ -13,7 +13,8 @@ import argparse, glob, json, math, os, signal, subprocess, sys, threading, time
 from pymavlink import mavutil
 
 HOME = (-35.363262, 149.165237, 584.0)
-AP = os.path.expanduser("~/ardupilot")
+AP = os.path.expanduser(os.environ.get("ARDUPILOT_HOME", "~/ardupilot"))         # as in setup.sh
+AP_GAZEBO = os.path.expanduser(os.environ.get("ARDUPILOT_GAZEBO", "~/ardupilot_gazebo"))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLK = os.sysconf("SC_CLK_TCK")
 
@@ -180,8 +181,8 @@ def main():
         if a.backend == "gazebo":
             subprocess.check_call([sys.executable, os.path.join(ROOT, "sim/gazebo/gen_world.py"), str(a.n), os.path.join(work, "gz")] + (["--no-lock-step"] if a.no_lock_step else []))
             env = dict(os.environ)
-            env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.path.expanduser("~/ardupilot_gazebo/build")
-            env["GZ_SIM_RESOURCE_PATH"] = os.path.join(work, "gz", "models") + ":" + os.path.expanduser("~/ardupilot_gazebo/models")
+            env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.path.join(AP_GAZEBO, "build")
+            env["GZ_SIM_RESOURCE_PATH"] = os.path.join(work, "gz", "models") + ":" + os.path.join(AP_GAZEBO, "models")
             gz = subprocess.Popen(["nice", "-n", "19", "gz", "sim", "-s", "-r", "-v", "2", os.path.join(work, "gz", "swarm.sdf")],
                                   env=env, stdout=open(os.path.join(work, "gz.log"), "w"), stderr=subprocess.STDOUT, start_new_session=True)
             register("spike_gz", gz.pid)
