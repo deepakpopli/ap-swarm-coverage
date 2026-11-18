@@ -226,6 +226,13 @@ class Agent:
 
         cmd = self.safety.step(now, st.pos, st.vel, nominal)
         self.vehicle.send_setpoint(cmd.vx, cmd.vy, cmd.z)
+        # Held still by the deaf rule, or by a fallback / post-deaf layer change while coverage
+        # wants to move: that time does not count against the slot timeout (see coverage.py).
+        if self.phase == "mission" and (
+                cmd.mode == DEAF or
+                (cmd.mode == LAYERED and self.safety.layer_reason in ("deaf", "fallback")
+                 and abs(cmd.vx) + abs(cmd.vy) < 0.1 and abs(nominal[0]) + abs(nominal[1]) >= 1.0)):
+            self.coverage.pause_timer(1.0 / C.CONTROL_HZ)
 
         for ev in cmd.events:
             self.event(now, ev)

@@ -93,6 +93,28 @@ class TestCoverage(unittest.TestCase):
         _, _, ev2, _ = fly(cov, pos, 108.0, 40.0, move=False)
         self.assertEqual(len([e for e in ev2 if e["event"] == "infeasible" and e["epoch"] == 2]), 1)
 
+    def test_paused_time_does_not_count_toward_timeout(self):
+        cov = CoverageController(1)
+        cov.on_assign(assign(1, [[200, 200], [250, 200]]), 0.0)
+        pos, t = (0.0, 0.0, 60.0), 0.0
+        events = []
+        for _ in range(300):                  # 30 s standing still, 12 s of it held by safety
+            events += cov.step(t, pos).events
+            if 5.0 <= t < 17.0:
+                cov.pause_timer(DT)
+            t += DT
+        inf = [e for e in events if e["event"] == "infeasible"]
+        self.assertEqual(len(inf), 1)          # still times out, but only after 15 s unpaused
+        cov2 = CoverageController(1)
+        cov2.on_assign(assign(1, [[200, 200], [250, 200]]), 0.0)
+        t, events = 0.0, []
+        for _ in range(200):                   # 20 s, 12 s paused: 8 s counted, no timeout
+            events += cov2.step(t, pos).events
+            if 5.0 <= t < 17.0:
+                cov2.pause_timer(DT)
+            t += DT
+        self.assertFalse([e for e in events if e["event"] == "infeasible"])
+
     def test_safety_report_once_per_epoch(self):
         cov = CoverageController(1)
         cov.on_assign(assign(3, [[100, 0]]), 0.0)

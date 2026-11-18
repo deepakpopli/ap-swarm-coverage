@@ -19,7 +19,10 @@ Epochs: ASSIGN with epoch <= current is ignored. A newer epoch restarts at slot 
 contains the currently active slot (same x, y within 1 m): then we continue from that index.
 
 Timeout: the active slot must be reached within SLOT_TIMEOUT_S (15 s) of becoming active (activation =
-slot switch, new epoch, or mission start). Otherwise: one infeasible event (epoch, slot, "timeout"), and
+slot switch, new epoch, or mission start), not counting time the agent spent held by the safety layer
+(pause_timer(); the agent calls it while the deaf rule or a neighbour-caused fallback holds it still).
+A blackout or a fallback is not evidence that the slot is unreachable, and it is reported separately
+(fallback raises its own "safety" infeasible). Otherwise: one infeasible event (epoch, slot, "timeout"), and
 nominal velocity zero (hold) until a newer epoch. INFEASIBLE is re-sent at 1 Hz via
 infeasible_message(). At most one infeasible per epoch, whatever the reason ("timeout" or "safety").
 """
@@ -126,6 +129,11 @@ class CoverageController:
         self._infeasible = {"epoch": self.epoch, "slot": self.idx, "reason": reason,
                             "pos": [round(p, 2) for p in pos]}
         return dict(self._infeasible, event="infeasible")
+
+    def pause_timer(self, dt: float) -> None:
+        """Do not count the last dt seconds against the active slot's timeout (agent held by safety)."""
+        if self._active_since is not None and not self._timed_out:
+            self._active_since += dt
 
     def report_safety(self, now: float, pos) -> Optional[dict]:
         """The safety filter entered fallback. Returns an event if this is the first report this epoch."""
