@@ -4,7 +4,8 @@ Usage: python -m analysis.aggregate runs/a runs/b ... [--out results]
 Reads (or computes, if missing) each run's metrics.json; writes <out>/results.md and
 <out>/results.json. Summary cells are "median [min, max]" over the runs that have a value;
 None values are never averaged in, they are counted ("not recovered in k of n runs").
-Runs whose meta.json says backend "synthetic" make the whole table carry a SYNTHETIC banner.
+Runs whose meta.json says backend "synthetic" or "fake" (not measurements, see NOT_MEASURED) make the
+whole table carry a SYNTHETIC banner and may not be written into results/.
 """
 import argparse
 import json
@@ -17,6 +18,14 @@ from analysis import metrics
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(REPO, "results")
+# Backends whose runs are not measurements: generated logs (analysis/synth.py) and the
+# kinematic FakeVehicle (run_mission.py --backend fake).
+NOT_MEASURED = ("synthetic", "fake")
+
+
+def is_synthetic(meta):
+    """True if a run's meta/metrics dict comes from a backend that is not a measurement."""
+    return meta.get("backend") in NOT_MEASURED
 
 
 def check_out_dir(out_dir, synthetic):
@@ -99,7 +108,7 @@ def per_agent_extremes(m):
 def aggregate(run_dirs, out_dir, recompute=False):
     ms = [load_metrics(d, recompute) for d in run_dirs]
     n = len(ms)
-    synthetic = any(m.get("backend") == "synthetic" for m in ms)
+    synthetic = any(is_synthetic(m) for m in ms)
     check_out_dir(out_dir, synthetic)
     res ={"n_runs": n, "synthetic": synthetic, "runs": [], "paired": [], "single": []}
     for m in ms:

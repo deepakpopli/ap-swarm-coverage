@@ -19,7 +19,7 @@ from matplotlib.patches import Polygon, Rectangle
 import numpy as np
 
 from swarm import config, sensor
-from analysis import metrics
+from analysis import aggregate, metrics
 from analysis.logs import load_run
 
 AGENT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#6250d6", "#e87ba4"]   # palette slots 1,2,3,7,5
@@ -69,13 +69,14 @@ def render(run_dir, out=None, speed=4.0, fps=15, px=960, cell=metrics.CELL_M):
     mission_s = float(run.meta_get("mission_s", config.MISSION_S))
     victim, t_kill = run.meta.get("kill_agent"), metrics.loss_time(run)
     t_lost = metrics.lost_declared_time(run, victim, t_kill) if victim is not None else None
-    synthetic = run.meta.get("backend") == "synthetic"
+    synthetic = aggregate.is_synthetic(run.meta)
     grid = metrics.Grid(cell)
     ls = metrics.LastSeen(grid, metrics.coverage_samples(run, mission_s))
     shares_tl = assign_timeline(run)
     ids = sorted(run.agents)
     color = {aid: AGENT_COLORS[i % len(AGENT_COLORS)] for i, aid in enumerate(ids)}
     out = out or os.path.join(run_dir, "replay.mp4")
+    aggregate.check_out_dir(os.path.dirname(os.path.abspath(out)), synthetic)
 
     dpi = 100
     fig = plt.figure(figsize=(px / dpi, px / dpi), dpi=dpi)

@@ -52,7 +52,7 @@ def load(run_dir):
 
 
 def title_suffix(runs):
-    synth = any(r["m"].get("backend") == "synthetic" for r in runs)
+    synth = any(aggregate.is_synthetic(r["m"]) for r in runs)
     return f" (n = {len(runs)} runs{', SYNTHETIC' if synth else ''})"
 
 
@@ -206,7 +206,7 @@ def plot_gap_map(runs, out):
     axs[0][0].set_ylabel("north (m)")
     cb = fig.colorbar(im, ax=axs[0].tolist(), shrink=0.85)
     cb.set_label("longest unseen time in phase (s)")
-    synth = " (SYNTHETIC)" if r["m"].get("backend") == "synthetic" else ""
+    synth = " (SYNTHETIC)" if aggregate.is_synthetic(r["m"]) else ""
     fig.suptitle(f"Per-cell worst revisit gap, run {r['m']['run']}{synth}, "
                  f"agent {r['m'].get('victim')} lost at {r['m'].get('t_loss_s')} s",
                  x=0.01, ha="left", fontweight="bold", fontsize=11)
@@ -238,7 +238,7 @@ def plot_separation(runs, out):
 
 def make_all(run_dirs, out):
     runs = [load(d) for d in run_dirs]
-    aggregate.check_out_dir(out, any(r["m"].get("backend") == "synthetic" for r in runs))
+    aggregate.check_out_dir(out, any(aggregate.is_synthetic(r["m"]) for r in runs))
     os.makedirs(out, exist_ok=True)
     plot_coverage(runs, out)
     plot_gaps(runs, out)
