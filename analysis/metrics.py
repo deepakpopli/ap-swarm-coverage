@@ -446,7 +446,11 @@ def compute(run, cell=CELL_M):
          "mission_s": mission_s, "cell_m": cell, "window_s": WINDOW_S,
          "sensor": {"product": sensor.PRODUCT, "hfov_deg": sensor.HFOV_DEG,
                     "vfov_deg": round(sensor.VFOV_DEG, 2),
-                    "footprint_60m_m": [round(v, 2) for v in sensor.footprint_size(60.0)]},
+                    "footprint_60m_m": [round(v, 2) for v in sensor.footprint_size(60.0)],
+                    # informational only: coverage uses the logged z of every sample
+                    "alt_nominal_m": float(run.meta.get("alt_nominal", 60.0)),
+                    "footprint_nominal_m": [round(v, 2) for v in sensor.footprint_size(
+                        float(run.meta.get("alt_nominal", 60.0)))]},
          "n_samples": int(len(samples)), "definitions": __doc__}
 
     t_lost_decl = lost_declared_time(run, victim, t_loss) if victim is not None else None
