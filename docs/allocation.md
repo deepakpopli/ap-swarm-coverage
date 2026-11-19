@@ -55,8 +55,9 @@ Code: `swarm/allocator.py` (pure, deterministic), used by `swarm/ground.py`.
   swap run issued two transit slots 0.2 m apart and stalled for 15 s. Transit points that clash
   are moved along their leg (`_clear_leg`). Crossing transits can still leave a smaller gap at
   the crossing point; there the safety filter has to separate them.
-* `--swap-at` with this layout: the agents swap tour entries and phases (or lane groups), so
-  they must cross.
+* `--swap-at` with this layout: on the tour each agent flies to the slot just ahead of the
+  next agent (by id) and takes over its phase (with lane groups: the groups go to the agents
+  in reverse order), so they must cross.
 
 ## Infeasible slots
 
