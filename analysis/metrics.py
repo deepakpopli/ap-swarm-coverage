@@ -325,17 +325,47 @@ def control_block(run):
 
 # ---------------------------------------------------------------- missions B and C
 
-def longest_unseen(sightings_list, end_s):
-    """Per cell: the largest age (time since the last sighting) at any moment of [0, end_s].
-    The last sighting may lie in the warm-up; a cell not seen since counting began
-    (t = -WINDOW_S) counts from there."""
+def longest_unseen(sightings_list, end_s, from_s=0.0, open_at_end=True):
+    """Per cell: the longest time unseen (s) among the gaps that end in [from_s, end_s).
+
+    A gap runs from one sighting to the next and belongs to the phase where it ends, however
+    early it started: a gap the loss opens counts in full after the loss. Its start may lie in
+    the warm-up; a cell not seen since counting began (t = -WINDOW_S) counts from there.
+    open_at_end: a gap still open at end_s also counts, as its age at end_s.
+    """
     last = np.full(CELL_X_M.size, -WINDOW_S)
     longest = np.zeros(CELL_X_M.size)
     for t, cells in sightings_list:
-        if t >= 0.0:
+        if t >= end_s:
+            break
+        if t >= from_s:
             longest[cells] = np.maximum(longest[cells], t - last[cells])
         last[cells] = t
-    return np.maximum(longest, end_s - last)
+    if open_at_end:
+        longest = np.maximum(longest, end_s - last)
+    return longest
+
+
+UNSEEN_LIMITS_S = (60.0, 90.0)   # report the share of cells that went unseen longer than these
+
+
+def unseen_block(sightings_list, from_s, end_s, open_at_end):
+    """Worst revisit gap as the task defines it: the longest time any cell went unseen."""
+    longest = longest_unseen(sightings_list, end_s, from_s, open_at_end)
+    out = {"phase_s": [from_s, end_s], "worst_s": float(np.max(longest))}
+    for limit_s in UNSEEN_LIMITS_S:
+        out[f"cells_over_{limit_s:.0f}s_pct"] = 100.0 * float(np.mean(longest > limit_s))
+    return out
+
+
+def unseen_blocks(run, sightings_list):
+    """Whole mission [0, end]; with a loss also before [0, L) and from the loss [L, end]. Only
+    the phase in which a gap ends gets it, so a gap across L is in "after" and "whole"."""
+    out = {"whole": unseen_block(sightings_list, 0.0, run.end_s, True)}
+    if run.victim is not None:
+        out["before"] = unseen_block(sightings_list, 0.0, run.loss_s, False)
+        out["after"] = unseen_block(sightings_list, run.loss_s, run.end_s, True)
+    return out
 
 
 def priority_zone_block(run, sightings_list, ticks):
@@ -383,6 +413,7 @@ def compute(run):
          "seed": meta["seed"], "n": meta["n"], "backend": meta["backend"],
          "victim": run.victim, "end_s": run.end_s,
          "coverage": coverage_block(ticks, coverage, run.end_s),
+         "unseen": unseen_blocks(run, seen),
          "loss": None, "revisit": None, "mission_b": None, "mission_c": None}
     if run.victim is not None:
         m["loss"] = loss_block(run, ticks, coverage)

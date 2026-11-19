@@ -20,6 +20,21 @@ from analysis import metrics
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 METRICS = [   # (key = path in metrics.json, label, unit, digits)
+    # the task's "worst revisit gap": longest time any cell went unseen (docs/metrics.md)
+    ("unseen.whole.worst_s", "Worst revisit gap (longest unseen), whole mission [0, end]",
+     "s", 1),
+    ("unseen.before.worst_s", "Worst revisit gap (longest unseen), before the loss [0, L)",
+     "s", 1),
+    ("unseen.after.worst_s", "Worst revisit gap (longest unseen), from the loss [L, end]",
+     "s", 1),
+    ("unseen.whole.cells_over_60s_pct", "Cells unseen > 60 s at some time, whole mission",
+     "%", 1),
+    ("unseen.whole.cells_over_90s_pct", "Cells unseen > 90 s at some time, whole mission",
+     "%", 1),
+    ("unseen.after.cells_over_60s_pct", "Cells unseen > 60 s, gap ending from the loss on",
+     "%", 1),
+    ("unseen.after.cells_over_90s_pct", "Cells unseen > 90 s, gap ending from the loss on",
+     "%", 1),
     ("coverage.mean_pct", "Coverage over the mission, mean", "%", 1),
     ("loss.before_pct", "Coverage before the loss, mean (P)", "%", 1),
     ("loss.before_min_pct", "Coverage before the loss, min", "%", 1),
@@ -41,8 +56,10 @@ METRICS = [   # (key = path in metrics.json, label, unit, digits)
     ("loss.milestones_s.assignment_received", "Loss -> new assignment held by every survivor",
      "s", 1),
     ("loss.milestones_s.on_new_loop", "Loss -> first survivor on its new loop", "s", 1),
-    ("revisit.before.worst_completed_s", "Worst completed revisit gap, before [0, L)", "s", 1),
-    ("revisit.after.worst_completed_s", "Worst completed revisit gap, after [R, end]", "s", 1),
+    ("revisit.before.worst_completed_s",
+     "Steady revisit gap (both sightings inside the phase), before [0, L)", "s", 1),
+    ("revisit.after.worst_completed_s",
+     "Steady revisit gap (both sightings inside the phase), after [R, end]", "s", 1),
     ("revisit.before.worst_open_s", "Largest open gap at L", "s", 1),
     ("revisit.after.worst_open_s", "Largest open gap at the end", "s", 1),
     ("revisit.before.no_completed_gap_pct", "Cells with no completed gap, before", "%", 1),
@@ -77,7 +94,8 @@ LABELS = {key: (label, unit, digits) for key, label, unit, digits in METRICS}
 PHASE_TABLE_KEYS = {"loss.before_pct", "loss.before_min_pct", "loss.after_mean_pct",
                     "loss.after_min_pct", "coverage.end_of_run_pct", "coverage.end_of_run_min_pct",
                     "loss.share_pct", "attainable_pct", "loss.recovery_s",
-                    "loss.recovery_to_share_s", "revisit.before.worst_completed_s",
+                    "loss.recovery_to_share_s", "unseen.before.worst_s", "unseen.after.worst_s",
+                    "revisit.before.worst_completed_s",
                     "revisit.after.worst_completed_s", "churn.before_per_agent_min",
                     "churn.after_per_agent_min"}
 
@@ -150,18 +168,23 @@ def phase_table(s):
     head = ["| Metric | Before the loss | After the loss (from L + 60 s) | End of run (last 30 s) "
             "| Attainable with N-1 | (N-1)/N x before | n |", "|---|---|---|---|---|---|---|"]
     rows = [
+        f"| Worst revisit gap (longest unseen) (s) | {c('unseen.before.worst_s')} | "
+        f"{c('unseen.after.worst_s')} | - | - | - | {s['unseen.after.worst_s']['n']} |",
         f"| Coverage, mean (%) | {c('loss.before_pct')} | {c('loss.after_mean_pct')} | "
         f"{c('coverage.end_of_run_pct')} | {c('attainable_pct')} | {c('loss.share_pct')} | "
         f"{s['loss.before_pct']['n']} |",
         f"| Coverage, min (%) | {c('loss.before_min_pct')} | {c('loss.after_min_pct')} | "
         f"{c('coverage.end_of_run_min_pct')} | - | - | {s['loss.before_min_pct']['n']} |",
-        f"| Worst completed revisit gap (s) | {c('revisit.before.worst_completed_s')} | "
+        f"| Steady revisit gap (both sightings inside the phase) (s) | "
+        f"{c('revisit.before.worst_completed_s')} | "
         f"{c('revisit.after.worst_completed_s')} | - | - | - | "
         f"{s['revisit.after.worst_completed_s']['n']} |",
         f"| Assignment churn (/agent/min) | {c('churn.before_per_agent_min')} | "
         f"{c('churn.after_per_agent_min')} | - | - | - | {s['churn.after_per_agent_min']['n']} |"]
-    notes = ["", "Revisit gap phases differ from the coverage phases: before = [0, L), "
-             "after = [R, end] with R = lost declared, survivors only.", "",
+    notes = ["", "Revisit gap phases differ from the coverage phases. Longest unseen: before = "
+             "[0, L), after = [L, end]; a gap belongs to the phase where it ends, a gap still "
+             "open at the end counts as its age then. Steady gap: before = [0, L), after = "
+             "[R, end] with R = lost declared, survivors only.", "",
              f"- Recovery to 0.9 x P: {recovered_text(s['loss.recovery_s'])}.",
              f"- Recovery to 0.9 x (N-1)/N x P (weaker reading): "
              f"{recovered_text(s['loss.recovery_to_share_s'])}."]
@@ -173,7 +196,8 @@ def per_run_table(runs):
         return "-" if value is None else f"{value:.{digits}f}"
 
     lines = ["| Run | Seed | Victim | Kill t (s) | Lost declared t (s) | Recovery (s) "
-             "| After, mean (%) | Min separation from 10 s (m) |", "|---" * 8 + "|"]
+             "| After, mean (%) | Longest unseen, whole (s) | Min separation from 10 s (m) |",
+             "|---" * 9 + "|"]
     for m in runs:
         loss = m["loss"] or {}
         recovery = number(loss.get("recovery_s"))
@@ -182,6 +206,7 @@ def per_run_table(runs):
         lines.append(f"| {m['run']} | {m['seed']} | {m['victim']} | {number(loss.get('loss_s'))} "
                      f"| {number(loss.get('lost_declared_s'))} | {recovery} "
                      f"| {number(loss.get('after_mean_pct'))} "
+                     f"| {number((m.get('unseen') or {}).get('whole', {}).get('worst_s'))} "
                      f"| {number(m['safety']['min_separation_from_10s_m'])} |")
     return lines
 

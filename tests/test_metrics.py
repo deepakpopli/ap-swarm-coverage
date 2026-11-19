@@ -129,6 +129,51 @@ class RevisitGapTest(unittest.TestCase):
         self.assertAlmostEqual(block["worst_open_s"], 50.0)  # a cell never seen: open since 0
 
 
+class LongestUnseenTest(unittest.TestCase):
+    """Mission of 100 s, loss at L = 40. Agent 1 sits over A (x = 60) for [-60, -50), over B
+    (x = 240) for [-50, 20), A again [20, 25), C (x = 150) [25, 50), B again [50, 100).
+    Agent 2 (the victim) sits over E (150, 30) from -60 until the loss. D (150, 280) is never
+    seen. Footprints (85 x 48 m, wide side east-west) do not overlap."""
+
+    def setUp(self):
+        rows = (track(-60.0, -50.0, 60.0, 150.0) + track(-50.0, 20.0, 240.0, 150.0)
+                + track(20.0, 25.0, 60.0, 150.0) + track(25.0, 50.0, 150.0, 150.0)
+                + track(50.0, 100.0, 240.0, 150.0))
+        victim = track(-60.0, 40.0, 150.0, 30.0)
+        self.run = make_run({1: agent_log(rows), 2: agent_log(victim)}, mission_s=100.0,
+                            kill_agent=2, kill_wall=T0_WALL + 40.0)
+        self.seen = metrics.sightings(self.run)
+        self.cells = {k: cell_at(*xy) for k, xy in {"A": (61, 151), "B": (241, 151),
+                      "C": (151, 151), "D": (151, 281), "E": (151, 31)}.items()}
+
+    def per_cell(self, *args):
+        longest = metrics.longest_unseen(self.seen, *args)
+        return {k: round(float(longest[i]), 2) for k, i in self.cells.items()}
+
+    def test_phases(self):
+        # whole [0, 100]: A open since 24.95; B 19.95 -> 50.0; C never seen until 25 (counts
+        # from -60); D never seen; E open since the loss (last row 39.95)
+        self.assertEqual(self.per_cell(100.0),
+                         {"A": 75.05, "B": 30.05, "C": 85.0, "D": 160.0, "E": 60.05})
+        # before [0, L): only gaps that end before 40; nothing open is counted
+        self.assertEqual(self.per_cell(40.0, 0.0, False),
+                         {"A": 70.05, "B": 0.05, "C": 85.0, "D": 0.0, "E": 0.05})
+        # from the loss [L, end]: B's gap across L counts in full, A's and E's open gaps too
+        self.assertEqual(self.per_cell(100.0, 40.0, True),
+                         {"A": 75.05, "B": 30.05, "C": 50.05, "D": 160.0, "E": 60.05})
+
+    def test_blocks(self):
+        blocks = metrics.unseen_blocks(self.run, self.seen)
+        self.assertAlmostEqual(blocks["whole"]["worst_s"], 160.0)
+        self.assertAlmostEqual(blocks["before"]["worst_s"], 85.0)
+        self.assertAlmostEqual(blocks["after"]["worst_s"], 160.0)
+        # before: only cells first seen under C (85 s) and A (70.05 s) exceed 60 s
+        before = metrics.longest_unseen(self.seen, 40.0, 0.0, False)
+        self.assertAlmostEqual(blocks["before"]["cells_over_60s_pct"],
+                               100.0 * np.mean(before > 60.0))
+        self.assertAlmostEqual(blocks["before"]["cells_over_90s_pct"], 0.0)
+
+
 class LossTest(unittest.TestCase):
     ticks = np.arange(0.0, 181.0)
 

@@ -16,8 +16,13 @@ later (t0 = now + 60 s), so the swarm observes for one full window first. Sighti
 t = -W. coverage(0) therefore comes from a full window, and no "before" window holds a start-up
 ramp. (This replaces an earlier rule that started from an empty map at t = 0.)
 
+**Unseen time and the warm-up.** Sightings in the 60 s warm-up count, as they do for coverage,
+so an unseen gap may start before t = 0 (at the latest t = -W: a cell never seen counts from
+there). Only its end must lie in the phase.
+
 | Metric | Definition |
 |---|---|
+| Worst revisit gap (longest unseen) | The task's metric: the longest time any cell went unseen. Per cell, the longest gap between consecutive sightings, over all cells. Three phases: whole [0, end], before [0, L), after [L, end]. A gap counts in the phase where it ends, so one that opens before L and closes after it counts in full in after and whole. A gap still open at the end counts as its age at the end (after and whole; before ignores the gap open at L). Also: % of cells whose longest unseen time exceeded 60 s and 90 s. |
 | coverage(t) | % of cells seen in (t - W, t], evaluated every 1 s. Always absolute %, never "% of before". |
 | Coverage, mean | Mean of coverage(t) over [0, end]. |
 | Before (coverage) | [L - W, L): the last full window before the loss. |
@@ -27,7 +32,7 @@ ramp. (This replaces an earlier rule that started from an empty map at t = 0.)
 | Coverage after | Mean and min of coverage(t) over After. |
 | (N-1)/N x P | The task's bar. After is also reported as a ratio to it. |
 | Attainable with N-1 | Mean coverage over [0, end] of no-loss runs with N-1 agents (`--ref`). Omitted when no such runs are given, never estimated. |
-| Worst completed revisit gap | Longest time between two consecutive sightings of the same cell, both inside the phase, over all cells. Phases: before = [0, L), after = [R, end] (survivors only). |
+| Steady revisit gap (both sightings inside the phase) | Formerly "worst completed revisit gap". Longest time between two consecutive sightings of the same cell, both inside the phase, over all cells. Phases: before = [0, L), after = [R, end] (survivors only). |
 | Largest open gap | Largest (phase end - last sighting) over all cells. A cell never seen counts from t = 0. Shows whether the completed gap is cut short by the phase end. |
 | No completed gap | % of cells with fewer than two sightings in the phase. |
 | Recovery | First tick t >= L from which coverage(t) >= 0.9 P until the end, minus L. The recovery must hold for at least 10 s before the end. 0 if coverage never fell below 0.9 P; none = "not recovered within the run". Runs that do not recover are counted ("k of n recovered"), and the median is taken over the recovered runs only. |
