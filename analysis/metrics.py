@@ -1,52 +1,10 @@
-"""Per-run metrics, computed OFFLINE from the sensor footprint model (swarm/sensor.py) and each
-agent's own logged TRUE position. Nothing here uses what agents told each other.
+"""Metrics of one run, from each agent's logged true position and the camera footprint.
 
-Usage:  python -m analysis.metrics runs/<name> [--cell 2.0]
-Writes: runs/<name>/metrics.json, coverage.csv, separation.csv, gapmaps.npz
-
-Definitions (times are mission time t, seconds; L = meta kill_t_mission, the loss time)
-  sample        one agent log row with status in FLYING_STATUSES and 0 <= t_mission <= mission_s.
-                Each sample marks the grid cells whose centre lies inside the footprint
-                (logged x, y, z, yaw) as seen at time t.
-  coverage(t)   % of cells seen by any agent at some sample time in [t - 60 s, t]; evaluated at
-                t = 0, 1, 2, ... mission_s. For t < 60 s the window is still filling (warm-up).
-  pre-loss P    mean of coverage(t) over the ticks L-10 <= t < L. Flagged
-                "warmup_incomplete" when L-10 < 60 s. Sensitivity: P from 5 s and 20 s windows
-                and coverage(L) are also reported, with the recovery times they would give.
-  recovery      t_rec - L, where t_rec is the first tick >= L after which coverage stays
-                >= threshold until mission end, with at least HOLD_S of data after t_rec
-                (otherwise None = "not recovered"). 0.0 if coverage never fell below it after L.
-                (a) threshold = 0.9 * P                (within 10 % of the pre-loss value)
-                (b) threshold = 0.9 * (N-1)/N * P      (within 10 % of the ideal survivor share)
-                "within 10 %" is relative (x 0.9), not 10 percentage points.
-  phases        pre  = [0, L];  post = [L + max(60 s, recovery_b), mission_s] (needs >= HOLD_S).
-                The post phase never starts before L+60 s, so its coverage window contains no
-                sighting by the lost agent. If recovery_b is None, post = [L+60, end] and the
-                result is flagged recovered_b = false.
-  revisit gap   per cell, the longest time inside the phase during which the cell was not seen.
-                Unseen stretches that started before the phase are clipped to the phase start,
-                stretches still open at the phase end run to the phase end. Exception: at
-                mission start (t=0) the time until a cell's FIRST sighting is first-visit latency,
-                not a revisit gap, and is excluded. Cells never seen in the phase get the full
-                phase length (a censored lower bound) and are counted separately
-                ("censored_by_phase_length" is then true: the post phase is only 30-60 s long).
-  worst age     companion to the gap: max over cells and t in the phase of (t - last sighting),
-                NOT clipped at the phase start, so a stretch that began before the phase counts
-                in full. This is the stalest any cell got during the phase; it is not censored
-                by a short post phase. Gap <= age always.
-  detection     lost_declared_t = first ground "liveness" event with the victim going to "lost";
-                detection_delay = lost_declared_t - L; recovery_after_declared = L + recovery -
-                lost_declared_t (negative when coverage never fell below the threshold).
-  churn         assignment changes per live agent-minute: number of (assign event, agent) pairs
-                with the agent in that event's "changed" list and alive at the event, divided by
-                the live agent-minutes in the phase. Given with all events and without the
-                initial assignment and the one re-plan forced by the loss.
-  safety        min over time of the TRUE 3D distance between any two live agents (logs joined on
-                t_mission by linear interpolation at 10 Hz, no interpolation across >0.5 s gaps);
-                time with that distance < D_MIN.
+Definitions: docs/metrics.md. Usage: python -m analysis.metrics RUN_DIR
+Writes RUN_DIR/metrics.json and RUN_DIR/coverage.csv (coverage in %, once per second).
 """
-import argparse
 import csv
+import itertools
 import json
 import math
 import os
@@ -54,536 +12,410 @@ import sys
 
 import numpy as np
 
+from analysis.logs import load_run
 from swarm import config, sensor
-from analysis.logs import FLYING_STATUSES, RunLoadError, load_run
 
-CELL_M = 2.0          # default grid cell: 1 m of travel per 10 Hz sample at 10 m/s; the smallest
-                      # footprint (48 m) is 24 cells long, so edge quantisation is ~2 % of a
-                      # footprint's area and averages out; 150 x 150 = 22 500 cells stays cheap.
-WINDOW_S = 60.0       # coverage memory
-TICK_S = 1.0          # coverage(t) sampling
-PRE_WINDOW_S = 10.0   # pre-loss reference window
-HOLD_S = 10.0         # minimum confirmed time after recovery / minimum post phase length
-RECOVERY_FRAC = 0.9   # "within 10 %"
-SEP_DT = 0.1          # separation join step (10 Hz)
-SEP_MAX_GAP_S = 0.5   # no interpolation across larger log gaps
+CELL_M = 2.0               # grid cell; the 50 m footprint is 24 cells long, so edges barely matter
+TICK_S = 1.0               # coverage(t) is evaluated once per second
+WINDOW_S = config.COVERAGE_WINDOW_S
+END_OF_RUN_S = 30.0        # "end of run" = the last 30 s
+RECOVERED = 0.9            # "within 10 %" of a reference value
+CONFIRM_S = 10.0           # a recovery must hold at least this long before the run ends
+SAFETY_FROM_S = 10.0       # second separation figure: from 10 s into the mission
+STEP_S = 1.0 / config.CONTROL_HZ   # agents' positions are compared on this time grid
 
-
-# ----------------------------------------------------------------------------------- grid
-
-class Grid:
-    """Square cells over config.AREA. Arrays are indexed [iy, ix]; cx/cy are cell centres (m)."""
-
-    def __init__(self, cell=CELL_M, area=config.AREA):
-        self.cell = float(cell)
-        self.xmin, self.xmax, self.ymin, self.ymax = area
-        self.nx = int(round((self.xmax - self.xmin) / self.cell))
-        self.ny = int(round((self.ymax - self.ymin) / self.cell))
-        self.cx = self.xmin + (np.arange(self.nx) + 0.5) * self.cell
-        self.cy = self.ymin + (np.arange(self.ny) + 0.5) * self.cell
-
-    @property
-    def shape(self):
-        return (self.ny, self.nx)
-
-    @property
-    def extent(self):
-        return (self.xmin, self.xmax, self.ymin, self.ymax)
-
-    def footprint_cells(self, x, y, z, yaw):
-        """(row_slice, col_slice, mask) of the cells seen from this pose, or None if none.
-        Only the axis-aligned bounding box of the footprint is tested (cheap)."""
-        if not all(map(math.isfinite, (x, y, z, yaw))):
-            return None
-        hx, hy = sensor.bounding_half_extent(z, yaw)
-        ix0 = max(0, int(math.floor((x - hx - self.xmin) / self.cell)))
-        ix1 = min(self.nx, int(math.ceil((x + hx - self.xmin) / self.cell)) + 1)
-        iy0 = max(0, int(math.floor((y - hy - self.ymin) / self.cell)))
-        iy1 = min(self.ny, int(math.ceil((y + hy - self.ymin) / self.cell)) + 1)
-        if ix0 >= ix1 or iy0 >= iy1:
-            return None
-        m = sensor.seen_mask(self.cx[None, ix0:ix1], self.cy[iy0:iy1, None], x, y, z, yaw)
-        if not m.any():
-            return None
-        return slice(iy0, iy1), slice(ix0, ix1), m
+COLUMN_X_M = np.arange(config.AREA[0] + CELL_M / 2, config.AREA[1], CELL_M)   # cell centres
+ROW_Y_M = np.arange(config.AREA[2] + CELL_M / 2, config.AREA[3], CELL_M)
+GRID_SHAPE = (len(ROW_Y_M), len(COLUMN_X_M))                  # rows go north, columns go east
+CELL_X_M, CELL_Y_M = [a.ravel() for a in np.meshgrid(COLUMN_X_M, ROW_Y_M)]   # one entry per cell
+ALL_CELLS = np.ones(CELL_X_M.size, dtype=bool)
 
 
-# -------------------------------------------------------------------------------- samples
+def in_phase(times, start_s, end_s):
+    return (times >= start_s) & (times < end_s)
 
-def coverage_samples(run, mission_s):
-    """All usable footprint samples, sorted by time: array of rows (t, x, y, z, yaw, agent_id)."""
+
+def first_time(times, mask):
+    """The first time where mask is True, or None."""
+    if not mask.any():
+        return None
+    return float(times[mask][0])
+
+
+def mission_rows(run, agent_id):
+    """Rows of an agent that count: from the start until the end, or until the loss."""
+    t = run.agents[agent_id]["t"]
+    return (t >= 0.0) & (t <= run.live_until(agent_id))
+
+
+# ---------------------------------------------------------------------- coverage
+
+def sightings(run):
+    """[(t, indices of the cells seen)] for every counted log row, in time order."""
     out = []
-    for aid, log in run.agents.items():
-        t = log["t_mission"]
-        ok = np.isfinite(t) & (t >= 0.0) & (t <= mission_s)
-        ok &= np.array([s in FLYING_STATUSES for s in log["status"]], dtype=bool)
-        for i in np.nonzero(ok)[0]:
-            out.append((t[i], log["x"][i], log["y"][i], log["z"][i], log["yaw"][i], aid))
-    arr = np.array(out, dtype=float).reshape(-1, 6)
-    return arr[np.argsort(arr[:, 0], kind="stable")]
+    for agent_id, log in run.agents.items():
+        for i in np.flatnonzero(mission_rows(run, agent_id)):
+            seen = sensor.seen_mask(CELL_X_M, CELL_Y_M, log["x"][i], log["y"][i],
+                                    log["z"][i], log["yaw"][i])
+            out.append((log["t"][i], np.flatnonzero(seen).astype(np.int32)))
+    out.sort(key=lambda sighting: sighting[0])
+    return out
 
 
-def sightings(grid, samples, t_max=math.inf):
-    """Yield (t, row_slice, col_slice, mask) for each sample with t <= t_max, in time order."""
-    for t, x, y, z, yaw, _ in samples:
-        if t > t_max:
-            return
-        fc = grid.footprint_cells(x, y, z, yaw)
-        if fc is not None:
-            yield (t,) + fc
+def last_seen_at(sightings_list, times):
+    """For each of the ascending times, yield (t, per-cell time of the latest sighting <= t).
+
+    -inf means not seen since the start. The same array is updated and yielded every time.
+    """
+    last = np.full(CELL_X_M.size, -np.inf)
+    i = 0
+    for t in times:
+        while i < len(sightings_list) and sightings_list[i][0] <= t:
+            seen_t, cells = sightings_list[i]
+            last[cells] = seen_t
+            i += 1
+        yield t, last
 
 
-class LastSeen:
-    """Incremental last-seen-time map; advance(t) applies every sample with time <= t."""
-
-    def __init__(self, grid, samples):
-        self.grid, self.samples = grid, samples
-        self.last = np.full(grid.shape, -np.inf)
-        self.i = 0
-
-    def advance(self, t):
-        while self.i < len(self.samples) and self.samples[self.i, 0] <= t:
-            s = self.samples[self.i]
-            fc = self.grid.footprint_cells(*s[1:5])
-            if fc is not None:
-                rs, cs, m = fc
-                self.last[rs, cs][m] = s[0]
-            self.i += 1
-        return self.last
-
-    def fresh_fraction(self, t, window=WINDOW_S):
-        return float(np.mean(self.last >= t - window))
+def percent_fresh(sightings_list, ticks, window_s, cells):
+    """At each tick t: % of the selected cells seen in (t - window_s, t]."""
+    out = []
+    for t, last in last_seen_at(sightings_list, ticks):
+        out.append(100.0 * np.mean(last[cells] > t - window_s))
+    return np.array(out)
 
 
-# ------------------------------------------------------------------------------- coverage
-
-def coverage_series(grid, samples, mission_s, window=WINDOW_S, tick=TICK_S):
-    """(ticks, coverage fraction 0..1) at t = 0, tick, ... mission_s. See module docstring."""
-    ticks = np.arange(0.0, mission_s + 1e-9, tick)
-    ls = LastSeen(grid, samples)
-    cov = np.empty(len(ticks))
-    for k, t in enumerate(ticks):
-        ls.advance(t)
-        cov[k] = ls.fresh_fraction(t, window)
-    return ticks, cov
+def coverage_block(ticks, coverage, end_s):
+    full_window = in_phase(ticks, WINDOW_S, math.inf)
+    end_of_run = coverage[in_phase(ticks, end_s - END_OF_RUN_S, math.inf)]
+    return {"mean_from_60s_pct": float(np.mean(coverage[full_window])),
+            "end_of_run_pct": float(np.mean(end_of_run)),
+            "end_of_run_min_pct": float(np.min(end_of_run))}
 
 
-def pre_loss_value(ticks, cov, t_loss, width=PRE_WINDOW_S):
-    """Mean coverage over ticks t_loss - width <= t < t_loss (None if no ticks)."""
-    sel = (ticks >= t_loss - width) & (ticks < t_loss)
-    return float(np.mean(cov[sel])) if sel.any() else None
+# -------------------------------------------------------------------- revisit gap
+
+def revisit_gaps(sightings_list, start_s, end_s):
+    """Per cell, for the phase [start_s, end_s): the longest gap between two consecutive
+    sightings that are both inside the phase (NaN if there are fewer than two), and the time of
+    the last sighting before end_s (NaN if never seen)."""
+    longest = np.full(CELL_X_M.size, np.nan)
+    last = np.full(CELL_X_M.size, np.nan)
+    for t, cells in sightings_list:
+        if t >= end_s:
+            break
+        if t >= start_s:
+            previous = last[cells]
+            gap = np.where(previous >= start_s, t - previous, np.nan)
+            longest[cells] = np.fmax(longest[cells], gap)
+        last[cells] = t
+    return longest, last
 
 
-def recovery_time(ticks, cov, t_loss, threshold, hold_s=HOLD_S):
-    """Seconds from t_loss until coverage is back >= threshold for good (see module docstring).
-    Returns 0.0 if it never fell below after t_loss, None if not recovered/confirmed in the run."""
-    if threshold is None:
-        return None
-    after = ticks >= t_loss
-    t_after, c_after = ticks[after], cov[after]
-    if len(t_after) == 0:
-        return None
-    below = np.nonzero(c_after < threshold)[0]
+def revisit_block(sightings_list, start_s, end_s):
+    longest, last = revisit_gaps(sightings_list, start_s, end_s)
+    open_s = end_s - np.nan_to_num(last, nan=0.0)        # never seen: open since the start
+    return {"phase_s": [start_s, end_s],
+            "worst_completed_s": float(np.nanmax(longest)),
+            "worst_open_s": float(np.max(open_s)),
+            "no_completed_gap_pct": 100.0 * float(np.mean(np.isnan(longest)))}
+
+
+# ----------------------------------------------------------------------- the loss
+
+def recovery_time(ticks, coverage, loss_s, threshold_pct):
+    """Seconds from the loss to the first tick from which coverage stays >= threshold until
+    the end. 0 if it never fell below; None if it is not back for CONFIRM_S before the end."""
+    after = ticks >= loss_s
+    t = ticks[after]
+    below = np.flatnonzero(coverage[after] < threshold_pct)
     if len(below) == 0:
         return 0.0
-    k = below[-1] + 1
-    if k >= len(t_after):
+    back = below[-1] + 1
+    if back >= len(t) or t[-1] - t[back] < CONFIRM_S:
         return None
-    t_rec = t_after[k]
-    if t_after[-1] - t_rec < hold_s:
-        return None
-    return float(t_rec - t_loss)
+    return float(t[back] - loss_s)
 
 
-def dip(ticks, cov, t_loss):
-    """(min coverage after loss, time of that minimum)."""
-    sel = ticks >= t_loss
-    if not sel.any():
-        return None, None
-    k = int(np.argmin(cov[sel]))
-    return float(cov[sel][k]), float(ticks[sel][k])
-
-
-# ---------------------------------------------------------------------------- revisit gap
-
-def phase_gaps(grid, samples, a, b, from_first_sighting=False):
-    """Per-cell max unseen time inside phase [a, b] (s) and the never-seen-in-phase mask.
-
-    Unseen stretches are clipped to [a, b]. With from_first_sighting=True (use for a phase that
-    starts at mission start) the time before a cell's first ever sighting is not counted.
-    Cells never seen in the phase are given b - a.
-    """
-    gap, never, _ = phase_gaps_and_age(grid, samples, a, b, from_first_sighting)
-    return gap, never
-
-
-def phase_gaps_and_age(grid, samples, a, b, from_first_sighting=False):
-    """As phase_gaps, plus the per-cell max AGE (staleness) over t in [a, b]:
-    age(t) = t - last sighting time, NOT clipped to the phase start (a stretch that began before
-    the phase counts in full). Cells not seen since mission start age from t = 0, except with
-    from_first_sighting=True, where they are not counted until their first sighting
-    (and get NaN if never seen)."""
-    last = np.full(grid.shape, -np.inf)
-    gap = np.zeros(grid.shape)
-    age = np.zeros(grid.shape)
-    seen = np.zeros(grid.shape, dtype=bool)
-    for t, rs, cs, m in sightings(grid, samples, t_max=b):
-        if t >= a:
-            prev = last[rs, cs][m]
-            if from_first_sighting:
-                g = np.where(np.isfinite(prev), t - np.maximum(prev, a), 0.0)
-                ag = np.where(np.isfinite(prev), t - prev, 0.0)
-            else:
-                g = t - np.maximum(prev, a)
-                ag = t - np.maximum(prev, 0.0)
-            sub_gap, sub_age = gap[rs, cs], age[rs, cs]
-            sub_gap[m] = np.maximum(sub_gap[m], g)
-            sub_age[m] = np.maximum(sub_age[m], ag)
-            seen[rs, cs][m] = True
-        last[rs, cs][m] = t
-    gap = np.where(seen, np.maximum(gap, b - np.maximum(last, a)), b - a)
-    end_age = b - np.maximum(last, 0.0)
-    age = np.maximum(age, end_age)
-    if from_first_sighting:
-        age = np.where(np.isfinite(last), age, np.nan)
-    return gap, ~seen, age
-
-
-def gap_summary(gap, never, age=None):
-    if gap is None:
-        return None
-    return {"worst_s": float(gap.max()),
-            "censored_by_phase_length": bool(never.any()),
-            "worst_age_s": None if age is None or not np.isfinite(age).any() else float(np.nanmax(age)),
-            "worst_seen_cells_s": float(gap[~never].max()) if (~never).any() else None,
-            "p95_s": float(np.percentile(gap, 95)),
-            "median_s": float(np.median(gap)),
-            "never_seen_cells_pct": 100.0 * float(never.mean()),
-            "cells_gap_over_60s_pct": 100.0 * float((gap > WINDOW_S).mean())}
-
-
-# ------------------------------------------------------------------------------ events
-
-def event_time(e, run):
-    """Mission time of a ground event: t_mission, else t_wall - meta t0_wall, else None."""
-    t = e.get("t_mission")
-    if isinstance(t, (int, float)):
-        return float(t)
-    t0, tw = run.meta.get("t0_wall"), e.get("t_wall")
-    if isinstance(t0, (int, float)) and isinstance(tw, (int, float)):
-        return float(tw - t0)
-    return None
-
-
-def lost_declared_time(run, victim, t_loss):
-    """First ground 'liveness' event declaring the victim lost (at or after t_loss)."""
-    for e in run.events("liveness"):
-        if e.get("agent") == victim and e.get("to") == "lost":
-            t = event_time(e, run)
-            if t is not None and (t_loss is None or t >= t_loss):
-                return t
-    return None
-
-
-def loss_time(run):
-    """Mission time of the kill: meta kill_wall - t0_wall (the ACTUAL SIGKILL time written by
-    run_mission.py) when both exist, else meta kill_t_mission (the planned time). None if no kill."""
-    if run.meta.get("kill_agent") is None:
-        return None
-    kw, t0 = run.meta.get("kill_wall"), run.meta.get("t0_wall")
-    if isinstance(kw, (int, float)) and isinstance(t0, (int, float)):
-        return float(kw - t0)
-    t = run.meta.get("kill_t_mission")
-    return None if t is None else float(t)
-
-
-def alive_interval(aid, victim, t_loss, mission_s):
-    end = t_loss if (aid == victim and t_loss is not None) else mission_s
-    return 0.0, end
-
-
-def churn(run, agent_ids, victim, t_loss, mission_s, windows, t_lost_decl):
-    """Assignment changes per live agent-minute for each window {name: (a, b)}.
-    Events with no usable time are treated as t=0 (sent before mission start)."""
-    events = []
+def loss_replan(run):
+    """The ground's first re-plan after the loss that was triggered by a lost agent."""
     for e in run.events("assign"):
-        t = event_time(e, run)
-        events.append((0.0 if t is None or t < 0 else t, e))
-    events.sort(key=lambda p: p[0])
-    initial = id(events[0][1]) if events else None
-    loss_replan, t_ref = None, (t_lost_decl if t_lost_decl is not None else t_loss)
-    if t_ref is not None:
-        for t, e in events:
-            if t >= t_ref:
-                loss_replan = id(e)
-                break
-    missing_changed = sum(1 for _, e in events if "changed" not in e)
-    out = {"n_assign_events": len(events),
-           "initial_epoch": events[0][1].get("epoch") if events else None,
-           "loss_replan_epoch": next((e.get("epoch") for _, e in events if id(e) == loss_replan), None),
-           "events_without_changed_field": missing_changed}
-    for name, win in windows.items():
-        if win is None:
-            out[name] = None
+        if e["trigger"] == "lost" and e["t_mission"] >= run.loss_s:
+            return e
+    return None
+
+
+def recovery_milestones(run, recovery_s):
+    """Seconds from the loss to: lost declared, new assignment held by the last survivor,
+    first survivor on a slot of its new loop, coverage recovered."""
+    replan = loss_replan(run)
+    received = []
+    on_loop = []
+    for agent_id, log in run.agents.items():
+        if agent_id == run.victim:
             continue
-        a, b = win
-        minutes = 0.0
-        for aid in agent_ids:
-            s, f = alive_interval(aid, victim, t_loss, mission_s)
-            minutes += max(0.0, min(b, f) - max(a, s)) / 60.0
-        n_all, n_excl = 0, 0
-        for t, e in events:
-            if not (a <= t <= b):
-                continue
-            k = sum(1 for aid in e.get("changed", [])
-                    if aid in agent_ids and alive_interval(aid, victim, t_loss, mission_s)[1] >= t)
-            n_all += k
-            if id(e) not in (initial, loss_replan):
-                n_excl += k
-        out[name] = {"window_s": [a, b], "live_agent_minutes": minutes,
-                     "changes_all": n_all, "changes_excl_initial_and_loss_replan": n_excl,
-                     "per_agent_min_all": n_all / minutes if minutes > 0 else None,
-                     "per_agent_min_excl": n_excl / minutes if minutes > 0 else None}
-    return out
+        loop_from = replan["assignments"][str(agent_id)]["loop_from"]
+        received.append(first_time(log["t"], log["epoch"] >= replan["epoch"]))
+        flying_loop = (log["epoch"] == replan["epoch"]) & (log["slot"] >= loop_from)
+        on_loop.append(first_time(log["t"], flying_loop))
+    received_last = None if None in received else max(received)
+    on_loop = [t for t in on_loop if t is not None]
+    first_on_loop = min(on_loop) if on_loop else None
+
+    def since_loss(t):
+        return None if t is None else t - run.loss_s
+
+    return {"lost_declared": since_loss(run.lost_declared_s(run.victim)),
+            "assignment_received": since_loss(received_last),
+            "on_new_loop": since_loss(first_on_loop),
+            "recovered": recovery_s}
 
 
-# -------------------------------------------------------------------------------- safety
-
-def interp_positions(log, tgrid):
-    """(len(tgrid), 3) positions interpolated on t_mission; NaN outside the log or across gaps."""
-    t = log["t_mission"]
-    ok = np.isfinite(t) & np.isfinite(log["x"]) & np.isfinite(log["y"]) & np.isfinite(log["z"])
-    t = t[ok]
-    out = np.full((len(tgrid), 3), np.nan)
-    if len(t) < 2:
-        return out
-    order = np.argsort(t)
-    t = t[order]
-    for j, c in enumerate(("x", "y", "z")):
-        out[:, j] = np.interp(tgrid, t, log[c][ok][order], left=np.nan, right=np.nan)
-    k = np.searchsorted(t, tgrid)
-    k = np.clip(k, 1, len(t) - 1)
-    big = (t[k] - t[k - 1]) > SEP_MAX_GAP_S
-    out[big] = np.nan
-    return out
-
-
-def separation_series(run, mission_s, dt=SEP_DT):
-    """(tgrid, min pairwise 3D distance between live agents; NaN when < 2 agents logged)."""
-    tgrid = np.arange(0.0, mission_s + 1e-9, dt)
-    pos = [interp_positions(log, tgrid) for log in run.agents.values()]
-    best = np.full(len(tgrid), np.inf)
-    for i in range(len(pos)):
-        for j in range(i + 1, len(pos)):
-            d = np.linalg.norm(pos[i] - pos[j], axis=1)
-            best = np.fmin(best, np.where(np.isfinite(d), d, np.inf))
-    best[~np.isfinite(best)] = np.nan
-    return tgrid, best
-
-
-def flag_tokens(s):
-    return [tok for tok in s.replace(";", "|").replace(",", "|").replace(" ", "|").split("|") if tok]
+def loss_block(run, ticks, coverage):
+    loss_s = run.loss_s
+    n = run.meta["n"]
+    before = coverage[in_phase(ticks, loss_s - WINDOW_S, loss_s)]
+    after = coverage[in_phase(ticks, loss_s + WINDOW_S, math.inf)]
+    from_loss = in_phase(ticks, loss_s, math.inf)
+    before_pct = float(np.mean(before))
+    share_pct = (n - 1) / n * before_pct
+    recovery_s = recovery_time(ticks, coverage, loss_s, RECOVERED * before_pct)
+    dip = int(np.argmin(coverage[from_loss]))
+    shortfall = np.maximum(0.0, before_pct - coverage[from_loss])
+    lost_declared_s = run.lost_declared_s(run.victim)
+    milestones = None
+    if lost_declared_s is not None:
+        milestones = recovery_milestones(run, recovery_s)
+    return {"loss_s": loss_s,
+            "lost_declared_s": lost_declared_s,
+            "before_window_partial": bool(loss_s - WINDOW_S < WINDOW_S),
+            "before_pct": before_pct,
+            "before_min_pct": float(np.min(before)),
+            "after_mean_pct": float(np.mean(after)),
+            "after_min_pct": float(np.min(after)),
+            "share_pct": share_pct,
+            "after_over_share": float(np.mean(after)) / share_pct,
+            "recovery_s": recovery_s,
+            "recovery_threshold_pct": RECOVERED * before_pct,
+            "recovery_to_share_s": recovery_time(ticks, coverage, loss_s, RECOVERED * share_pct),
+            "recovery_to_share_threshold_pct": RECOVERED * share_pct,
+            "dip_pct": float(coverage[from_loss][dip]),
+            "dip_after_loss_s": float(ticks[from_loss][dip] - loss_s),
+            "deficit_pct_s": float(np.sum(shortfall)) * TICK_S,
+            "milestones_s": milestones}
 
 
-def flag_times(run, mission_s):
-    """Seconds in fallback (status or flag) and 'deaf' (flag) per agent, from 10 Hz rows."""
-    out, vocab = {}, set()
-    for aid, log in run.agents.items():
-        t = log["t_mission"]
-        ok = np.isfinite(t) & (t >= 0) & (t <= mission_s)
-        tw = log["t_wall"][ok]
-        dt = float(np.median(np.diff(tw))) if len(tw) > 1 else 1.0 / config.CONTROL_HZ
-        fb = deaf = 0
-        for i in np.nonzero(ok)[0]:
-            toks = flag_tokens(log["flags"][i])
-            vocab.update(toks)
-            fb += (log["status"][i] == "fallback") or any("fallback" in x for x in toks)
-            deaf += any("deaf" in x for x in toks)
-        out[str(aid)] = {"fallback_s": fb * dt, "deaf_s": deaf * dt}
-    return out, sorted(vocab)
+# -------------------------------------------------------------------------- churn
+
+def count_changes(run, assigns, start_s, end_s):
+    """Assignment changes of live agents in [start_s, end_s), from the ground's "changed" lists."""
+    count = 0
+    for e in assigns:
+        if start_s <= e["t_mission"] < end_s:
+            live = [a for a in e["changed"] if e["t_mission"] < run.live_until(a)]
+            count += len(live)
+    return count
 
 
-def control_rate(run, mission_s):
-    """Per agent: log period stats from t_wall deltas over rows with 0 <= t_mission <= mission_s."""
+def live_minutes(run, start_s, end_s):
+    seconds = sum(max(0.0, min(end_s, run.live_until(a)) - start_s) for a in run.agents)
+    return seconds / 60.0
+
+
+def epoch_mismatches(run, assigns):
+    """Agents whose own log shows a different number of epoch changes than the ground's
+    re-plans while they were live. {agent: [ground re-plans, epoch changes in the log]}"""
     out = {}
-    for aid, log in run.agents.items():
-        t = log["t_mission"]
-        ok = np.isfinite(t) & (t >= 0) & (t <= mission_s)
-        d = np.diff(log["t_wall"][ok])
-        if len(d) == 0:
-            out[str(aid)] = None
-            continue
-        out[str(aid)] = {"rows": int(ok.sum()), "mean_period_s": float(d.mean()),
-                         "rate_hz": float(1.0 / d.mean()) if d.mean() > 0 else None,
-                         "p99_period_s": float(np.percentile(d, 99)), "max_period_s": float(d.max())}
+    for agent_id, log in run.agents.items():
+        epochs = log["epoch"][mission_rows(run, agent_id)]
+        changes = int(np.count_nonzero(np.diff(epochs)))
+        replans = sum(1 for e in assigns if e["t_mission"] < run.live_until(agent_id))
+        if changes != replans:
+            out[str(agent_id)] = [replans, changes]
     return out
 
 
-# ------------------------------------------------------------------------------ driver
-
-def _pct(x):
-    return None if x is None else 100.0 * x
-
-
-def compute(run, cell=CELL_M):
-    """All metrics for a loaded Run. Returns (metrics dict, series dict for files/plots)."""
-    mission_s = float(run.meta_get("mission_s", config.MISSION_S))
-    if "mission_s" not in run.meta:
-        run.warn(f"mission_s not in meta.json; using config.MISSION_S = {mission_s}")
-    victim = run.meta.get("kill_agent")
-    t_loss = loss_time(run)
-    if t_loss is None:
-        run.warn("kill_t_mission unknown: loss-relative metrics are null")
-    n = int(run.meta_get("n", len(run.agents)))
-    agent_ids = sorted(run.agents)
-
-    grid = Grid(cell)
-    samples = coverage_samples(run, mission_s)
-    ticks, cov = coverage_series(grid, samples, mission_s)
-
-    m = {"run": run.name, "seed": run.meta.get("seed"), "backend": run.meta.get("backend"),
-         "n_agents": n, "agents_logged": agent_ids, "victim": victim, "t_loss_s": t_loss,
-         "mission_s": mission_s, "cell_m": cell, "window_s": WINDOW_S,
-         "sensor": {"product": sensor.PRODUCT, "hfov_deg": sensor.HFOV_DEG,
-                    "vfov_deg": round(sensor.VFOV_DEG, 2),
-                    "footprint_60m_m": [round(v, 2) for v in sensor.footprint_size(60.0)],
-                    # informational only: coverage uses the logged z of every sample
-                    "alt_nominal_m": float(run.meta.get("alt_nominal", 60.0)),
-                    "footprint_nominal_m": [round(v, 2) for v in sensor.footprint_size(
-                        float(run.meta.get("alt_nominal", 60.0)))]},
-         "n_samples": int(len(samples)), "definitions": __doc__}
-
-    t_lost_decl = lost_declared_time(run, victim, t_loss) if victim is not None else None
-    loss = None
-    phases = {"overall": (0.0, mission_s), "pre": None, "post": None}
-    if t_loss is not None:
-        P = pre_loss_value(ticks, cov, t_loss)
-        ideal = None if P is None else P * (n - 1) / n
-        rec_a = recovery_time(ticks, cov, t_loss, None if P is None else RECOVERY_FRAC * P)
-        rec_b = recovery_time(ticks, cov, t_loss, None if ideal is None else RECOVERY_FRAC * ideal)
-        cmin, tmin = dip(ticks, cov, t_loss)
-        sens = {}
-        for label, val in (("mean_5s", pre_loss_value(ticks, cov, t_loss, 5.0)),
-                           ("mean_10s", P),
-                           ("mean_20s", pre_loss_value(ticks, cov, t_loss, 20.0)),
-                           ("at_loss", float(np.interp(t_loss, ticks, cov)))):
-            if val is None:
-                sens[label] = None
-                continue
-            sens[label] = {"pre_loss_pct": _pct(val),
-                           "recovery_a_s": recovery_time(ticks, cov, t_loss, RECOVERY_FRAC * val),
-                           "recovery_b_s": recovery_time(ticks, cov, t_loss,
-                                                         RECOVERY_FRAC * val * (n - 1) / n)}
-        phases["pre"] = (0.0, float(t_loss))
-        post_a = t_loss + max(WINDOW_S, rec_b if rec_b is not None else 0.0)
-        if mission_s - post_a >= HOLD_S:
-            phases["post"] = (float(post_a), mission_s)
-        post_cov = None
-        if phases["post"]:
-            sel = (ticks >= phases["post"][0]) & (ticks <= phases["post"][1])
-            post_cov = float(np.mean(cov[sel]))
-        loss = {"pre_loss_pct": _pct(P),
-                "pre_loss_definition": f"mean coverage(t) for {t_loss - PRE_WINDOW_S:.0f} <= t < {t_loss:.0f} s",
-                "warmup_incomplete": bool(t_loss - PRE_WINDOW_S < WINDOW_S),
-                "ideal_survivor_pct": _pct(ideal),
-                "recovery_a_s": rec_a, "recovery_a_threshold_pct": _pct(None if P is None else RECOVERY_FRAC * P),
-                "recovery_b_s": rec_b, "recovery_b_threshold_pct": _pct(None if ideal is None else RECOVERY_FRAC * ideal),
-                "recovered_a": rec_a is not None, "recovered_b": rec_b is not None,
-                "dip_min_pct": _pct(cmin), "dip_min_t_s": tmin,
-                "lost_declared_t_s": t_lost_decl,
-                "detection_delay_s": None if t_lost_decl is None else t_lost_decl - t_loss,
-                "recovery_after_declared_a_s": None if (rec_a is None or t_lost_decl is None) else t_loss + rec_a - t_lost_decl,
-                "recovery_after_declared_b_s": None if (rec_b is None or t_lost_decl is None) else t_loss + rec_b - t_lost_decl,
-                "post_coverage_pct": _pct(post_cov),
-                "post_vs_ideal_ratio": None if (post_cov is None or not ideal) else post_cov / ideal,
-                "post_minus_ideal_pct_points": None if (post_cov is None or ideal is None) else _pct(post_cov - ideal),
-                "pre_loss_sensitivity": sens}
-        if t_lost_decl is None:
-            run.warn("no ground 'liveness ... lost' event for the victim: detection delay unknown")
-    m["loss"] = loss
-    m["phases_s"] = phases
-
-    gaps, maps = {}, {}
-    for name, ph in phases.items():
-        if ph is None:
-            gaps[name] = None
-            continue
-        g, never, age = phase_gaps_and_age(grid, samples, ph[0], ph[1],
-                                           from_first_sighting=(ph[0] == 0.0))
-        gaps[name] = gap_summary(g, never, age)
-        maps[name] = g
-    m["revisit_gap"] = gaps
-
-    pre_w = phases["pre"]
-    m["churn"] = churn(run, agent_ids, victim, t_loss, mission_s,
-                       {"pre": (pre_w[0], pre_w[1] - 1e-9) if pre_w else None,
-                        "post": phases["post"], "overall": phases["overall"]}, t_lost_decl)
-
-    tsep, sep = separation_series(run, mission_s)
-    below = np.nan_to_num(sep, nan=np.inf) < config.D_MIN
-    k = int(np.nanargmin(sep)) if np.isfinite(sep).any() else None
-    infeas = run.events("infeasible")
-    fl, vocab = flag_times(run, mission_s)
-    m["safety"] = {"min_separation_m": None if k is None else float(sep[k]),
-                   "min_separation_t_s": None if k is None else float(tsep[k]),
-                   "time_below_d_min_s": float(below.sum() * SEP_DT), "d_min_m": config.D_MIN,
-                   "infeasible_reports": len(infeas),
-                   "infeasible_by_reason": _count(e.get("reason") for e in infeas),
-                   "flag_time_s": fl, "flag_tokens_seen": vocab}
-    m["control_rate"] = control_rate(run, mission_s)
-    m["radio"] = run.radio[-1] if run.radio else None
-    m["warnings"] = run.warnings
-    series = {"ticks": ticks, "coverage": cov, "t_sep": tsep, "sep": sep, "maps": maps, "grid": grid}
-    return m, series
-
-
-def _count(items):
+def churn_block(run):
+    """Changes per live agent per minute; the initial assignment (t <= 0) is not counted."""
+    assigns = [e for e in run.events("assign")
+               if e["t_mission"] is not None and e["t_mission"] > 0.0]
+    if run.victim is None:
+        windows = {"whole": (0.0, run.end_s)}
+    else:
+        windows = {"before": (0.0, run.loss_s), "after": (run.loss_s, run.end_s)}
     out = {}
-    for x in items:
-        out[str(x)] = out.get(str(x), 0) + 1
+    for name, (start_s, end_s) in windows.items():
+        changes = count_changes(run, assigns, start_s, end_s)
+        out[name + "_per_agent_min"] = changes / live_minutes(run, start_s, end_s)
+    triggers = [e["trigger"] for e in assigns]
+    out["replans_by_trigger"] = {name: triggers.count(name) for name in sorted(set(triggers))}
+    if run.victim is not None:
+        replan = loss_replan(run)
+        forced = count_changes(run, [replan], 0.0, math.inf) if replan else 0
+        after_loss = count_changes(run, assigns, run.loss_s, run.end_s)
+        out["extra_changes_after_loss"] = after_loss - forced
+    out["epoch_mismatch"] = epoch_mismatches(run, assigns)
     return out
 
 
-def write_outputs(run_dir, m, series):
+# ------------------------------------------------------------------ safety, control
+
+def separation_series(run):
+    """Time grid (s, from the first log row) and {(a, b): true 3D distance} for every pair.
+
+    NaN where either agent has no log yet, or no longer counts (after the end or the loss).
+    """
+    t_first = min(log["t"][0] for log in run.agents.values())
+    times = np.arange(t_first, run.end_s, STEP_S)
+    positions = {}
+    for agent_id, log in run.agents.items():
+        rows = log["t"] <= run.live_until(agent_id)
+        positions[agent_id] = np.array([
+            np.interp(times, log["t"][rows], log[axis][rows], left=np.nan, right=np.nan)
+            for axis in ("x", "y", "z")])
+    pairs = {}
+    for a, b in itertools.combinations(positions, 2):
+        pairs[(a, b)] = np.linalg.norm(positions[a] - positions[b], axis=0)
+    return times, pairs
+
+
+def flag_seconds(log, rows, flag):
+    """Seconds the agent carried a flag: each flagged row counts until the next row."""
+    row_s = np.diff(log["t"], append=log["t"][-1])
+    flagged = np.array([flag in flags.split("|") for flags in log["flags"]], dtype=bool)
+    return float(np.sum(row_s[rows & flagged]))
+
+
+def safety_block(run):
+    times, pairs = separation_series(run)
+    closest = np.fmin.reduce(np.array(list(pairs.values())), axis=0)   # NaN only if no pair
+    per_agent = {}
+    for agent_id, log in run.agents.items():
+        rows = mission_rows(run, agent_id)
+        per_agent[str(agent_id)] = {flag + "_s": flag_seconds(log, rows, flag)
+                                    for flag in ("blocked", "brake", "deaf")}
+    infeasible = run.events("infeasible")
+    accepted = sum(1 for e in infeasible if e["accepted"])
+    out = {"min_separation_m": float(np.nanmin(closest)),
+           "min_separation_from_10s_m": float(np.nanmin(closest[times > SAFETY_FROM_S])),
+           "below_d_min_s": float(np.count_nonzero(closest < config.D_MIN_M)) * STEP_S,
+           "infeasible_accepted": accepted,
+           "infeasible_ignored": len(infeasible) - accepted,
+           "per_agent": per_agent}
+    for flag in ("blocked", "brake", "deaf"):
+        out[flag + "_s"] = sum(agent[flag + "_s"] for agent in per_agent.values())
+    return out
+
+
+def control_block(run):
+    """Setpoint rate from the wall-clock spacing of log rows (one row per control tick)."""
+    rates, p99s, longest, speeds = [], [], [], []
+    for agent_id, log in run.agents.items():
+        rows = mission_rows(run, agent_id)
+        periods = np.diff(log["t_wall"][rows])
+        rates.append(1.0 / np.mean(periods))
+        p99s.append(np.percentile(periods, 99))
+        longest.append(np.max(periods))
+        speeds.append(np.max(np.hypot(log["vx"][rows], log["vy"][rows])))
+    return {"min_rate_hz": float(min(rates)), "max_p99_period_s": float(max(p99s)),
+            "max_period_s": float(max(longest)), "max_ground_speed_ms": float(max(speeds))}
+
+
+# ---------------------------------------------------------------- missions B and C
+
+def longest_unseen(sightings_list, end_s):
+    """Per cell: the longest time without a sighting in [0, end_s], including the time before
+    the first sighting and after the last one."""
+    last = np.zeros(CELL_X_M.size)
+    longest = np.zeros(CELL_X_M.size)
+    for t, cells in sightings_list:
+        longest[cells] = np.maximum(longest[cells], t - last[cells])
+        last[cells] = t
+    return np.maximum(longest, end_s - last)
+
+
+def priority_zone_block(run, sightings_list, ticks):
+    xmin, ymin, xmax, ymax = run.meta["priority_zone"]
+    zone = (CELL_X_M >= xmin) & (CELL_X_M <= xmax) & (CELL_Y_M >= ymin) & (CELL_Y_M <= ymax)
+    fresh = percent_fresh(sightings_list, ticks, config.PRIORITY_REVISIT_S, zone)
+    return {"zone": [xmin, ymin, xmax, ymax],
+            "longest_unseen_s": float(longest_unseen(sightings_list, run.end_s)[zone].max()),
+            "limit_s": config.PRIORITY_REVISIT_S,
+            "whole_zone_fresh_pct": 100.0 * float(np.mean(fresh == 100.0))}
+
+
+def blackout_block(run, safety):
+    blackout = run.meta["blackout"]
+    agent_id = blackout["agent"]
+    log = run.agents[agent_id]
+    replans = [e for e in run.events("assign")
+               if e["t_mission"] is not None and e["t_mission"] >= blackout["t0"]]
+    in_cover = (log["t"] >= blackout["t1"]) & (np.array(log["status"]) == "cover")
+    back_s = first_time(log["t"], in_cover)
+    return {"agent": agent_id,
+            "blackout_s": [blackout["t0"], blackout["t1"]],
+            "declared_lost": run.lost_declared_s(agent_id) is not None,
+            "replans_from_blackout": len(replans),
+            "deaf_s": safety["per_agent"][str(agent_id)]["deaf_s"],
+            "back_in_cover_after_s": None if back_s is None else back_s - blackout["t1"]}
+
+
+def radio_block(total):
+    """The radio's totals, plus the loss rate over the copies it did not drop for a window."""
+    out = dict(total)
+    out["loss_pct"] = 100.0 * total["dropped_loss"] / (total["sent"] - total["dropped_window"])
+    return out
+
+
+# ------------------------------------------------------------------------- driver
+
+def compute(run):
+    """All metrics of a run. Returns (metrics dict, ticks, coverage % per tick)."""
+    seen = sightings(run)
+    ticks = np.arange(0.0, math.floor(run.end_s) + TICK_S, TICK_S)
+    coverage = percent_fresh(seen, ticks, WINDOW_S, ALL_CELLS)
+    meta = run.meta
+    m = {"run": run.name, "mission": meta["mission"], "scenario": meta["scenario"],
+         "seed": meta["seed"], "n": meta["n"], "backend": meta["backend"],
+         "victim": run.victim, "end_s": run.end_s,
+         "coverage": coverage_block(ticks, coverage, run.end_s),
+         "loss": None, "revisit": None, "mission_b": None, "mission_c": None}
+    if run.victim is not None:
+        m["loss"] = loss_block(run, ticks, coverage)
+        lost_declared_s = m["loss"]["lost_declared_s"]
+        m["revisit"] = {"before": revisit_block(seen, 0.0, run.loss_s), "after": None}
+        if lost_declared_s is not None:
+            m["revisit"]["after"] = revisit_block(seen, lost_declared_s, run.end_s)
+    m["churn"] = churn_block(run)
+    m["safety"] = safety_block(run)
+    m["control"] = control_block(run)
+    m["radio"] = radio_block(run.radio["total"])
+    if meta["mission"] == "B":
+        m["mission_b"] = priority_zone_block(run, seen, ticks)
+    if meta["mission"] == "C":
+        m["mission_c"] = blackout_block(run, m["safety"])
+    return m, ticks, coverage
+
+
+def analyse(run_dir):
+    m, ticks, coverage = compute(load_run(run_dir))
     with open(os.path.join(run_dir, "metrics.json"), "w") as f:
-        json.dump(m, f, indent=1, default=float)
+        json.dump(m, f, indent=1)
     with open(os.path.join(run_dir, "coverage.csv"), "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["t_mission_s", "coverage_pct"])
-        for t, c in zip(series["ticks"], series["coverage"]):
-            w.writerow([f"{t:.1f}", f"{100 * c:.3f}"])
-    with open(os.path.join(run_dir, "separation.csv"), "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["t_mission_s", "min_separation_m"])
-        for t, d in zip(series["t_sep"], series["sep"]):
-            w.writerow([f"{t:.1f}", "" if not np.isfinite(d) else f"{d:.3f}"])
-    g = series["grid"]
-    np.savez_compressed(os.path.join(run_dir, "gapmaps.npz"), extent=np.array(g.extent),
-                        cell=g.cell, **{k: v.astype(np.float32) for k, v in series["maps"].items()})
+        writer = csv.writer(f)
+        writer.writerow(["t_s", "coverage_pct"])
+        for t, c in zip(ticks, coverage):
+            writer.writerow([f"{t:.0f}", f"{c:.3f}"])
+    return m
 
 
-def analyse(run_dir, cell=CELL_M):
-    run = load_run(run_dir)
-    m, series = compute(run, cell)
-    write_outputs(run_dir, m, series)
-    return m, series
-
-
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("run_dir")
-    ap.add_argument("--cell", type=float, default=CELL_M, help="grid cell size, m (default 2)")
-    a = ap.parse_args(argv)
-    try:
-        m, _ = analyse(a.run_dir, a.cell)
-    except RunLoadError as e:
-        sys.exit(f"error: {e}")
-    for w in m["warnings"]:
-        print("warning:", w)
-    L = m["loss"] or {}
-    print(f"{m['run']}: pre-loss {L.get('pre_loss_pct')}, recovery a {L.get('recovery_a_s')} s, "
-          f"b {L.get('recovery_b_s')} s, min sep {m['safety']['min_separation_m']} m")
+def read_coverage_csv(run_dir):
+    """(ticks, coverage %) as written by analyse()."""
+    data = np.loadtxt(os.path.join(run_dir, "coverage.csv"), delimiter=",", skiprows=1, ndmin=2)
+    return data[:, 0], data[:, 1]
 
 
 if __name__ == "__main__":
-    main()
+    result = analyse(sys.argv[1])
+    print(f"{result['run']}: coverage from 60 s {result['coverage']['mean_from_60s_pct']:.1f} %,"
+          f" min separation {result['safety']['min_separation_m']:.1f} m")

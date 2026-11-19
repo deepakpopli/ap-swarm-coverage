@@ -1,4 +1,4 @@
-"""Hand-checkable tests for swarm/sensor.py and analysis/*. Run: python -m pytest -q tests"""
+"""Hand-checkable tests of swarm/sensor.py and analysis/. Runs are built in memory."""
 import json
 import math
 import os
@@ -7,184 +7,281 @@ import unittest
 
 import numpy as np
 
-from swarm import config, sensor
-from analysis import logs, metrics, synth
-from analysis.logs import AGENT_COLUMNS, AgentLog, Run
+from analysis import logs, metrics, report
+from analysis.logs import TEXT_COLUMNS, Run
+from swarm import sensor
+from swarm.protocol import AGENT_CSV_COLUMNS
+
+T0_WALL = 1000.0
+STEP_S = 0.05          # 20 Hz rows
 
 
-def make_log(aid, track, status="cover"):
-    """track: list of (t, x, y, z, yaw). t_wall = 1000 + t."""
-    cols = {c: np.full(len(track), np.nan) for c in AGENT_COLUMNS if c not in logs.TEXT_COLUMNS}
-    arr = np.array(track, dtype=float).reshape(-1, 5)
-    for j, c in enumerate(("t_mission", "x", "y", "z", "yaw")):
-        cols[c] = arr[:, j]
-    cols["t_wall"] = 1000.0 + arr[:, 0]
-    cols["status"] = [status] * len(track)
-    cols["flags"] = [""] * len(track)
-    return AgentLog(aid, cols, 0)
+def track(t_from, t_to, x, y, z=50.0, yaw=0.0):
+    """Rows (t, x, y, z, yaw) of an agent holding still at x, y from t_from until before t_to."""
+    count = int(round((t_to - t_from) / STEP_S))
+    return [(round(t_from + k * STEP_S, 6), x, y, z, yaw) for k in range(count)]
 
 
-def make_run(tracks, meta=None, ground=None):
-    run = Run("mem")
-    run.agents = {aid: make_log(aid, tr) for aid, tr in tracks.items()}
-    run.meta = meta or {}
-    run.ground = ground or []
+def agent_log(rows, flags=""):
+    """The columns logs.read_agent_log would return for these rows."""
+    rows = np.array(rows, dtype=float)
+    log = {name: np.zeros(len(rows)) for name in AGENT_CSV_COLUMNS if name not in TEXT_COLUMNS}
+    for i, name in enumerate(("t", "x", "y", "z", "yaw")):
+        log[name] = rows[:, i]
+    log["t_mission"] = log["t"]
+    log["t_wall"] = T0_WALL + log["t"]
+    log["epoch"] = np.ones(len(rows))
+    log["status"] = ["cover"] * len(rows)
+    log["flags"] = [flags] * len(rows)
+    return log
+
+
+def make_run(agents, ground=(), **meta):
+    full_meta = {"mission": "A", "scenario": None, "seed": 1, "n": len(agents),
+                 "backend": "gazebo", "mission_s": 180.0, "t0_wall": T0_WALL,
+                 "kill_agent": None, "kill_wall": None, "blackout": None, "priority_zone": None}
+    full_meta.update(meta)
+    radio = {"total": {"sent": 100, "delivered": 80, "dropped_loss": 20, "dropped_window": 0,
+                       "delay_mean_s": 0.2, "delay_max_s": 0.21}}
+    return Run("test", full_meta, agents, list(ground), radio)
+
+
+def assign(t, epoch, trigger, changed, assignments=None):
+    return {"event": "assign", "t_mission": t, "epoch": epoch, "trigger": trigger,
+            "changed": changed, "assignments": assignments or {}, "uncovered": None}
+
+
+def lost(t, agent):
+    return {"event": "liveness", "t_mission": t, "agent": agent, "from": "suspect", "to": "lost",
+            "status": "cover"}
+
+
+def cell_at(x, y):
+    """Flat index of the grid cell containing the point x, y."""
+    return int(np.argmin(np.hypot(metrics.CELL_X_M - x, metrics.CELL_Y_M - y)))
+
+
+class SensorTest(unittest.TestCase):
+    def test_footprint_at_50m(self):
+        across_m, along_m = sensor.footprint_size(50.0)
+        self.assertAlmostEqual(across_m, 100.0 * math.tan(math.radians(40.5)))   # 85.4 m
+        self.assertAlmostEqual(along_m, across_m * 9.0 / 16.0)                   # 48.0 m
+        self.assertEqual(sensor.lane_footprint(50.0), (85.0, 48.0))
+        self.assertEqual(sensor.lane_footprint(60.0), (102.0, 57.0))
+
+    def test_yaw_turns_the_wide_side(self):
+        # 40 m east of the camera: inside when heading north (half width 42.7 m),
+        # outside when heading east (then east is along track, half length 24.0 m).
+        point = (np.array([140.0]), np.array([100.0]))
+        self.assertTrue(sensor.seen_mask(*point, 100.0, 100.0, 50.0, 0.0)[0])
+        self.assertFalse(sensor.seen_mask(*point, 100.0, 100.0, 50.0, math.pi / 2)[0])
+
+    def test_polygon_area(self):
+        x, y = np.array(sensor.footprint_polygon(100.0, 100.0, 50.0, 0.3)).T
+        area = 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+        self.assertAlmostEqual(area, np.prod(sensor.footprint_size(50.0)), places=6)
+
+
+def coverage_of(run):
+    ticks = np.arange(0.0, 181.0)
+    seen = metrics.sightings(run)
+    return ticks, metrics.percent_fresh(seen, ticks, metrics.WINDOW_S, metrics.ALL_CELLS)
+
+
+class CoverageTest(unittest.TestCase):
+    def test_one_hovering_drone_covers_its_footprint(self):
+        run = make_run({1: agent_log(track(0.0, 180.0, 150.0, 150.0))})
+        ticks, coverage = coverage_of(run)
+        expected = 100.0 * np.prod(sensor.footprint_size(50.0)) / 300.0 ** 2     # 4.56 %
+        self.assertAlmostEqual(coverage[0], expected, delta=0.02 * expected)
+        self.assertAlmostEqual(coverage[180], coverage[0])
+
+    def test_rows_before_the_start_do_not_count(self):
+        run = make_run({1: agent_log(track(-30.0, 0.0, 150.0, 150.0))})
+        _, coverage = coverage_of(run)
+        self.assertEqual(coverage.max(), 0.0)
+
+
+class RevisitGapTest(unittest.TestCase):
+    """The drone sits over A (x = 60) for [0, 10), over B (x = 240) for [10, 40), over A again
+    for [40, 50). The two footprints do not overlap."""
+
+    def setUp(self):
+        rows = (track(0.0, 10.0, 60.0, 150.0) + track(10.0, 40.0, 240.0, 150.0)
+                + track(40.0, 50.0, 60.0, 150.0))
+        self.seen = metrics.sightings(make_run({1: agent_log(rows)}))
+        self.a = cell_at(61.0, 151.0)
+        self.b = cell_at(241.0, 151.0)
+
+    def test_completed_gaps(self):
+        longest, last = metrics.revisit_gaps(self.seen, 0.0, 50.0)
+        self.assertAlmostEqual(longest[self.a], 30.05)      # last seen 9.95, again at 40.0
+        self.assertAlmostEqual(longest[self.b], 0.05)       # seen every row while there
+        self.assertAlmostEqual(last[self.b], 39.95)
+        self.assertTrue(np.isnan(longest[cell_at(150.0, 150.0)]))   # never seen
+
+    def test_gap_must_start_inside_the_phase(self):
+        longest, _ = metrics.revisit_gaps(self.seen, 20.0, 50.0)
+        self.assertAlmostEqual(longest[self.a], 0.05)       # 9.95 is before the phase
+        block = metrics.revisit_block(self.seen, 20.0, 50.0)
+        self.assertAlmostEqual(block["worst_open_s"], 50.0)  # a cell never seen: open since 0
+
+
+class LossTest(unittest.TestCase):
+    ticks = np.arange(0.0, 181.0)
+
+    def coverage_with_dip(self, low_from, low_to, low=50.0):
+        coverage = np.full(len(self.ticks), 90.0)
+        coverage[(self.ticks >= low_from) & (self.ticks < low_to)] = low
+        return coverage
+
+    def test_recovery(self):
+        self.assertEqual(metrics.recovery_time(self.ticks, self.coverage_with_dip(100, 130),
+                                               90.5, 81.0), 39.5)
+        self.assertEqual(metrics.recovery_time(self.ticks, self.coverage_with_dip(100, 130),
+                                               90.5, 40.0), 0.0)        # never below 40
+        self.assertIsNone(metrics.recovery_time(self.ticks, self.coverage_with_dip(100, 999),
+                                                90.5, 81.0))           # still low at the end
+        self.assertIsNone(metrics.recovery_time(self.ticks, self.coverage_with_dip(100, 175),
+                                                90.5, 81.0))           # back for only 5 s
+
+    def test_phases_and_deficit(self):
+        run = make_run({1: agent_log(track(0, 1, 0, 0))}, n=3, kill_agent=3,
+                       kill_wall=T0_WALL + 100.5)
+        coverage = self.coverage_with_dip(110, 130)
+        coverage[self.ticks < 41] = 0.0                     # outside the before window
+        coverage[self.ticks >= 161] = 70.0                  # the after phase starts at 160.5
+        loss = metrics.loss_block(run, self.ticks, coverage)
+        self.assertAlmostEqual(loss["before_pct"], 90.0)    # ticks 41..100
+        self.assertAlmostEqual(loss["share_pct"], 60.0)
+        self.assertAlmostEqual(loss["after_mean_pct"], 70.0)
+        self.assertAlmostEqual(loss["deficit_pct_s"], 20 * 40.0 + 20 * 20.0)
+        self.assertEqual(loss["dip_pct"], 50.0)
+        self.assertIsNone(loss["recovery_s"])
+        self.assertEqual(loss["recovery_to_share_s"], 29.5)  # 0.9 x 60 = 54: back at t = 130
+        self.assertTrue(loss["before_window_partial"])      # 100.5 - 60 < 60
+
+
+class ChurnTest(unittest.TestCase):
+    def test_counting(self):
+        ground = [assign(None, 1, "initial", [1, 2, 3]),     # before the start: not counted
+                  assign(30.0, 2, "infeasible", [2]),
+                  lost(72.0, 3),
+                  assign(72.0, 3, "lost", [1, 2, 3]),        # 3 is dead by then: not counted
+                  assign(120.0, 4, "infeasible", [1])]
+        agents = {a: agent_log(track(0.0, 180.0, 50.0 * a, 0.0)) for a in (1, 2, 3)}
+        run = make_run(agents, ground, kill_agent=3, kill_wall=T0_WALL + 60.0)
+        churn = metrics.churn_block(run)
+        self.assertAlmostEqual(churn["before_per_agent_min"], 1 / 3.0)   # 1 change, 3 agent-min
+        self.assertAlmostEqual(churn["after_per_agent_min"], 3 / 4.0)    # 3 changes, 2 x 2 min
+        self.assertEqual(churn["replans_by_trigger"], {"infeasible": 2, "lost": 1})
+        self.assertEqual(churn["extra_changes_after_loss"], 1)
+        self.assertEqual(churn["epoch_mismatch"]["1"], [3, 0])           # logs stayed at 1
+
+
+class SafetyTest(unittest.TestCase):
+    def test_separation_ignores_the_start_line(self):
+        a = track(-5.0, 180.0, 100.0, 0.0)
+        b = track(-5.0, 0.0, 110.0, 0.0) + track(0.0, 180.0, 150.0, 0.0)
+        b = [(t, 107.0 if 5.0 <= t < 6.0 else x, y, z, yaw) for t, x, y, z, yaw in b]
+        safety = metrics.safety_block(make_run({1: agent_log(a), 2: agent_log(b)}))
+        self.assertAlmostEqual(safety["min_separation_m"], 7.0)
+        self.assertAlmostEqual(safety["min_separation_from_10s_m"], 50.0)
+        self.assertAlmostEqual(safety["below_d_min_s"], 1.0, delta=STEP_S)
+
+    def test_flag_time(self):
+        log = agent_log(track(0.0, 10.0, 0.0, 0.0), flags="filtered|deaf")
+        rows = np.ones(len(log["t"]), dtype=bool)
+        self.assertAlmostEqual(metrics.flag_seconds(log, rows, "deaf"), 9.95)
+        self.assertEqual(metrics.flag_seconds(log, rows, "blocked"), 0.0)
+
+
+class MissionTest(unittest.TestCase):
+    def test_priority_zone_gap(self):
+        rows = (track(0.0, 20.0, 150.0, 150.0) + track(20.0, 51.0, 250.0, 250.0)
+                + track(51.0, 180.0, 150.0, 150.0))
+        run = make_run({1: agent_log(rows)}, mission="B", priority_zone=[140, 140, 160, 160])
+        zone = metrics.priority_zone_block(run, metrics.sightings(run), np.arange(0.0, 181.0))
+        self.assertAlmostEqual(zone["longest_unseen_s"], 31.05)            # over the 30 s limit
+        # whole zone seen within 30 s at every tick except t = 50 (last seen 19.95)
+        self.assertAlmostEqual(zone["whole_zone_fresh_pct"], 100.0 * 180 / 181)
+
+    def test_blackout(self):
+        log = agent_log(track(0.0, 180.0, 50.0, 50.0), flags="")
+        deaf = (log["t"] >= 60.0) & (log["t"] < 75.0)
+        log["flags"] = ["deaf" if d else "" for d in deaf]
+        log["status"] = ["hold" if d else "cover" for d in deaf]
+        other = agent_log(track(0.0, 180.0, 250.0, 250.0))
+        run = make_run({1: log, 2: other}, mission="C",
+                       blackout={"agent": 1, "t0": 60.0, "t1": 70.0})
+        m, _, _ = metrics.compute(run)
+        c = m["mission_c"]
+        self.assertFalse(c["declared_lost"])
+        self.assertEqual(c["replans_from_blackout"], 0)
+        self.assertAlmostEqual(c["deaf_s"], 15.0)
+        self.assertAlmostEqual(c["back_in_cover_after_s"], 5.0)
+
+
+def write_run_dir(path, run):
+    """Write an in-memory run as the files a real run leaves, with a cut-off last log line."""
+    os.makedirs(path)
+    with open(os.path.join(path, "meta.json"), "w") as f:
+        json.dump(run.meta, f)
+    for agent_id, log in run.agents.items():
+        with open(os.path.join(path, f"agent_{agent_id}.csv"), "w") as f:
+            f.write(",".join(AGENT_CSV_COLUMNS) + "\n")
+            for i in range(len(log["t"])):
+                f.write(",".join(str(log[name][i]) for name in AGENT_CSV_COLUMNS) + "\n")
+            f.write("1234.5,12")                          # what a SIGKILL can leave
+    with open(os.path.join(path, "ground.jsonl"), "w") as f:
+        f.writelines(json.dumps(e) + "\n" for e in run.ground)
+    with open(os.path.join(path, "radio.jsonl"), "w") as f:
+        f.write(json.dumps({"event": "config"}) + "\n")
+        f.write(json.dumps(dict(run.radio, event="stats", pairs={})) + "\n")
+
+
+def loss_run(seed):
+    """Three agents hovering apart; agent 3 is lost at 80 s and declared lost at 92 s."""
+    agents = {}
+    for a in (1, 2, 3):
+        end_s = 80.0 if a == 3 else 180.0
+        agents[a] = agent_log(track(0.0, end_s, 50.0 + 100.0 * (a - 1), 150.0))
+        agents[a]["epoch"] = np.where(agents[a]["t"] >= 93.0, 2.0, 1.0)
+    new_plan = {"1": {"share": [0, 150, 0, 300], "slots": [], "loop_from": 0},
+                "2": {"share": [150, 300, 0, 300], "slots": [], "loop_from": 0}}
+    ground = [assign(None, 1, "initial", [1, 2, 3]), lost(92.0, 3),
+              assign(92.0, 2, "lost", [1, 2], new_plan)]
+    run = make_run(agents, ground, seed=seed, kill_agent=3, kill_wall=T0_WALL + 80.0)
+    run.name = f"seed_{seed}"
     return run
 
 
-def hover(t0, t1, x, y, z=60.0, yaw=0.0, dt=0.1):
-    n = int(round((t1 - t0) / dt))
-    return [(t0 + k * dt, x, y, z, yaw) for k in range(n)]
+class ReportTest(unittest.TestCase):
+    def test_two_runs_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dirs = []
+            for seed in (1, 2):
+                run_dirs.append(os.path.join(tmp, f"seed_{seed}"))
+                write_run_dir(run_dirs[-1], loss_run(seed))
+            loaded = logs.load_run(run_dirs[0])
+            self.assertEqual(len(loaded.agents[1]["t"]), 3600)   # cut-off line dropped
+            m = metrics.analyse(run_dirs[0])
+            self.assertEqual(m["loss"]["milestones_s"]["lost_declared"], 12.0)
+            self.assertEqual(m["loss"]["milestones_s"]["assignment_received"], 13.0)
+            out = os.path.join(tmp, "set")
+            report.write_set(out, "test set", run_dirs, [], [])
+            with open(os.path.join(out, "results.md")) as f:
+                text = f.read()
+            self.assertIn("2 of 2 runs recovered", text)
+            self.assertTrue(os.path.exists(os.path.join(out, "runs", "seed_2.json")))
+            report.write_comparison([out, out])
+            self.assertTrue(os.path.exists(os.path.join(tmp, "comparison.md")))
 
-
-class TestSensor(unittest.TestCase):
-    def test_footprint_60m(self):
-        across, along = sensor.footprint_size(60.0)
-        self.assertAlmostEqual(across, 120 * math.tan(math.radians(40.5)), places=6)   # 102.5 m
-        self.assertAlmostEqual(along, across * 9 / 16, places=6)                      # 57.7 m
-        self.assertAlmostEqual(sensor.VFOV_DEG, 51.3, places=1)
-
-    def test_yaw_rotates_wide_axis(self):
-        # 50 m east of the camera: inside when heading north (across half-width 51.2 m),
-        # outside when heading east (then east is along track, half-length 28.8 m).
-        self.assertTrue(sensor.seen_mask(np.array([150.0]), np.array([100.0]), 100, 100, 60, 0.0)[0])
-        self.assertFalse(sensor.seen_mask(np.array([150.0]), np.array([100.0]), 100, 100, 60, math.pi / 2)[0])
-
-    def test_polygon_matches_mask(self):
-        poly = np.array(sensor.footprint_polygon(100, 100, 60, 0.3))
-        x, y = poly[:, 0], poly[:, 1]
-        area = 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
-        self.assertAlmostEqual(area, np.prod(sensor.footprint_size(60)), places=3)
-        inner = poly.mean(axis=0) * 0.0 + 0.999 * poly + 0.001 * poly.mean(axis=0)
-        self.assertTrue(sensor.seen_mask(inner[:, 0], inner[:, 1], 100, 100, 60, 0.3).all())
-
-
-class TestCoverage(unittest.TestCase):
-    def test_single_hover_equals_footprint_fraction(self):
-        run = make_run({1: hover(0, 120, 150, 150)})
-        grid = metrics.Grid(1.0)
-        ticks, cov = metrics.coverage_series(grid, metrics.coverage_samples(run, 180), 180)
-        expected = np.prod(sensor.footprint_size(60)) / (300 * 300)        # 6.57 %
-        self.assertAlmostEqual(cov[30], expected, delta=0.02 * expected)
-        self.assertAlmostEqual(cov[119], cov[30])
-
-    def test_window_forgets_after_60s(self):
-        run = make_run({1: hover(0, 10.1, 150, 150)})       # last sample t = 10.0
-        grid = metrics.Grid(2.0)
-        ticks, cov = metrics.coverage_series(grid, metrics.coverage_samples(run, 180), 180)
-        self.assertGreater(cov[70], 0.0)      # 70 - 60 = 10: still inside the window (inclusive)
-        self.assertEqual(cov[71], 0.0)
-
-
-class TestRevisitGap(unittest.TestCase):
-    """Drone alternates between two disjoint footprints A (x=60) and B (x=240):
-    A on [0,10), B on [10,40), A on [40,50). Samples every 0.1 s."""
-
-    def setUp(self):
-        tr = hover(0, 10, 60, 150) + hover(10, 40, 240, 150) + hover(40, 50, 60, 150)
-        self.run = make_run({1: tr})
-        self.grid = metrics.Grid(2.0)
-        self.samples = metrics.coverage_samples(self.run, 180)
-        self.ia = (75, 30)    # cell at (61, 151): under A only
-        self.ib = (75, 120)   # cell at (241, 151): under B only
-
-    def test_phase_from_mission_start(self):
-        gap, never, age = metrics.phase_gaps_and_age(self.grid, self.samples, 0.0, 50.0,
-                                                     from_first_sighting=True)
-        self.assertAlmostEqual(gap[self.ia], 30.1, places=6)   # last seen 9.9, next 40.0
-        self.assertAlmostEqual(gap[self.ib], 10.1, places=6)   # first seen 10 (latency excluded), last 39.9 -> end 50
-        self.assertEqual(gap[75, 75], 50.0)                    # never seen: full phase, flagged
-        self.assertTrue(never[75, 75])
-        self.assertTrue(math.isnan(age[75, 75]))
-
-    def test_open_start_is_clipped_but_age_is_not(self):
-        gap, never, age = metrics.phase_gaps_and_age(self.grid, self.samples, 20.0, 50.0)
-        self.assertAlmostEqual(gap[self.ia], 20.0, places=6)   # clipped: 40.0 - 20.0
-        self.assertAlmostEqual(age[self.ia], 30.1, places=6)   # true staleness: 40.0 - 9.9
-        self.assertFalse(never[self.ia])
-
-
-class TestRecovery(unittest.TestCase):
-    ticks = np.arange(0.0, 181.0)
-
-    def series(self, low_from, low_to, low=0.5):
-        c = np.ones_like(self.ticks)
-        c[(self.ticks >= low_from) & (self.ticks < low_to)] = low
-        return c
-
-    def test_recovers(self):
-        self.assertEqual(metrics.recovery_time(self.ticks, self.series(100, 130), 90, 0.9), 40.0)
-
-    def test_never_recovers(self):
-        self.assertIsNone(metrics.recovery_time(self.ticks, self.series(100, 999), 90, 0.9))
-
-    def test_recovery_too_late_to_confirm(self):
-        self.assertIsNone(metrics.recovery_time(self.ticks, self.series(100, 175), 90, 0.9))
-
-    def test_never_dips(self):
-        self.assertEqual(metrics.recovery_time(self.ticks, self.series(100, 130), 90, 0.4), 0.0)
-
-    def test_pre_loss_value(self):
-        c = self.ticks / 100.0
-        self.assertAlmostEqual(metrics.pre_loss_value(self.ticks, c, 80.0), 0.745)   # mean of 70..79
-
-
-class TestChurn(unittest.TestCase):
-    def test_counting(self):
-        ev = lambda t, ch, ep: {"t_mission": t, "event": "assign", "epoch": ep, "changed": ch}
-        ground = [ev(0.0, [1, 2, 3], 1), ev(30.0, [2], 2),
-                  {"t_mission": 72.0, "event": "liveness", "agent": 3, "from": "suspect", "to": "lost"},
-                  ev(72.0, [1, 2], 3), ev(120.0, [1, 3], 4)]          # 3 is dead at 120: not counted
-        run = make_run({1: hover(0, 1, 0, 0)}, ground=ground)
-        out = metrics.churn(run, [1, 2, 3], 3, 60.0, 180.0, {"overall": (0.0, 180.0)}, 72.0)
-        o = out["overall"]
-        self.assertAlmostEqual(o["live_agent_minutes"], 7.0)        # 3 + 3 + 1
-        self.assertEqual(o["changes_all"], 7)                          # 3 + 1 + 2 + 1
-        self.assertEqual(o["changes_excl_initial_and_loss_replan"], 2)
-        self.assertAlmostEqual(o["per_agent_min_all"], 1.0)
-        self.assertEqual(out["loss_replan_epoch"], 3)
-
-
-class TestSafety(unittest.TestCase):
-    def test_min_separation_and_time_below(self):
-        a = [(k * 0.1, 0.0, 0.0, 60.0, 0.0) for k in range(1801)]
-        b = [(k * 0.1, 20.0 - (5.0 if 50 <= k * 0.1 < 52 else 0.0), 0.0, 60.0, 0.0) for k in range(1801)]
-        run = make_run({1: a, 2: b})
-        t, sep = metrics.separation_series(run, 180.0)
-        self.assertAlmostEqual(np.nanmin(sep), 15.0)
-        run = make_run({1: a, 2: [(t_, 5.0, 0, 60, 0) for t_, *_ in b[:100]]})   # 2 stops at 9.9 s
-        t, sep = metrics.separation_series(run, 180.0)
-        self.assertAlmostEqual(np.nansum(sep < 8.0) * 0.1, 10.0, places=6)
-        self.assertTrue(np.isnan(sep[200]))
-
-
-class TestLogsAndPipeline(unittest.TestCase):
-    def test_synthetic_run_end_to_end(self):
-        with tempfile.TemporaryDirectory() as d:
-            synth.generate(d, seed=4)
-            run = logs.load_run(d)
-            self.assertTrue(any("truncated" in w for w in run.warnings))
-            m, _ = metrics.analyse(d)
-            self.assertTrue(os.path.exists(os.path.join(d, "metrics.json")))
-            self.assertAlmostEqual(m["loss"]["detection_delay_s"], synth.DETECT_S)
-            self.assertGreater(m["safety"]["min_separation_m"], config.D_MIN)
-            self.assertEqual(m["safety"]["time_below_d_min_s"], 0.0)
-            self.assertAlmostEqual(m["control_rate"]["1"]["rate_hz"], 10.0, delta=0.1)
-            json.dumps(m)   # serialisable
-
-    def test_missing_files_are_warnings(self):
-        with tempfile.TemporaryDirectory() as d:
-            synth.generate(d, seed=4)
-            for f in ("meta.json", "ground.jsonl", "radio.jsonl"):
-                os.remove(os.path.join(d, f))
-            m, _ = metrics.analyse(d)
-            self.assertIsNone(m["loss"])
-            self.assertTrue(any("meta.json missing" in w for w in m["warnings"]))
-
-    def test_no_agent_logs_is_a_clear_error(self):
-        with tempfile.TemporaryDirectory() as d:
-            with self.assertRaises(logs.RunLoadError):
-                logs.load_run(d)
+    def test_fake_runs_are_refused_under_results(self):
+        results_dir = os.path.join(report.REPO, "results", "_never_written")
+        with self.assertRaises(SystemExit):
+            report.refuse_fake_in_results(results_dir, {"gazebo", "fake"})
+        report.refuse_fake_in_results("/tmp/elsewhere", {"fake"})       # allowed outside
 
 
 if __name__ == "__main__":

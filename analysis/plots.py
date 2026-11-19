@@ -1,260 +1,279 @@
-"""Summary plots (PNG) across analysed runs.
+"""Figures for a set of runs, sized to be read inside a README.
 
-Usage: python -m analysis.plots runs/a runs/b ... [--out results]
-Needs each run's metrics.json, coverage.csv, separation.csv, gapmaps.npz (from analysis.metrics;
-computed here if missing). Writes into --out:
-  coverage_vs_time.png    coverage / pre-loss value vs time since the loss, all runs
-  revisit_gap.png         worst revisit gap and worst staleness, before vs after, per run
-  recovery_churn.png      recovery times (a)/(b) and assignment churn per run
-  gap_map.png             per-cell max revisit gap, pre-loss and post-recovery, representative run
-  min_separation.png      min true 3D separation between live agents vs mission time
+python -m analysis.plots --out results/<set> RUN_DIR... [--ref RUN_DIR...] [--baseline RUN_DIR...]
+Set figures: coverage_vs_time, before_after, recovery_steps.
+One-run figures (from the first RUN_DIR): age_maps, assignments, separation.
 """
 import argparse
-import csv
 import os
 
 import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
 
-from analysis import aggregate, metrics
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+
+from analysis import metrics, report  # noqa: E402
+from analysis.logs import load_run  # noqa: E402
+from swarm import config  # noqa: E402
 
 INK = "#0b0b0b"
-INK2 = "#52514e"
-GRID = "#e4e3df"
-RUN = "#9a9993"          # individual runs: recessive grey
-ACCENT = "#2a78d6"       # median / highlighted series (palette slot 1)
-ACCENT2 = "#eb6834"      # second series (palette slot 2)
-CRIT = "#e34948"         # reserved: limits (8 m line), kill marker
+INK_2 = "#52514e"
+RUN_GREY = "#9a9993"       # one line per run: recessive
+ACCENT = "#2a78d6"         # the median, the main series
+ACCENT_2 = "#eb6834"       # the second reference line
+CRITICAL = "#e34948"       # the loss and the 8 m limit
+STALE = "#f2c14e"          # cells not seen for 60 s or more
+AGENT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#6250d6", "#e87ba4"]
 
 plt.rcParams.update({
-    "figure.dpi": 110, "savefig.dpi": 150, "font.size": 10, "axes.edgecolor": INK2,
-    "axes.labelcolor": INK, "xtick.color": INK2, "ytick.color": INK2, "axes.spines.top": False,
-    "axes.spines.right": False, "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8,
-    "axes.titlesize": 11, "axes.titleweight": "bold", "axes.titlelocation": "left",
-    "legend.frameon": False})
-
-
-def read_csv_cols(path):
-    with open(path) as f:
-        r = list(csv.reader(f))
-    data = np.array([[float(v) if v else np.nan for v in row] for row in r[1:]])
-    return data[:, 0], data[:, 1]
+    "figure.dpi": 110, "savefig.dpi": 150, "font.size": 10, "axes.edgecolor": INK_2,
+    "axes.labelcolor": INK, "xtick.color": INK_2, "ytick.color": INK_2,
+    "axes.spines.top": False, "axes.spines.right": False, "axes.grid": True,
+    "grid.color": "#e4e3df", "axes.titlesize": 11, "axes.titleweight": "bold",
+    "axes.titlelocation": "left", "legend.frameon": False})
 
 
 def load(run_dir):
-    m = aggregate.load_metrics(run_dir)
-    t, cov = read_csv_cols(os.path.join(run_dir, "coverage.csv"))
-    ts, sep = read_csv_cols(os.path.join(run_dir, "separation.csv"))
-    maps = dict(np.load(os.path.join(run_dir, "gapmaps.npz")))
-    return {"m": m, "t": t, "cov": cov, "ts": ts, "sep": sep, "maps": maps}
+    ticks, coverage = metrics.read_coverage_csv(run_dir)
+    return {"m": report.load_metrics(run_dir), "t": ticks, "cov": coverage}
 
 
-def title_suffix(runs):
-    synth = any(aggregate.is_synthetic(r["m"]) for r in runs)
-    return f" (n = {len(runs)} runs{', SYNTHETIC' if synth else ''})"
+def median_of(runs, key):
+    values = [report.lookup(r["m"], key) for r in runs]
+    values = [v for v in values if v is not None]
+    return float(np.median(values)) if values else None
 
 
-def plot_coverage(runs, out):
-    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+def save(fig, out_dir, name):
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, name))
+    plt.close(fig)
+
+
+def reference_line(ax, y, color, style, text):
+    ax.axhline(y, color=color, lw=1.2, ls=style)
+    ax.text(ax.get_xlim()[1], y, " " + text, color=color, fontsize=8, va="center")
+
+
+# ------------------------------------------------------------------- set figures
+
+def plot_coverage(runs, refs, baselines, out_dir):
+    """Coverage in absolute %, aligned on the loss, with the levels it is judged against."""
+    fig, ax = plt.subplots(figsize=(8.5, 4.4))
+    since_loss = np.arange(-60.0, min(r["m"]["end_s"] - r["m"]["loss"]["loss_s"] for r in runs))
     aligned = []
-    n_agents = runs[0]["m"]["n_agents"]
-    ideal = 100.0 * (n_agents - 1) / n_agents
     for r in runs:
-        L, P = r["m"]["t_loss_s"], (r["m"].get("loss") or {}).get("pre_loss_pct")
-        if L is None or not P:
-            continue
-        x, y = r["t"] - L, 100.0 * r["cov"] / P
-        ax.plot(x, y, color=RUN, lw=1.0)
-        aligned.append(np.interp(np.arange(-60, 91), x, y, left=np.nan, right=np.nan))
-    if aligned:
-        ax.plot(np.arange(-60, 91), np.nanmedian(np.array(aligned), axis=0), color=ACCENT, lw=2,
-                label="median of runs")
-    ax.axhspan(90, 100, color=ACCENT, alpha=0.08, lw=0)
-    ax.axhspan(0.9 * ideal, ideal, color=ACCENT2, alpha=0.10, lw=0)
-    ax.axhline(100, color=INK2, lw=1)
-    ax.axhline(ideal, color=ACCENT2, lw=1.5, ls="--")
-    ax.axvline(0, color=CRIT, lw=1.2)
-    delays = [r["m"]["loss"]["detection_delay_s"] for r in runs
-              if r["m"].get("loss") and r["m"]["loss"].get("detection_delay_s") is not None]
-    if delays:
-        ax.axvline(float(np.median(delays)), color=INK2, lw=1, ls=":")
-        ax.text(float(np.median(delays)) + 1, 5, "ground declares lost\n(median)", color=INK2, fontsize=8)
-    ax.text(1, 104, "agent killed", color=CRIT, fontsize=8)
-    ax.text(-59, 101.5, "pre-loss value; band = within 10 % (reading a)", color=INK2, fontsize=8)
-    ax.text(-59, ideal + 1.5, f"ideal (N-1)/N = {ideal:.0f} %; band = within 10 % (reading b)",
-            color=ACCENT2, fontsize=8)
-    ax.set_xlim(-60, 90)
-    ax.set_ylim(0, 110)
-    ax.set_xlabel("time since agent loss (s)")
-    ax.set_ylabel("coverage, % of pre-loss value")
-    ax.set_title("Area seen in the last 60 s, aligned on the loss" + title_suffix(runs))
-    if aligned:
-        ax.plot([], [], color=RUN, lw=1, label="individual runs")
-        ax.legend(loc="lower right", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(os.path.join(out, "coverage_vs_time.png"))
-    plt.close(fig)
+        loss_s = r["m"]["loss"]["loss_s"]
+        y = np.interp(since_loss + loss_s, r["t"], r["cov"], left=np.nan)
+        ax.plot(since_loss, y, color=RUN_GREY, lw=0.9)
+        aligned.append(y)
+    ax.plot(since_loss, np.nanmedian(aligned, axis=0), color=ACCENT, lw=2.5)
+    ax.set_xlim(since_loss[0], since_loss[-1])
+    if baselines:
+        levels = [b["m"]["coverage"]["mean_from_60s_pct"] for b in baselines]
+        ax.axhspan(min(levels), max(levels), color=ACCENT, alpha=0.12, lw=0)
+        ax.text(since_loss[0] + 1, max(levels) + 1, "no-loss runs with N agents", color=INK_2,
+                fontsize=8)
+    before = median_of(runs, "loss.before_pct")
+    reference_line(ax, before, INK, "-", "P (before)")
+    reference_line(ax, 0.9 * before, INK_2, ":", "0.9 P")
+    if refs:
+        reference_line(ax, median_of(refs, "coverage.mean_from_60s_pct"), ACCENT, "--",
+                       "attainable N-1")
+    reference_line(ax, median_of(runs, "loss.share_pct"), ACCENT_2, "--", "(N-1)/N x P")
+    ax.axvline(0.0, color=CRITICAL, lw=1.2)
+    ax.text(1, 2, "agent lost", color=CRITICAL, fontsize=8)
+    declared = median_of(runs, "loss.milestones_s.lost_declared")
+    if declared is not None:
+        ax.axvline(declared, color=INK_2, lw=1, ls="--")
+        ax.text(declared + 1, 9, "declared lost\n(median)", color=INK_2, fontsize=8)
+    ax.set_ylim(0, 105)
+    ax.set_xlabel("time since the loss (s)")
+    ax.set_ylabel("area seen in the last 60 s (%)")
+    ax.set_title(f"Coverage around the loss: {len(runs)} runs (grey), median (blue)")
+    save(fig, out_dir, "coverage_vs_time.png")
 
 
-def _paired(ax, runs, key, label):
-    for r in runs:
-        g = r["m"].get("revisit_gap") or {}
-        a, b = (g.get("pre") or {}).get(key), (g.get("post") or {}).get(key)
-        if a is not None and b is not None:
-            ax.plot([0, 1], [a, b], color=RUN, lw=1, marker="o", ms=5)
-        elif a is not None:
-            ax.plot([0], [a], color=RUN, marker="o", ms=5)
-    vals = [[(r["m"].get("revisit_gap") or {}).get(p) for r in runs] for p in ("pre", "post")]
-    med = [np.median([v[key] for v in vs if v and v.get(key) is not None]) if any(v and v.get(key) is not None for v in vs) else np.nan
-           for vs in vals]
-    ax.plot([0, 1], med, color=ACCENT, lw=2.2, marker="o", ms=8, label="median")
-    ax.set_xticks([0, 1], ["before the loss", "after recovery"])
-    ax.set_xlim(-0.3, 1.3)
-    ax.set_ylim(bottom=0)
-    ax.set_ylabel("seconds")
-    ax.set_title(label)
-
-
-def plot_gaps(runs, out):
-    fig, axs = plt.subplots(1, 2, figsize=(8, 3.8))
-    _paired(axs[0], runs, "worst_s", "Worst revisit gap (within phase)")
-    _paired(axs[1], runs, "worst_age_s", "Worst staleness (unclipped age)")
-    axs[1].legend(loc="lower right", fontsize=8)
-    for ax in axs:
-        ax.axhline(metrics.WINDOW_S, color=INK2, lw=1, ls=":")
-        top = max([metrics.WINDOW_S] + [y for ln in ax.get_lines() for y in ln.get_ydata() if np.isfinite(y)])
-        ax.set_ylim(0, top * 1.12)
-        ax.text(1.28, metrics.WINDOW_S + 1, "60 s window", color=INK2, fontsize=8, ha="right")
-    fig.suptitle("Longest time a cell went unseen" + title_suffix(runs), x=0.01, ha="left",
+def plot_before_after(runs, refs, out_dir):
+    """One line per run from before to after; the median in blue."""
+    panels = [("Coverage, mean (%)", "loss.before_pct", "loss.after_mean_pct"),
+              ("Worst completed revisit gap (s)", "revisit.before.worst_completed_s",
+               "revisit.after.worst_completed_s"),
+              ("Assignment churn (/agent/min)", "churn.before_per_agent_min",
+               "churn.after_per_agent_min")]
+    fig, axes = plt.subplots(1, 3, figsize=(10, 3.8))
+    for ax, (title, before_key, after_key) in zip(axes, panels):
+        for r in runs:
+            pair = [report.lookup(r["m"], before_key), report.lookup(r["m"], after_key)]
+            ax.plot([0, 1], pair, color=RUN_GREY, lw=1, marker="o", ms=5)
+        medians = [median_of(runs, before_key), median_of(runs, after_key)]
+        ax.plot([0, 1], medians, color=ACCENT, lw=2.5, marker="o", ms=8)
+        ax.set_xticks([0, 1], ["before", "after"])
+        ax.set_xlim(-0.3, 1.6)
+        ax.set_title(title, fontsize=10)
+        ax.set_ylim(bottom=0)
+    coverage_ax = axes[0]
+    reference_line(coverage_ax, median_of(runs, "loss.share_pct"), ACCENT_2, "--", "(N-1)/N P")
+    if refs:
+        reference_line(coverage_ax, median_of(refs, "coverage.mean_from_60s_pct"), ACCENT, "--",
+                       "N-1")
+    fig.suptitle("Before the loss vs after it (grey: runs, blue: median)", x=0.01, ha="left",
                  fontweight="bold", fontsize=11)
-    fig.tight_layout()
-    fig.savefig(os.path.join(out, "revisit_gap.png"))
-    plt.close(fig)
+    save(fig, out_dir, "before_after.png")
 
 
-def plot_recovery_churn(runs, out):
-    fig, axs = plt.subplots(1, 2, figsize=(8.5, 3.8))
-    ax = axs[0]
-    names = [r["m"]["run"] for r in runs]
-    ymax = max([1.0] + [v for r in runs for v in ((r["m"].get("loss") or {}).get("recovery_a_s"),
-                                                   (r["m"].get("loss") or {}).get("recovery_b_s")) if v is not None])
-    for k, (key, color, dx, lab) in enumerate((("recovery_a_s", ACCENT, -0.12, "(a) within 10 % of pre-loss"),
-                                              ("recovery_b_s", ACCENT2, 0.12, "(b) within 10 % of (N-1)/N ideal"))):
-        for i, r in enumerate(runs):
-            v = (r["m"].get("loss") or {}).get(key)
-            if v is None:
-                ax.text(i + dx, ymax * 1.05, "x", color=color, ha="center", va="center", fontsize=11)
-            else:
-                ax.plot(i + dx, v, "o", color=color, ms=7, label=lab if i == 0 else None)
-        ax.plot([], [], "o", color=color, label=lab) if all((r["m"].get("loss") or {}).get(key) is None for r in runs) else None
-    ax.set_xticks(range(len(runs)), names, rotation=30, ha="right", fontsize=8)
-    ax.set_ylim(-0.04 * ymax, ymax * 1.15)
-    ax.set_ylabel("seconds after the loss")
-    ax.set_title("Recovery time (x = not recovered)")
-    ax.legend(fontsize=8, loc="upper left")
+def plot_recovery_steps(runs, out_dir):
+    """When each step of the recovery happened, per run, in seconds after the loss.
 
-    ax = axs[1]
-    phases = ("pre", "post", "overall")
-    for j, (key, color, lab) in enumerate((("per_agent_min_all", RUN, "all events"),
-                                           ("per_agent_min_excl", ACCENT, "excl. initial + loss re-plan"))):
-        for i, ph in enumerate(phases):
-            vals = [((r["m"].get("churn") or {}).get(ph) or {}).get(key) for r in runs]
-            vals = [v for v in vals if v is not None]
-            x = i + (j - 0.5) * 0.25
-            ax.plot([x] * len(vals), vals, "o", color=color, ms=5, alpha=0.8,
-                    label=lab if i == 0 else None)
-    ax.set_xticks(range(3), ["before the loss", "after recovery", "whole mission"])
-    ax.set_ylim(bottom=0)
-    ax.set_ylabel("assignment changes per agent-minute")
-    ax.set_title("Assignment churn (one dot per run)")
-    ax.legend(fontsize=8)
-    fig.suptitle(title_suffix(runs).strip(" ()"), x=0.99, ha="right", fontsize=8, color=INK2)
-    fig.tight_layout()
-    fig.savefig(os.path.join(out, "recovery_churn.png"))
-    plt.close(fig)
+    Markers, not stacked bars: the steps do not always happen in this order (coverage can stay
+    above 0.9 P throughout, so "recovered" is 0 s).
+    """
+    steps = [("lost_declared", "declared lost", "o"),
+             ("assignment_received", "every survivor has the new assignment", "s"),
+             ("on_new_loop", "first survivor on its new loop", "^"),
+             ("recovered", "coverage back to 0.9 P", "D")]
+    fig, ax = plt.subplots(figsize=(8.5, 0.5 * len(runs) + 1.8))
+    for row, r in enumerate(runs):
+        milestones = r["m"]["loss"]["milestones_s"] or {}
+        times = [milestones.get(key) for key, _, _ in steps]
+        known = [t for t in times if t is not None]
+        ax.plot([0, max(known)], [row, row], color=RUN_GREY, lw=1)
+        for (key, label, marker), t, color in zip(steps, times, AGENT_COLORS):
+            if t is not None:
+                ax.plot(t, row, marker, color=color, ms=8, label=label if row == 0 else None)
+        if times[3] is None:
+            ax.text(max(known) + 1, row, "not recovered", va="center", fontsize=8, color=CRITICAL)
+    ax.set_yticks(range(len(runs)), [r["m"]["run"] for r in runs])
+    ax.set_xlabel("seconds after the loss")
+    ax.set_title("Recovery, step by step")
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2)
+    save(fig, out_dir, "recovery_steps.png")
 
 
-def representative(runs):
-    """The run whose recovery (b) is the median of the recovered runs (else the first run)."""
-    rec = [(r["m"]["loss"]["recovery_b_s"], i) for i, r in enumerate(runs)
-           if r["m"].get("loss") and r["m"]["loss"].get("recovery_b_s") is not None]
-    if not rec:
-        return runs[0]
-    rec.sort()
-    return runs[rec[len(rec) // 2][1]]
+# ------------------------------------------------------------------- one-run figures
 
-
-def plot_gap_map(runs, out):
-    r = representative(runs)
-    maps = r["maps"]
-    keys = [k for k in ("pre", "post") if k in maps] or ["overall"]
-    fig, axs = plt.subplots(1, len(keys), figsize=(4.2 * len(keys) + 1.0, 4.4), squeeze=False)
-    vmax = max(float(np.nanmax(maps[k])) for k in keys)
-    ext = tuple(maps["extent"])
-    im = None
-    for ax, k in zip(axs[0], keys):
-        im = ax.imshow(maps[k], origin="lower", extent=ext, cmap="Blues", vmin=0, vmax=vmax,
-                       interpolation="nearest")
-        ph = r["m"]["phases_s"][k]
-        ax.set_title(f"{ {'pre': 'before the loss', 'post': 'after recovery', 'overall': 'whole mission'}[k]}"
-                     f" [{ph[0]:.0f}-{ph[1]:.0f} s]")
+def plot_age_maps(run, out_dir):
+    """How long ago each cell was seen, just before the loss and 60 s after it."""
+    times = [run.loss_s - 1.0, run.loss_s + metrics.WINDOW_S]
+    ages = [(t - last).reshape(metrics.GRID_SHAPE)
+            for t, last in metrics.last_seen_at(metrics.sightings(run), times)]
+    colors = plt.get_cmap("Blues").with_extremes(over=STALE)
+    fig, axes = plt.subplots(1, 2, figsize=(9, 4.4))
+    for ax, t, age in zip(axes, times, ages):
+        image = ax.imshow(age, origin="lower", extent=config.AREA, cmap=colors, vmin=0,
+                          vmax=metrics.WINDOW_S, interpolation="nearest")
+        ax.set_title(f"t = {t:.0f} s ({t - run.loss_s:+.0f} s from the loss)", fontsize=10)
         ax.set_xlabel("east (m)")
         ax.grid(False)
-        ax.set_aspect("equal")
-    axs[0][0].set_ylabel("north (m)")
-    cb = fig.colorbar(im, ax=axs[0].tolist(), shrink=0.85)
-    cb.set_label("longest unseen time in phase (s)")
-    synth = " (SYNTHETIC)" if aggregate.is_synthetic(r["m"]) else ""
-    fig.suptitle(f"Per-cell worst revisit gap, run {r['m']['run']}{synth}, "
-                 f"agent {r['m'].get('victim')} lost at "
-                 + (f"{r['m']['t_loss_s']:.1f} s" if r['m'].get('t_loss_s') is not None else "(no loss)"),
-                 x=0.01, ha="left", fontweight="bold", fontsize=11)
-    fig.savefig(os.path.join(out, "gap_map.png"), bbox_inches="tight")
+    axes[0].set_ylabel("north (m)")
+    bar = fig.colorbar(image, ax=list(axes), extend="max", shrink=0.85)
+    bar.set_label("s since last seen (yellow: 60+ or never)")
+    fig.suptitle(f"Run {run.name}: agent {run.victim} lost at {run.loss_s:.1f} s", x=0.01,
+                 ha="left", fontweight="bold", fontsize=11)
+    fig.savefig(os.path.join(out_dir, "age_maps.png"), bbox_inches="tight")
     plt.close(fig)
 
 
-def plot_separation(runs, out):
-    fig, ax = plt.subplots(figsize=(7.5, 3.6))
-    for r in runs:
-        ax.plot(r["ts"], r["sep"], color=RUN, lw=0.9)
-        L = r["m"].get("t_loss_s")
-        if L is not None:
-            ax.plot([L], [np.interp(L, r["ts"], np.nan_to_num(r["sep"]))], "x", color=CRIT, ms=7)
-    ax.axhline(8.0, color=CRIT, lw=1.5)
-    ax.text(1, 12, "8 m minimum", color=CRIT, fontsize=8)
-    ax.plot([], [], color=RUN, label="one line per run")
-    ax.plot([], [], "x", color=CRIT, label="agent killed")
+def assigned_from(event):
+    """Mission time an assignment holds from; one made before the start holds from t = 0."""
+    if event["t_mission"] is None:
+        return 0.0
+    return max(0.0, event["t_mission"])
+
+
+def assignment_steps(run):
+    """[(from t, {agent id: share})] from the ground's assign events."""
+    steps = []
+    for e in run.events("assign"):
+        shares = {int(k): a["share"] for k, a in e["assignments"].items()}
+        steps.append((assigned_from(e), shares))
+    return steps
+
+
+def plot_assignments(run, out_dir):
+    """Each agent's share (east and north extent) over time: flat bands = no oscillation."""
+    steps = assignment_steps(run)
+    fig, axes = plt.subplots(2, 1, figsize=(8.5, 5.6), sharex=True)
+    for color, agent_id in zip(AGENT_COLORS, run.agents):
+        for k, (start, shares) in enumerate(steps):
+            if agent_id not in shares:
+                continue
+            end = steps[k + 1][0] if k + 1 < len(steps) else run.end_s
+            xmin, xmax, ymin, ymax = shares[agent_id]
+            label = f"agent {agent_id}" if k == 0 else None
+            axes[0].fill_between([start, end], xmin, xmax, color=color, alpha=0.35, lw=0,
+                                 label=label)
+            axes[1].plot([start, end], [ymin, ymin], color=color, lw=2)   # shares often span
+            axes[1].plot([start, end], [ymax, ymax], color=color, lw=2)   # all of north: lines
+    for ax in axes:
+        for start, _ in steps[1:]:
+            ax.axvline(start, color=INK_2, lw=0.8, ls=":")
+        if run.loss_s is not None:
+            ax.axvline(run.loss_s, color=CRITICAL, lw=1.2)
+            declared = run.lost_declared_s(run.victim)
+            if declared is not None:
+                ax.axvline(declared, color=CRITICAL, lw=1, ls="--")
+    for e in run.events("infeasible"):
+        axes[0].plot(e["t_mission"], e["slot_xy"][0], "v", color=INK, ms=7)
+        axes[1].plot(e["t_mission"], e["slot_xy"][1], "v", color=INK, ms=7)
+    for e in run.events("assign")[1:]:
+        axes[0].text(assigned_from(e), config.AREA[1], f" {e['trigger']} (epoch "
+                     f"{e['epoch']})", fontsize=7, color=INK_2, rotation=90, va="top")
+    axes[0].set_ylabel("share, east (m)")
+    axes[1].set_ylabel("share, north (m)")
+    axes[1].set_xlabel("mission time (s). Red: loss; red dashed: declared lost; dotted: re-plan;"
+                       " triangle: infeasible report")
+    axes[0].legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.0, 1.0))
+    axes[0].set_title(f"Run {run.name}: each agent's share over time")
+    axes[1].set_xlim(0, run.end_s)
+    save(fig, out_dir, "assignments.png")
+
+
+def plot_separation(run, out_dir):
+    """True 3D distance of every pair; zoomed to 0-40 m so the 8 m limit is readable."""
+    times, pairs = metrics.separation_series(run)
+    fig, ax = plt.subplots(figsize=(8.5, 3.8))
+    for color, ((a, b), distance) in zip(AGENT_COLORS, pairs.items()):
+        ax.plot(times, distance, color=color, lw=1.2, label=f"agents {a}-{b}")
+    for agent_id, log in run.agents.items():
+        filtered = np.array(["filtered" in flags.split("|") for flags in log["flags"]], dtype=bool)
+        filtered &= metrics.mission_rows(run, agent_id)
+        ax.plot(log["t"][filtered], np.full(filtered.sum(), 1.0), "|", color=INK, ms=8)
+    ax.axhline(config.D_MIN_M, color=CRITICAL, lw=1.5)
+    ax.text(times[0], config.D_MIN_M + 0.5, "8 m minimum", color=CRITICAL, fontsize=8)
+    closest = np.fmin.reduce(np.array(list(pairs.values())), axis=0)
+    ax.set_ylim(0, 40)
+    ax.set_xlabel("mission time (s; negative = before the start)")
+    ax.set_ylabel("distance (m)")
+    ax.set_title(f"Run {run.name}: closest pair {np.nanmin(closest):.1f} m "
+                 f"(from t = 10 s: {np.nanmin(closest[times > metrics.SAFETY_FROM_S]):.1f} m); "
+                 "ticks at 1 m: safety filter active")
     ax.legend(fontsize=8, loc="upper right")
-    ax.set_ylim(bottom=0)
-    ax.set_xlim(0, max(r["m"]["mission_s"] for r in runs))
-    ax.set_xlabel("mission time (s)")
-    ax.set_ylabel("min distance between live agents (m)")
-    ax.set_title("Closest approach, true 3D positions" + title_suffix(runs))
-    fig.tight_layout()
-    fig.savefig(os.path.join(out, "min_separation.png"))
-    plt.close(fig)
-
-
-def make_all(run_dirs, out):
-    runs = [load(d) for d in run_dirs]
-    aggregate.check_out_dir(out, any(aggregate.is_synthetic(r["m"]) for r in runs))
-    os.makedirs(out, exist_ok=True)
-    plot_coverage(runs, out)
-    plot_gaps(runs, out)
-    plot_recovery_churn(runs, out)
-    plot_gap_map(runs, out)
-    plot_separation(runs, out)
+    save(fig, out_dir, "separation.png")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="summary plots")
-    ap.add_argument("runs", nargs="+")
-    ap.add_argument("--out", default="results")
-    a = ap.parse_args()
-    make_all(a.runs, a.out)
-    print(f"plots -> {a.out}/")
+    parser = argparse.ArgumentParser(description="figures for a set of runs")
+    parser.add_argument("runs", nargs="+")
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--ref", nargs="*", default=[])
+    parser.add_argument("--baseline", nargs="*", default=[])
+    args = parser.parse_args()
+    runs = [load(d) for d in args.runs]
+    refs = [load(d) for d in args.ref]
+    baselines = [load(d) for d in args.baseline]
+    report.refuse_fake_in_results(args.out, {r["m"]["backend"] for r in runs + refs + baselines})
+    os.makedirs(args.out, exist_ok=True)
+    first = load_run(args.runs[0])
+    if first.victim is not None:
+        plot_coverage(runs, refs, baselines, args.out)
+        plot_before_after(runs, refs, args.out)
+        plot_recovery_steps(runs, args.out)
+        plot_age_maps(first, args.out)
+    plot_assignments(first, args.out)
+    plot_separation(first, args.out)
+    print(f"figures -> {args.out}/")
 
 
 if __name__ == "__main__":

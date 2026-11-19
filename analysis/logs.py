@@ -1,158 +1,82 @@
-"""Read a run directory (runs/<name>/) written by the agents, the ground station and the runner.
-
-Files (see the task contract):
-  agent_<id>.csv   10 Hz rows, header AGENT_COLUMNS. The agent's own TRUE state, area ENU metres,
-                   z up, yaw rad compass (0 north, clockwise). t_mission empty before mission start.
-                   A SIGKILLed agent's file just ends, possibly with a truncated last line.
-  ground.jsonl     JSON lines: "start", "liveness", "infeasible", "assign", "blacklist" events.
-  meta.json        {"seed","n","backend","t0_wall","kill_agent","kill_t_mission","mission_s","radio"}
-  radio.jsonl      radio counters (optional).
-
-Everything here is tolerant: a missing optional file or field gives a warning string in
-`Run.warnings`, never a crash. Only "no agent_*.csv at all" is fatal.
-"""
+"""Read one run directory: agent logs, ground events, meta.json and the radio totals."""
 import csv
 import glob
 import json
-import math
 import os
-import re
 
 import numpy as np
 
-AGENT_COLUMNS = ["t_wall", "t_mission", "x", "y", "z", "vx", "vy", "vz", "yaw", "status",
-                 "epoch", "slot", "cmd_vx", "cmd_vy", "cmd_z", "nom_vx", "nom_vy",
-                 "min_nbr_dist", "min_nbr_age", "flags"]
+from swarm.protocol import AGENT_CSV_COLUMNS
+
 TEXT_COLUMNS = ("status", "flags")
-FLYING_STATUSES = ("takeoff", "ready", "cover", "hold", "fallback")   # everything but "ground"
-
-
-class RunLoadError(Exception):
-    pass
-
-
-class AgentLog:
-    """One agent's log as numpy columns (floats; NaN where empty) plus text columns as lists."""
-
-    def __init__(self, agent_id, cols, n_bad_lines):
-        self.id = agent_id
-        self.cols = cols
-        self.n_bad_lines = n_bad_lines
-
-    def __getitem__(self, name):
-        return self.cols[name]
-
-    def __len__(self):
-        return len(self.cols["t_wall"])
 
 
 class Run:
-    def __init__(self, path):
-        self.path = path
-        self.name = os.path.basename(os.path.normpath(path))
-        self.warnings = []
-        self.agents = {}          # id -> AgentLog
-        self.meta = {}
-        self.ground = []          # list of dicts
-        self.radio = []           # list of dicts
+    """One run in memory. All times are mission seconds (t = 0 when every agent is on station)."""
 
-    def warn(self, msg):
-        self.warnings.append(msg)
-
-    def meta_get(self, key, default=None):
-        v = self.meta.get(key, default)
-        return default if v is None else v
+    def __init__(self, name, meta, agents, ground, radio=None):
+        self.name = name
+        self.meta = meta
+        self.agents = agents          # {agent id: {column name: array or list}}
+        self.ground = ground          # ground.jsonl records, in file order
+        self.radio = radio            # the radio's final "stats" record
+        self.end_s = meta["mission_s"]
+        self.victim = meta["kill_agent"]
+        self.loss_s = None
+        if self.victim is not None:
+            self.loss_s = meta["kill_wall"] - meta["t0_wall"]
 
     def events(self, kind):
-        return [e for e in self.ground if e.get("event") == kind]
+        return [e for e in self.ground if e["event"] == kind]
+
+    def live_until(self, agent_id):
+        """The victim stops counting at the loss; after the kill its log shows a dead vehicle."""
+        if agent_id == self.victim:
+            return self.loss_s
+        return self.end_s
+
+    def lost_declared_s(self, agent_id):
+        """When the ground first declared this agent lost, or None."""
+        for e in self.events("liveness"):
+            if e["agent"] == agent_id and e["to"] == "lost":
+                return e["t_mission"]
+        return None
 
 
-def _to_float(s):
-    try:
-        return float(s) if s not in ("", None) else math.nan
-    except ValueError:
-        return math.nan
+def read_agent_log(path, t0_wall):
+    """Columns of one agent_<id>.csv, plus "t" = t_wall - t0_wall for every row.
 
-
-def read_agent_csv(path, agent_id, warn):
-    """Parse one agent CSV. Rows with the wrong field count (e.g. a SIGKILL-truncated last
-    line) or an unparsable t_wall are skipped and counted."""
-    with open(path, newline="") as f:
-        text = f.read()
-    lines = text.splitlines()
-    if not lines:
-        raise RunLoadError(f"{path}: empty file")
-    header = next(csv.reader([lines[0]]))
-    missing = [c for c in AGENT_COLUMNS if c not in header]
-    if missing:
-        warn(f"{os.path.basename(path)}: missing columns {missing} (filled with NaN/empty)")
-    rows, bad = [], 0
-    for i, rec in enumerate(csv.reader(lines[1:])):
-        if len(rec) != len(header):
-            bad += 1
-            continue
-        d = dict(zip(header, rec))
-        if math.isnan(_to_float(d.get("t_wall"))):
-            bad += 1
-            continue
-        rows.append(d)
-    if not text.endswith("\n") and bad:
-        warn(f"{os.path.basename(path)}: last line truncated (agent killed?); skipped")
-    elif bad:
-        warn(f"{os.path.basename(path)}: skipped {bad} malformed rows")
-    cols = {}
-    for c in AGENT_COLUMNS:
-        if c in TEXT_COLUMNS:
-            cols[c] = [r.get(c, "") or "" for r in rows]
-        else:
-            cols[c] = np.array([_to_float(r.get(c)) for r in rows], dtype=float)
-    return AgentLog(agent_id, cols, bad)
-
-
-def read_jsonl(path, warn):
-    out = []
+    "t" is the mission time; unlike t_mission it also exists before the start (negative).
+    A SIGKILL can cut the last line. Complete lines end with a newline, so the text after the
+    last newline is dropped.
+    """
     with open(path) as f:
-        for i, line in enumerate(f):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                warn(f"{os.path.basename(path)} line {i + 1}: not valid JSON (truncated?), skipped")
-    return out
-
-
-def load_run(path):
-    """Load a run directory. Raises RunLoadError only if there is no usable agent log."""
-    if not os.path.isdir(path):
-        raise RunLoadError(f"{path}: not a directory")
-    run = Run(path)
-    for p in sorted(glob.glob(os.path.join(path, "agent_*.csv"))):
-        m = re.match(r"agent_(\d+)\.csv$", os.path.basename(p))
-        if not m:
-            continue
-        try:
-            run.agents[int(m.group(1))] = read_agent_csv(p, int(m.group(1)), run.warn)
-        except RunLoadError as e:
-            run.warn(str(e))
-    if not run.agents:
-        raise RunLoadError(f"{path}: no readable agent_<id>.csv files")
-
-    meta_p = os.path.join(path, "meta.json")
-    if os.path.exists(meta_p):
-        try:
-            with open(meta_p) as f:
-                run.meta = json.load(f)
-        except json.JSONDecodeError as e:
-            run.warn(f"meta.json unreadable ({e}); kill time/mission length unknown")
-    else:
-        run.warn("meta.json missing: kill time, victim and mission length unknown")
-
-    for name, attr in (("ground.jsonl", "ground"), ("radio.jsonl", "radio")):
-        p = os.path.join(path, name)
-        if os.path.exists(p):
-            setattr(run, attr, read_jsonl(p, run.warn))
+        lines = f.read().split("\n")[:-1]
+    rows = list(csv.DictReader(lines))
+    log = {}
+    for name in AGENT_CSV_COLUMNS:
+        values = [row[name] for row in rows]
+        if name in TEXT_COLUMNS:
+            log[name] = values
         else:
-            run.warn(f"{name} missing: metrics that need it are reported as null")
-    return run
+            log[name] = np.array([float(v) if v else np.nan for v in values])
+    log["t"] = log["t_wall"] - t0_wall
+    return log
+
+
+def read_jsonl(path):
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def load_run(run_dir):
+    with open(os.path.join(run_dir, "meta.json")) as f:
+        meta = json.load(f)
+    agents = {}
+    for path in glob.glob(os.path.join(run_dir, "agent_*.csv")):
+        agent_id = int(os.path.basename(path)[len("agent_"):-len(".csv")])
+        agents[agent_id] = read_agent_log(path, meta["t0_wall"])
+    ground = read_jsonl(os.path.join(run_dir, "ground.jsonl"))
+    stats = [r for r in read_jsonl(os.path.join(run_dir, "radio.jsonl")) if r["event"] == "stats"]
+    name = os.path.basename(os.path.normpath(run_dir))
+    return Run(name, meta, dict(sorted(agents.items())), ground, stats[-1])
