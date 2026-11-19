@@ -6,8 +6,4 @@ __pycache__/
 *.tlog*
 eeprom.bin
 mav.parm
-runs/*/failed/
-runs/*/*/sim/
-runs/*/*/*.log
-runs/*/*/gapmaps.npz
-runs/*/*/separation.csv
+runs/
