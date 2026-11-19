@@ -55,8 +55,11 @@ The zone (60 x 60 m) must be seen at least every `PRIORITY_REVISIT_S` = 30 s.
   single out-and-back lane whose ends are each at most `REACH_M` north or south of the zone
   centre.
 * A point on an out-and-back lane is revisited after 2 x (distance to the far end) / speed +
-  `TURN_S`. So `REACH_M = (30 - margin 2 - TURN_S 6) x 11.5 / 2 = 126.5 m`. `TURN_S` = 6 s is
-  a placeholder, to be measured in SITL.
+  `TURN_S`. So `REACH_M = (30 - margin 2 - TURN_S 6) x 11 / 2 = 121 m`. `TURN_S` = 6 s: the
+  measured time lost in a 180 degree turn at 11.5 m/s is 4.6 s (SITL) / 4.5 s (Gazebo)
+  (`results/spike/motion_bounds_*.json`), plus 1.4 s margin because the coverage controller
+  slows into a lane end at 1.5 m/s^2 instead of reversing at once (5.3 s per lane end with the
+  fake vehicle).
 * The margin pays for points 30 m off the zone centre. The footprint's 24 m half-length leaves
   6 m, which is 0.5 s each way. About 1 s is left for flying below cruise speed near the ends.
 * The other agents split the area west and east of the zone strip, in proportion to width.
@@ -69,12 +72,18 @@ The parts of the zone agent's share that its camera never sweeps are returned as
 
 | Zone (xmin, ymin, xmax, ymax) | Lane ends (y) | Worst zone revisit | Uncovered |
 |---|---|---|---|
-| middle (120, 120, 180, 180) | 24 to 276 | 29.0 s | none |
-| corner (0, 0, 60, 60) | 24 to 156.5 | 29.0 s | x 0 to 85, y 180.5 to 300: 10 158 m² (11.3 %) |
-| (20, 200, 80, 260) | 103.5 to 276 | 29.0 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 79.5: 9 008 m² |
+| middle (120, 120, 180, 180) | 29 to 271 | 29.1 s | 5 m slivers at the south and north edge: 850 m² (0.9 %) |
+| corner (0, 0, 60, 60) | 24 to 151 | 29.1 s | x 0 to 85, y 175 to 300: 10 625 m² (11.8 %) |
+| (20, 200, 80, 260) | 109 to 276 | 29.1 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 85: 9 475 m² |
 
 Revisit is computed from the plan: 2 x (distance from where the point leaves the footprint to
-the far end) / 11.5 + 6 s, worst point of the zone. 50 m altitude, 3 agents.
+the far end) / 11 + 6 s, worst point of the zone. 50 m altitude, 3 agents.
+
+## Test hook: swap
+
+`allocate(..., reverse=True)` hands the strips out east to west. Only the ground's `--swap-at`
+uses it (scenario "swap" of `run_mission.py`): one re-plan that makes every agent cross the
+others at cruise altitude, to stress the safety filter. Later re-plans use the normal order.
 
 ## Radio determinism (`sim/radio.py`)
 

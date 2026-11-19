@@ -218,7 +218,7 @@ def test_cruiser_passes_under_a_forgotten_deaf_agent(seed):
     """Agent 1 hovers deaf at its hold altitude; once forgotten, agent 2 flies straight under."""
     flyers, d_min = fly([(1, (0.0, 0.0, config.hold_alt(1)), [(0.0, 0.0)], True),
                          (2, (-300.0, 0.0, CRUISE), [(200.0, 0.0)])],
-                        50.0, seed, blackouts=[(1, 2.0, 1000.0)])
+                        60.0, seed, blackouts=[(1, 2.0, 1000.0)])
     holder, cruiser = flyers
     closest_xy = min(math.dist(a[1][:2], b[1][:2]) for a, b in zip(holder.log, cruiser.log))
     assert d_min >= config.D_MIN_M

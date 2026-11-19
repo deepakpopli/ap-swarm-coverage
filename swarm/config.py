@@ -23,9 +23,10 @@ def start_xy(index, n):
 
 # ---- flight
 V_MAX_MS = 12.0          # task limit
-WP_SPD_MS = 11.5         # autopilot speed cap (parameter WP_SPD) and cruise speed.
-                         # Below 12 because the autopilot overshoots its cap by up to 0.35 m/s
-                         # (results/spike/speed_cap.md).
+WP_SPD_MS = 11.0         # autopilot speed cap (parameter WP_SPD) and cruise speed.
+                         # Below 12 because the autopilot overshoots its cap: by up to 0.31 m/s
+                         # on straight legs (results/spike/speed_cap.md), by 0.74 m/s when it
+                         # speeds up out of a sharp turn (12.24 m/s at 11.5 in a Gazebo run).
 CONTROL_HZ = 20.0        # setpoint rate to the autopilot (task: 10 Hz or faster)
 ALT_CRUISE_M = float(os.environ.get("SWARM_ALT", "50"))
 LAYER_STEP_M = 10.0      # vertical spacing of hold altitudes: D_MIN_M + 2 x 1 m tracking error

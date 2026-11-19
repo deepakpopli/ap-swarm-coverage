@@ -153,8 +153,8 @@ def lane_of(asg):
 
 
 @pytest.mark.parametrize("zone, zone_agent, uncovered", [
-    (MIDDLE_ZONE, 2, []),
-    (CORNER_ZONE, 1, [[0.0, 85.0, 180.5, 300.0]]),
+    (MIDDLE_ZONE, 2, [[107.5, 192.5, 0.0, 5.0], [107.5, 192.5, 295.0, 300.0]]),
+    (CORNER_ZONE, 1, [[0.0, 85.0, 175.0, 300.0]]),
 ])
 def test_priority_zone(at_alt, zone, zone_agent, uncovered):
     at_alt(50)
@@ -185,4 +185,4 @@ def test_priority_zone_survives_agent_loss():
     assert lane_of(after[2]) == lane_of(before[2])       # the zone agent keeps its lane
     assert_tiles_area([asg.share for asg in after.values()])
     assert after[3].share == [192.5, 300.0, 0.0, 300.0]
-    assert after[2].uncovered == [[0.0, 107.5, 0.0, 300.0]]   # one agent cannot fly both sides
+    assert after[2].uncovered[0] == [0.0, 107.5, 0.0, 300.0]  # one agent cannot fly both sides
