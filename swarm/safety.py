@@ -31,10 +31,13 @@ OBSTACLE_ID = config.GROUND_ID   # never a neighbour's id, so free for the test 
 class SafetyParams:
     """Measured values (SITL / Gazebo): results/spike/motion_bounds_{sitl,gazebo}.json.
 
+    Re-measured at WP_SPD 11.5, PSC_NE_JERK 4 (results/exp/step1/motion_bounds_*.json).
     Braking model: stop_offset + v t_react + v^2 / (2 a_brake) needs 28.6 m from 11.5 m/s;
-    measured 19.15 / 14.08 m. The drift model with a_max and dv_max covers the measured deviation
-    from the constant-velocity prediction: 5.5 / 17.9 / 30.4 m at 1 / 2 / 3 s against
-    3.6 / 13.5 / 28.4 (SITL) and 4.2 / 14.6 / 30.2 m (Gazebo), and 1.38 m at 0.5 s against 1.27.
+    measured 22.04 / 19.61 m (SITL / Gazebo); from 3.1 m/s 4.8 m against 4.44 / 4.09 m.
+    The drift model with a_max and dv_max covers the measured deviation from the
+    constant-velocity prediction: 1.38 / 5.5 / 19.1 / 33.1 / 47.1 m at 0.5 / 1 / 2 / 3 / 4 s
+    against 1.21 / 3.54 / 13.02 / 27.27 / 44.67 (SITL) and 1.05 / 3.72 / 13.45 / 27.87 / 45.24 m
+    (Gazebo).
     """
     margin_m: float = 1.0       # position error of both agents (estimate and sample timing)
     a_brake_ms2: float = 3.0    # braking we count on (see the braking model above)
@@ -43,7 +46,9 @@ class SafetyParams:
     a_max_ms2: float = 11.0     # drift envelope, not a physical acceleration (measured peak
                                 # 7.02 / 7.80 m/s^2): velocity samples lag, so 8 left the
                                 # deviation at 0.5 s and 1 s outside the disc
-    dv_max_ms: float = 12.5     # a full stop from the measured top speed 11.81 m/s
+    dv_max_ms: float = 14.0     # more than a full stop (11.75 m/s top speed): with 12.5 the
+                                # envelope missed the measured 4 s deviation of a reversal
+                                # (45.2 m Gazebo, 44.7 m SITL at WP_SPD 11.5, jerk 4)
     t_gap_s: float = 1.0        # 5 STATEs lost in a row at 20 % loss: p = 3e-4
     z_track_m: float = 1.0      # measured altitude error <= 0.08 m cruising, 0.94 m after takeoff
     plan_ahead_s: float = 0.6   # design: plan as if the next 3 STATEs are lost

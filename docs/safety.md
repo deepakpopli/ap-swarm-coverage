@@ -37,13 +37,14 @@ radio delay. Predicted centre = last position + last velocity x min(age, T_GO).
 
 How far j can be from that centre:
 
-- Up to T_GO, j may change its velocity by at most min(A_MAX t, DV_MAX). DV_MAX = 12.5 m/s: a
-  full stop from the measured top speed 11.81 m/s. A_MAX = 11 m/s^2 is an envelope, not the
+- Up to T_GO, j may change its velocity by at most min(A_MAX t, DV_MAX). DV_MAX = 14 m/s: more
+  than a full stop from the measured top speed (11.75 m/s), because a 180 degree reversal leaves
+  the prediction faster; 12.5 missed the measured 4 s deviation (table below). A_MAX = 11 m/s^2 is an envelope, not the
   physical peak (7.02 SITL / 7.80 Gazebo m/s^2 over 0.5 s): the reported velocity lags, so the
   measured deviation from the constant-velocity prediction is larger than 0.5 x 7.8 x t^2 at
   short horizons (1.27 m at 0.5 s, 4.21 m at 1 s). 11 is the smallest round value that covers
   every measured deviation up to 3 s (table below).
-  Drift = 0.5 A_MAX t^2 until t = DV_MAX / A_MAX = 1.14 s, then + DV_MAX per second.
+  Drift = 0.5 A_MAX t^2 until t = DV_MAX / A_MAX = 1.27 s, then + DV_MAX per second.
 - T_GO = 4.6 s is the latest age at which a silent j has started to brake:
   T_GAP 1.0 s (its radio failed at most 1 s after its last sample that reached us; five STATEs
   lost in a row at 20 % loss has p = 3e-4) + RADIO_DELAY 0.2 s (packets already in flight still
@@ -55,18 +56,19 @@ R(age) = D_MIN + MARGIN (1 m, position error of both agents) + drift. From the c
 
 | age (s) | 0.2  | 1     | 3     | 10 (and every age >= 6.6) |
 |---------|------|-------|-------|---------------------------|
-| R (m)   | 9.22 | 14.50 | 39.40 | 83.40                     |
+| R (m)   | 9.22 | 14.50 | 42.09 | 88.49                     |
 
 Drift against the largest measured deviation from the constant-velocity prediction (11.5 m/s
-vehicle, whole flight programme of `experiments/motion_bounds.py`, SITL / Gazebo):
+vehicle, WP_SPD 11.5, PSC_NE_JERK 4, whole flight programme of `experiments/motion_bounds.py`,
+SITL / Gazebo, `results/exp/step1/`):
 
 | horizon (s) | 0.5 | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|---|
-| drift (m) | 1.38 | 5.50 | 17.90 | 30.40 | 42.90 |
-| measured (m) | 1.27 / 1.23 | 3.62 / 4.21 | 13.45 / 14.60 | 28.40 / 30.20 | 48.93 / 50.85 |
+| drift (m) | 1.38 | 5.50 | 19.09 | 33.09 | 47.09 |
+| measured (m) | 1.21 / 1.05 | 3.54 / 3.72 | 13.02 / 13.45 | 27.27 / 27.87 | 44.67 / 45.24 |
 
-The 4 s values come from the full-speed 180 degree reversal (stops and 90 degree turns stay
-within 36.4 and 41.5 m); see residual risks.
+The 4 s values come from the full-speed 180 degree reversal. (At PSC_NE_JERK 12 they were
+48.93 / 50.85 m and stayed outside the envelope.) Nothing is measured between 4 s and T_GO.
 
 The velocity limit plans against R(age + 0.6 s): the disc as it will be if the next three STATEs
 are lost (fresh: 12.52 m), so a lost message does not put us inside the disc we just stopped at.
@@ -76,9 +78,9 @@ are lost (fresh: 12.52 m), so a lost message does not put us inside the disc we 
 v_stop(gap) = largest v with STOP_OFFSET + v T_REACT + v^2 / (2 A_BRAKE) <= gap, with
 STOP_OFFSET 2 m (measured back-track after a stop <= 0.45 m), T_REACT 0.4 s (autopilot reaction
 plus one 50 ms tick), A_BRAKE 3 m/s^2. v_stop(5 / 10 / 20 / 30 m) = 3.21 / 5.83 / 9.26 /
-11.82 m/s. The model is checked as a whole against measured stops: from 11.5 m/s it needs
-28.6 m, the vehicle stops in 19.15 m (SITL, 5.7 s) / 14.08 m (Gazebo, 2.1 s); from 9 m/s
-19.1 m against 13.49 / 9.93 m.
+11.82 m/s. The model is checked as a whole against measured stops (WP_SPD 11.5, PSC_NE_JERK
+4): from 11.5 m/s it needs 28.6 m, the vehicle stops in 22.04 m (SITL) / 19.61 m (Gazebo);
+from 9.2 m/s 20 m against 16.96 / 14.89 m; from 3.1 m/s 4.8 m against 4.44 / 4.09 m.
 
 For every neighbour we are not vertically separated from, in increasing id order:
 
