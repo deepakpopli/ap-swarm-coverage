@@ -462,13 +462,16 @@ def _tour_plans(order, xy, blacklist, previous, now, reverse):
                                      entries[a][1], m, True) for a in entries}
         if _spaced(list(plans.values())):
             break
-    if reverse and len(plans) == m:              # take the next agent's entry and phase
+    if reverse and len(plans) == m:
+        # Each agent flies to the tour slot just ahead of the next agent's position and takes
+        # over that agent's phase (late by its transit; it catches up at the corners): every
+        # agent must cross another. Joining "fresh" instead would wait up to a whole period.
         swapped = {}
         for a, b in zip(ids, ids[1:] + ids[:1]):
-            entry = plans[b].slots[plans[b].loop_from]
-            i = next(i for i, p in enumerate(own[a][0]) if p == entry)
-            swapped[a] = _tour_assignment(xy[a], own[a][0], own[a][1], period,
-                                          plans[b].t_ref, now, i, m, True)
+            pts, t_zero = own[a][0], (prev.get(b) or plans[b]).t_ref
+            near = min(range(len(pts)), key=lambda i: (math.dist(xy[b], pts[i]), i))
+            swapped[a] = _tour_assignment(xy[a], pts, own[a][1], period, t_zero, now,
+                                          (near + 1) % len(pts), m, False)
         plans = swapped
     for a in ids:
         if a not in plans:                       # every tour point blacklisted: hold
