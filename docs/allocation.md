@@ -15,12 +15,48 @@ Code: `swarm/allocator.py` (pure, deterministic), used by `swarm/ground.py`.
    area were never seen behind an out-and-back lane in a Gazebo run.)
 3. **Slots.** Transit points run from the agent to the nearest lane end. Then comes the
    repeating loop (`loop_from` = its first index). Consecutive slots are at most
-   `SLOT_SPACING_M` = 80 m apart: 7.7 s at cruise, about 10 s from a standing start, against the
-   15 s slot timeout. A single-lane strip is flown out and back, so its loop has every point
+   `SLOT_SPACING_M` = 80 m apart: 6.9 s at 11.5 m/s cruise, under 10 s from a standing start,
+   against the 15 s slot timeout. A single-lane strip is flown out and back, so its loop has every point
    twice. Nothing relies on slots being unique.
 4. **Stability.** An agent whose share is unchanged and whose previous plan has no
    blacklisted point keeps its previous assignment unchanged. Re-plans for one agent cause no
    churn for the others.
+
+## Layout "lanes" (SWARM_LAYOUT=lanes; default "strips" = rules 1-4 above)
+
+* **Lanes never move.** `ceil(area width / swath)` lanes over the whole area (4 at 50 m,
+  x = 37.5, 112.5, 187.5, 262.5, 75 m apart). A membership change only changes who flies them.
+* **Tour or groups.** With N agents alive the allocator takes whichever has the shorter worst
+  revisit period: one closed tour over all lanes (period / N) with the agents evenly spaced in
+  time, or contiguous lane groups with one loop each (the longest loop). Periods are lengths at
+  cruise plus measured corner costs (`TURN90_S` 2.45 s, `TURN180_S` 3.65 s, WP_SPD 11.5, jerk
+  4). At 50 m: tour 153.9 s (with slack), so N = 3 -> tour (51.3 s); N = 2 -> groups 2+2
+  (68.4 s against 76.9 s). The tour's closing leg runs back along the south lane ends, so N
+  evenly spaced agents can meet head-on there: N = 2 and 4 would (`tour_clearance_m`), so the
+  tour is only used if they stay `TOUR_CLEAR_M` = 50 m apart (N = 3: 75 m, passing on adjacent
+  lanes), except with more agents than lanes (N >= 5: tour regardless; N = 5 comes to 48 m,
+  N >= 6 meets head-on: not handled).
+* **Groups go to agents** by the smallest total distance to the group's loop; each agent joins
+  its loop at the nearest slot, as in rule 3.
+* **Even spacing without commanding velocities.** A tour assignment carries a schedule:
+  `t_ref`, `due_s` (one due time per loop slot) and `period_s`. The coverage controller holds
+  at a slot when it reached it early: at its entry, and at corners only (it is slowing to 2 m/s
+  there anyway). It never tries to speed up. The schedule gives every corner
+  `TOUR_SLACK_S` = 0.5 s more than it costs, so an agent on time holds about 0.5 s per corner
+  and one that fell behind catches up 0.5 s per corner. Wall clocks are assumed synchronised
+  (the safety filter already compares sample times across agents).
+* **Joining.** New phases: rank r gets phase origin now + offset + r x period / N; the offset
+  (1 s steps) and the ranking minimise the time until the last agent is on schedule. Each agent
+  flies straight (slots <= 79 m apart) to the tour slot it can reach soonest before that slot is
+  due, and holds there. Same team as before: nobody changes; an agent whose tour point was
+  blacklisted re-enters its own tour (without that point) at its old phase.
+* **Active slots apart.** In both layouts no two agents' simultaneously active slots (transit
+  points and the slot each starts on) may be closer than D_MIN + 2 x SLOT_REACH = 18 m: the
+  swap run issued two transit slots 0.2 m apart and stalled for 15 s. Transit points that clash
+  are moved along their leg (`_clear_leg`). Crossing transits can still leave a smaller gap at
+  the crossing point; there the safety filter has to separate them.
+* `--swap-at` with this layout: the agents swap tour entries and phases (or lane groups), so
+  they must cross.
 
 ## Infeasible slots
 
@@ -57,11 +93,10 @@ The zone (60 x 60 m) must be seen at least every `PRIORITY_REVISIT_S` = 30 s.
   single out-and-back lane whose ends are each at most `REACH_M` north or south of the zone
   centre.
 * A point on an out-and-back lane is revisited after 2 x (distance to the far end) / speed +
-  `TURN_S`. So `REACH_M = (30 - margin 2 - TURN_S 6) x 10.4 / 2 = 114.4 m`. `TURN_S` = 6 s:
-  the largest measured time lost in a 180 degree turn, 4.6 s (SITL, 11.5 m/s; Gazebo 4.5 s,
-  `results/spike/motion_bounds_*.json`), plus 1.4 s margin. In a Gazebo Mission B run a lane end
-  cost about 2.5 s (revisit of the zone centre 24.3-24.6 s at 11 m/s against 22.0 s of
-  straight flight), so the margin is large.
+  `TURN_S`. So `REACH_M = (30 - margin 2 - TURN_S 6) x 11.5 / 2 = 126.5 m`. `TURN_S` = 6 s:
+  at WP_SPD 11.5 and PSC_NE_JERK 4 an instant full-speed reversal loses 5.9-6.0 s
+  (`results/exp/step1/motion_bounds_*.json`), so the margin is now about 0; the controller's
+  slowed lane-end reversal loses about 3.6 s (speed_profile pattern). Not re-flown in Mission B.
 * The margin pays for points 30 m off the zone centre. The footprint's 24 m half-length leaves
   6 m, which is 0.5 s each way. About 1 s is left for flying below cruise speed near the ends.
 * The other agents split the area west and east of the zone strip, in proportion to width.
@@ -74,12 +109,12 @@ The parts of the zone agent's share that its camera never sweeps are returned as
 
 | Zone (xmin, ymin, xmax, ymax) | Lane ends (y) | Worst zone revisit | Uncovered |
 |---|---|---|---|
-| middle (120, 120, 180, 180) | 35.6 to 264.4 | 29.2 s | 16.6 m strips at the south and north edge: 2 822 m² (3.1 %) |
-| corner (0, 0, 60, 60) | 19 to 144.4 | 29.2 s | x 0 to 85, y 163.4 to 300: 11 611 m² (12.9 %) |
-| (20, 200, 80, 260) | 115.6 to 281 | 29.2 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 96.6: 10 461 m² |
+| middle (120, 120, 180, 180) | 23.5 to 276.5 | 29.2 s | 4.5 m strips at the south and north edge: 765 m² (0.9 %) |
+| corner (0, 0, 60, 60) | 19 to 156.5 | 29.2 s | x 0 to 85, y 175.5 to 300: 10 583 m² (11.8 %) |
+| (20, 200, 80, 260) | 103.5 to 281 | 29.2 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 84.5: 9 433 m² |
 
 Revisit is computed from the plan: 2 x (distance from where the point leaves the footprint to
-the far end) / 10.4 + 6 s, worst point of the zone. 50 m altitude, 3 agents. Uncovered parts
+the far end) / 11.5 + 6 s, worst point of the zone. 50 m altitude, 3 agents. Uncovered parts
 count from where the agent turns, 5 m before a lane end.
 
 ## Test hook: swap

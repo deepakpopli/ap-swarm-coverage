@@ -15,13 +15,16 @@ from swarm import config, sensor
 SWATH_M, ALONG_M = sensor.lane_footprint(config.ALT_CRUISE_M)
 
 # Legs are cut 1 m below SLOT_SPACING_M so rounding slots to 1 cm can never break the bound.
-# 80 m at 10.4 m/s cruise is 7.7 s. From a standing start at 2 m/s^2 or more, add at most
-# 10.4 / (2 x 2) = 2.6 s: about 10 s against the 15 s SLOT_TIMEOUT_S, a third of it spare.
+# 79 m at 11.5 m/s cruise is 6.9 s. From a standing start the vehicle needs 5.2-5.4 s to
+# reach 95 % of cruise (measured, WP_SPD 11.5, PSC_NE_JERK 4: results/exp/step1), so at most
+# about 2.7 s more: under 10 s against the 15 s SLOT_TIMEOUT_S, a third of it spare.
 LEG_M = config.SLOT_SPACING_M - 1.0
 
-# Mission B. TURN_S: time lost in a 180 degree turn at a lane end. Placeholder: to be measured
-# in SITL. A point on an out-and-back lane is revisited after 2 x (distance to the far end) /
-# speed + TURN_S, so lane ends at most REACH_M from the zone centre keep the zone centre's
+# Mission B. TURN_S: time lost in a 180 degree turn at a lane end. Measured at WP_SPD 11.5,
+# PSC_NE_JERK 4: 5.9-6.0 s for an instant reversal at full speed, about 3.6 s for the
+# CoverageController's slowed lane-end reversal (results/exp/step1), so 6 s still bounds it.
+# A point on an out-and-back lane is revisited after 2 x (distance to the far end) / speed +
+# TURN_S, so lane ends at most REACH_M from the zone centre keep the zone centre's
 # revisit under PRIORITY_REVISIT_S - REVISIT_MARGIN_S. The margin pays for zone points up to
 # 30 m off centre (the footprint's 24 m half-length absorbs all but 6 m = 0.5 s each way) and
 # leaves about 1 s for flying below cruise speed near the ends.
