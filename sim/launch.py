@@ -1,318 +1,174 @@
-#!/usr/bin/env python3
-"""Fleet launcher: N ArduCopter SITL processes, optionally under one Gazebo Harmonic world.
+"""Fleet: N ArduCopter SITL autopilots, either with ArduPilot's built-in physics ("sitl") or
+inside one Gazebo Harmonic world ("gazebo"). Only one fleet may run at a time.
 
-    from sim.launch import Fleet
-    with Fleet("sitl", 3, "run/myexp") as fleet:   # or Fleet("gazebo", ...)
-        fleet.start()
-        ...
-        fleet.kill_vehicle(2)       # SIGKILL of agent 2's arducopter
-    # leaving the block (or fleet.stop()) tears everything down
+Agent id 1..n = MAV_SYSID; SITL instance = id - 1; MAVLink on TCP config.sitl_tcp_port(id).
+Both backends report the same area ENU positions:
+  sitl:   the home of each arducopter is its start point config.start_xy(id - 1, n).
+  gazebo: the home of every arducopter is the area origin, the world puts model id - 1 at its
+          start point, and the JSON backend reports positions relative to home.
 
-CLI:  python3 sim/launch.py --backend sitl -n 3 --run-dir run/fleet   (Ctrl-C stops)
-
-Ids and ports
-  agent id 1..N == MAV_SYSID; SITL instance = base_instance + id - 1
-  autopilot MAVLink: tcp 127.0.0.1:5760 + 10*instance (see mavlink_port())
-  Gazebo JSON FDM port: 9002 + 10*instance
-
-Frames
-  Agent index i = id - 1 starts at config.start_xy(i, n) in the area ENU frame
-  (x east, y north, metres) whose origin is config.ORIGIN_LLA.
-  sitl:   each arducopter gets --home = config.enu_to_lla(start), alt = origin alt,
-          so the EKF origin / home of every vehicle is its own start point.
-  gazebo: the world's spherical_coordinates is the area origin, model i is placed at
-          its start (x east, y north) and every arducopter gets --home = area origin.
-          The JSON backend reports the model's world position relative to --home, so
-          GLOBAL_POSITION_INT again lands on the start point. The plugin runs with
-          lock_step=0 so a killed autopilot does not freeze the world.
-
-CPU / thermal rules: every process runs under `nice -n 19` and its PID is written to
-run/pids/<tag>_*.pid so tools/thermal_guard.sh can SIGSTOP it; the files are removed in stop().
+Every child runs under `nice -n 19`, gets SIGKILL when this process dies (PR_SET_PDEATHSIG,
+so call start() from the main thread) and has its PID in run/pids/ so tools/thermal_guard.sh
+can pause it.
 """
-import argparse
-import atexit
+import ctypes
+import glob
 import os
+import re
 import signal
-import socket
 import subprocess
-import sys
 import time
+from typing import Optional
+
+from sim import gazebo_world
+from swarm import config
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-from swarm import config                       # noqa: E402
-from sim.gazebo import gen_world               # noqa: E402
-
-# same env vars and defaults as setup.sh
+PID_DIR = os.path.join(ROOT, "run", "pids")
 ARDUPILOT = os.path.expanduser(os.environ.get("ARDUPILOT_HOME", "~/ardupilot"))
 ARDUCOPTER = os.path.join(ARDUPILOT, "build/sitl/bin/arducopter")
-DEFAULTS_DIR = os.path.join(ARDUPILOT, "Tools/autotest/default_params")
-AP_GAZEBO = os.path.expanduser(os.environ.get("ARDUPILOT_GAZEBO", "~/ardupilot_gazebo"))
-PID_DIR = os.path.join(ROOT, "run", "pids")
+DEFAULT_PARAMS = os.path.join(ARDUPILOT, "Tools/autotest/default_params")
+AP_GAZEBO = gazebo_world.AP_GAZEBO
+PR_SET_PDEATHSIG = 1
 
 
-def mavlink_port(instance):
-    """TCP port of SITL instance `instance`'s first serial port (SERIAL0)."""
-    return 5760 + 10 * instance
+def register_pid(name: str, pid: int) -> None:
+    """Write run/pids/<name>.pid so the thermal guard can pause this process."""
+    os.makedirs(PID_DIR, exist_ok=True)
+    with open(os.path.join(PID_DIR, f"{name}.pid"), "w") as f:
+        f.write(str(pid))
 
 
-def _port_open(port, host="127.0.0.1"):
-    """True if something accepts TCP connections on host:port."""
-    try:
-        with socket.create_connection((host, port), timeout=0.3):
-            return True
-    except OSError:
-        return False
+def unregister_pids(prefix: str) -> None:
+    """Remove every run/pids/<prefix>*.pid."""
+    for path in glob.glob(os.path.join(PID_DIR, f"{prefix}*.pid")):
+        os.remove(path)
 
 
-def _session_pids(sid):
-    """All live PIDs whose session id is `sid` (the gz sim launcher plus its children)."""
-    pids = []
-    for d in os.listdir("/proc"):
-        if not d.isdigit():
-            continue
-        try:
-            fields = open(f"/proc/{d}/stat").read().rsplit(")", 1)[1].split()
-            if int(fields[3]) == sid:      # field 6 of /proc/pid/stat = session id
-                pids.append(int(d))
-        except (OSError, IndexError, ValueError):
-            pass
-    return pids
+def _die_with_parent() -> None:
+    """Runs in the child before exec: the kernel sends it SIGKILL when the parent dies."""
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+
+
+def _start(cmd: list, log_path: str, **popen_args) -> subprocess.Popen:
+    """Start cmd under nice -n 19, output to log_path, killed when we die."""
+    log = open(log_path, "w")
+    return subprocess.Popen(["nice", "-n", "19"] + cmd, stdout=log, stderr=subprocess.STDOUT,
+                            preexec_fn=_die_with_parent, **popen_args)
+
+
+def _port_holder(port: int) -> str:
+    """The `ss` line of whoever listens on TCP port, '' if it is free."""
+    result = subprocess.run(["ss", "-Htlnp", f"sport = :{port}"], capture_output=True, text=True)
+    return result.stdout.strip()
 
 
 class Fleet:
-    """N ArduCopter SITL autopilots (+ one Gazebo server for backend "gazebo").
-
-    backend:       "sitl" (ArduPilot's built-in quad physics) or "gazebo" (Gazebo Harmonic iris).
-    n:             number of vehicles; agent ids are 1..n.
-    run_dir:       working directory for logs/eeprom (created).
-    base_instance: SITL instance of agent 1. For gazebo, base_instance != 0 shifts the FDM
-                   ports and model names accordingly, but only ONE Gazebo world may run at a time.
-    """
-
-    def __init__(self, backend="sitl", n=3, run_dir=None, base_instance=0):
-        if backend not in ("sitl", "gazebo"):
-            raise ValueError("backend must be 'sitl' or 'gazebo'")
-        self.backend = backend
+    def __init__(self, backend: str, n: int, run_dir: str):
+        self.backend = backend        # "sitl" or "gazebo"
         self.n = n
-        self.base_instance = base_instance
-        self.run_dir = os.path.abspath(run_dir or os.path.join(ROOT, "run", f"fleet_{backend}"))
-        self.tag = f"fleet{os.getpid()}_{backend}{base_instance}"
-        self.procs = {}          # agent id -> Popen of its arducopter
-        self.gz = None           # Popen of `gz sim` (session leader) or None
-        self._pid_files = []
-        self.t_start = None      # wall time start() began
-        self.removed_models = {} # gazebo: agent id -> True if its model was removed after kill_vehicle()
-        atexit.register(self.stop)
+        self.run_dir = os.path.abspath(run_dir)
+        self.autopilots = {}          # agent id -> Popen of its arducopter
+        self.gz = None                # Popen of `gz sim -s` (one process: the server)
+        self.env = dict(os.environ, GZ_PARTITION=f"swarm{os.getpid()}",
+                        GZ_SIM_SYSTEM_PLUGIN_PATH=os.path.join(AP_GAZEBO, "build"),
+                        GZ_SIM_RESOURCE_PATH=os.path.join(self.run_dir, "gz", "models") + ":"
+                        + os.path.join(AP_GAZEBO, "models"))
 
-    # ---- ids / positions -------------------------------------------------------------
-    def instance(self, agent_id):
-        """SITL instance number of agent `agent_id` (1..n)."""
-        return self.base_instance + agent_id - 1
+    def port(self, agent_id: int) -> int:
+        return config.sitl_tcp_port(agent_id)
 
-    def port(self, agent_id):
-        """MAVLink TCP port of agent `agent_id`'s autopilot."""
-        return mavlink_port(self.instance(agent_id))
-
-    def start_xy(self, agent_id):
-        """Start position (x east, y north) in metres, area ENU frame."""
-        return config.start_xy(agent_id - 1, self.n)
-
-    @property
-    def pids(self):
-        """{name: pid} of every process this fleet started and that is still registered."""
-        out = {f"sitl{a}": p.pid for a, p in self.procs.items()}
-        if self.gz is not None:
-            out["gz"] = self.gz.pid
-        return out
-
-    # ---- pid registry for the thermal guard ------------------------------------------
-    def _register(self, name, pids):
-        os.makedirs(PID_DIR, exist_ok=True)
-        path = os.path.join(PID_DIR, f"{self.tag}_{name}.pid")
-        with open(path, "w") as f:
-            f.write(" ".join(str(p) for p in pids))
-        if path not in self._pid_files:
-            self._pid_files.append(path)
-
-    def _unregister(self, name):
-        path = os.path.join(PID_DIR, f"{self.tag}_{name}.pid")
-        if os.path.exists(path):
-            os.remove(path)
-        if path in self._pid_files:
-            self._pid_files.remove(path)
-
-    # ---- start -----------------------------------------------------------------------
-    def start(self, timeout=60.0):
-        """Start the simulator(s); return once every autopilot accepts TCP on its MAVLink port.
-
-        Does not arm or take off (that is MavVehicle's job). Raises RuntimeError on failure
-        after cleaning up whatever was started.
-        """
-        self.t_start = time.time()
+    def start(self, timeout_s: float = 60.0) -> None:
+        """Start everything; return when every autopilot accepts TCP. Does not arm."""
+        for agent_id in range(1, self.n + 1):
+            holder = _port_holder(self.port(agent_id))
+            if holder:
+                raise RuntimeError(f"port {self.port(agent_id)} is busy: {holder}")
+        unregister_pids("fleet_")     # left over if an earlier runner was killed
         os.makedirs(self.run_dir, exist_ok=True)
-        try:
-            if self.backend == "gazebo":
-                self._start_gazebo()
-            for agent_id in range(1, self.n + 1):
-                self._start_sitl(agent_id)
-            deadline = time.time() + timeout
-            for agent_id in range(1, self.n + 1):
-                while not _port_open(self.port(agent_id)):
-                    if self.procs[agent_id].poll() is not None:
-                        raise RuntimeError(f"arducopter for agent {agent_id} exited, see "
-                                           f"{self.run_dir}/s{self.instance(agent_id)}/sitl.log")
-                    if time.time() > deadline:
-                        raise RuntimeError(f"agent {agent_id}: port {self.port(agent_id)} not open")
-                    time.sleep(0.2)
-        except BaseException:
-            self.stop()
-            raise
-        return self
+        if self.backend == "gazebo":
+            self._start_gazebo()
+        for agent_id in range(1, self.n + 1):
+            self._start_autopilot(agent_id)
+        deadline = time.time() + timeout_s
+        for agent_id in range(1, self.n + 1):
+            while not _port_holder(self.port(agent_id)):
+                if self.autopilots[agent_id].poll() is not None or time.time() > deadline:
+                    self.stop()
+                    raise RuntimeError(f"autopilot {agent_id} did not start, see {self.run_dir}")
+                time.sleep(0.2)
 
-    def _start_gazebo(self):
+    def _start_gazebo(self) -> None:
         gz_dir = os.path.join(self.run_dir, "gz")
-        positions = [self.start_xy(a) for a in range(1, self.n + 1)]
-        instances = [self.instance(a) for a in range(1, self.n + 1)]
-        sdf = gen_world.generate(gz_dir, positions, config.ORIGIN_LLA, instances, lock_step=False)
-        env = dict(os.environ)
-        env["GZ_SIM_SYSTEM_PLUGIN_PATH"] = os.path.join(AP_GAZEBO, "build")
-        env["GZ_SIM_RESOURCE_PATH"] = os.path.join(gz_dir, "models") + ":" + os.path.join(AP_GAZEBO, "models")
-        env["GZ_PARTITION"] = self.tag     # keep gz-transport traffic private to this fleet
-        log = open(os.path.join(self.run_dir, "gz.log"), "w")
-        # new session so stop() can signal the launcher and all its children as one group
-        self.gz = subprocess.Popen(["nice", "-n", "19", "gz", "sim", "-s", "-r", "-v", "2", sdf],
-                                   env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        self._register("gz", [self.gz.pid])
-        time.sleep(5.0)                    # let the server load the world and plugins
-        if self.gz.poll() is not None:
-            raise RuntimeError(f"gz sim exited, see {self.run_dir}/gz.log")
-        self._register("gz", _session_pids(self.gz.pid) or [self.gz.pid])
+        positions = [config.start_xy(i, self.n) for i in range(self.n)]
+        sdf = gazebo_world.generate(gz_dir, positions, config.ORIGIN_LLA)
+        self.gz = _start(["gz", "sim", "-s", "-r", "-v", "2", sdf],
+                         os.path.join(self.run_dir, "gz.log"), env=self.env)
+        register_pid("fleet_gz", self.gz.pid)
 
-    def _start_sitl(self, agent_id):
-        inst = self.instance(agent_id)
-        wd = os.path.join(self.run_dir, f"s{inst}")
-        os.makedirs(wd, exist_ok=True)
-        defaults = os.path.join(DEFAULTS_DIR, "copter.parm")
+    def _start_autopilot(self, agent_id: int) -> None:
+        instance = agent_id - 1
+        work_dir = os.path.join(self.run_dir, f"s{instance}")
+        os.makedirs(work_dir, exist_ok=True)
+        params = os.path.join(DEFAULT_PARAMS, "copter.parm")
         if self.backend == "gazebo":
             model = "JSON"
-            defaults += "," + os.path.join(DEFAULTS_DIR, "gazebo-iris.parm")
+            params += "," + os.path.join(DEFAULT_PARAMS, "gazebo-iris.parm")
             lat, lon = config.ORIGIN_LLA[0], config.ORIGIN_LLA[1]
         else:
             model = "+"
-            lat, lon = config.enu_to_lla(*self.start_xy(agent_id))
+            lat, lon = config.enu_to_lla(*config.start_xy(instance, self.n))
         home = f"{lat:.8f},{lon:.8f},{config.ORIGIN_LLA[2]},0"
-        cmd = ["nice", "-n", "19", ARDUCOPTER, "-w", "--model", model, "-I", str(inst),
-               "--sysid", str(agent_id), "--home", home, "--defaults", defaults]
-        log = open(os.path.join(wd, "sitl.log"), "w")
-        # `nice` execs arducopter, so Popen.pid is the arducopter pid itself
-        p = subprocess.Popen(cmd, cwd=wd, stdout=log, stderr=subprocess.STDOUT)
-        self.procs[agent_id] = p
-        self._register(f"sitl{agent_id}", [p.pid])
+        cmd = [ARDUCOPTER, "-w", "--model", model, "-I", str(instance), "--sysid", str(agent_id),
+               "--home", home, "--defaults", params]
+        # nice execs arducopter, so the Popen pid is the arducopter pid
+        process = _start(cmd, os.path.join(work_dir, "sitl.log"), cwd=work_dir)
+        self.autopilots[agent_id] = process
+        register_pid(f"fleet_sitl{agent_id}", process.pid)
 
-    # ---- kill / stop -----------------------------------------------------------------
-    def kill_vehicle(self, agent_id):
-        """SIGKILL agent `agent_id`'s arducopter (simulated sudden autopilot loss). Returns kill wall time.
+    def kill_vehicle(self, agent_id: int) -> bool:
+        """SIGKILL the agent's arducopter (sudden autopilot loss). True if a model was removed.
 
-        gazebo: the dead vehicle's model is then removed from the world. Reason: once its
-        ArduPilot is gone, ardupilot_gazebo's ArduPilotPlugin (lock_step=0) waits 1 ms in recv()
-        on every 1 ms physics step for that model (ReceiveServoPacket, waitMs = 1 when offline),
-        which slows the whole world: measured RTF 0.45 -> 0.29 after one kill, 0.55-0.65 after
-        removing the model. Every agent works in wall time, so a slowed world makes the survivors'
-        position targets run ahead of the sim and they fly at the autopilot's 12 m/s cap.
-        The removed drone just disappears (with motors off it would have fallen).
+        gazebo: the dead model is then removed. The ardupilot_gazebo plugin waits 1 ms per
+        physics step for an autopilot that does not answer, which dropped the whole world to
+        ~0.6x real time. A run with a slowed world is invalid, so a failed removal raises.
         """
-        p = self.procs.get(agent_id)
-        if p is None:
-            raise KeyError(agent_id)
-        t = time.time()
-        if p.poll() is None:
-            os.kill(p.pid, signal.SIGKILL)
-        p.wait(timeout=5)
-        self._unregister(f"sitl{agent_id}")
-        if self.backend == "gazebo":
-            self.removed_models[agent_id] = self._remove_model(f"iris_{self.instance(agent_id)}")
-        return t
-
-    def _remove_model(self, name):
-        """Remove a model from the running world (gz service). Returns True on success."""
-        env = dict(os.environ, GZ_PARTITION=self.tag)
-        try:
-            r = subprocess.run(["gz", "service", "-s", "/world/swarm/remove", "--reqtype", "gz.msgs.Entity",
-                                "--reptype", "gz.msgs.Boolean", "--timeout", "3000",
-                                "--req", f'name: "{name}" type: MODEL'],
-                               env=env, capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
+        process = self.autopilots.pop(agent_id)
+        process.kill()
+        process.wait()
+        unregister_pids(f"fleet_sitl{agent_id}")
+        if self.backend == "sitl":
             return False
-        return "data: true" in r.stdout
+        reply = self._gz(["service", "-s", "/world/swarm/remove", "--reqtype", "gz.msgs.Entity",
+                          "--reptype", "gz.msgs.Boolean", "--timeout", "3000",
+                          "--req", f'name: "iris_{agent_id - 1}" type: MODEL'])
+        if "data: true" not in reply:
+            raise RuntimeError(f"could not remove iris_{agent_id - 1}: {reply!r}")
+        return True
 
-    def alive(self, agent_id):
-        """True while agent `agent_id`'s arducopter process is running."""
-        p = self.procs.get(agent_id)
-        return p is not None and p.poll() is None
+    def real_time_factor(self) -> Optional[float]:
+        """Gazebo's current real-time factor (takes ~1 s); None for sitl."""
+        if self.backend == "sitl":
+            return None
+        stats = self._gz(["topic", "-e", "-n", "1", "-t", "/world/swarm/stats"])
+        return float(re.search(r"real_time_factor: ([\d.e-]+)", stats).group(1))
 
-    def stop(self):
-        """Tear down: SIGTERM every arducopter, then the gz session; SIGKILL whatever lingers."""
-        for p in self.procs.values():
-            if p.poll() is None:
-                p.terminate()
-        for p in self.procs.values():
+    def _gz(self, args: list) -> str:
+        result = subprocess.run(["gz"] + args, env=self.env, capture_output=True, text=True,
+                                timeout=10)
+        return result.stdout
+
+    def stop(self) -> None:
+        """SIGTERM every child, SIGKILL what is left after a few seconds, unregister PIDs."""
+        children = list(self.autopilots.values()) + ([self.gz] if self.gz else [])
+        for process in children:
+            process.terminate()
+        for process in children:
             try:
-                p.wait(timeout=3)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                p.kill()
-                p.wait(timeout=3)
-        if self.gz is not None and self.gz.poll() is None:
-            try:
-                os.killpg(self.gz.pid, signal.SIGTERM)   # only the session we created
-                self.gz.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.gz.pid, signal.SIGKILL)
-                self.gz.wait(timeout=3)
-            except ProcessLookupError:
-                pass
-        if self.gz is not None:
-            # children of the launcher may outlive it; they are still in our session
-            for pid in _session_pids(self.gz.pid):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-        for path in list(self._pid_files):
-            if os.path.exists(path):
-                os.remove(path)
-        self._pid_files.clear()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.stop()
-        return False
-
-
-def main():
-    ap = argparse.ArgumentParser(description="Start a SITL fleet and keep it running until Ctrl-C.")
-    ap.add_argument("--backend", choices=["sitl", "gazebo"], default="sitl")
-    ap.add_argument("-n", type=int, default=3)
-    ap.add_argument("--run-dir", default=None)
-    ap.add_argument("--base-instance", type=int, default=0)
-    a = ap.parse_args()
-    fleet = Fleet(a.backend, a.n, a.run_dir, a.base_instance)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    with fleet:
-        fleet.start()
-        for agent_id in range(1, a.n + 1):
-            print(f"agent {agent_id}: tcp:127.0.0.1:{fleet.port(agent_id)} start_xy={fleet.start_xy(agent_id)}")
-        print("pids", fleet.pids, flush=True)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-
-
-if __name__ == "__main__":
-    main()
+                process.kill()
+                process.wait()
+        self.autopilots = {}
+        self.gz = None
+        unregister_pids("fleet_")
