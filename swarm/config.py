@@ -65,6 +65,12 @@ RADIO_DELAY_S = 0.200
 SUSPECT_S = 2.0          # silent this long: suspect
 LOST_S = 12.0            # silent this long: lost. Longer than Mission C's 10 s blackout.
 
+# ---- Mission A coverage layout, one per run (SWARM_LAYOUT=lanes|strips, like SWARM_ALT):
+# "strips" = one equal strip per agent, re-cut on every membership change (the prototype);
+# "lanes" = lanes fixed over the whole area, flown as one shared tour or as lane groups
+# (swarm/allocator.py, docs/allocation.md).
+LAYOUT = os.environ.get("SWARM_LAYOUT", "strips")
+
 # ---- feasibility feedback
 SLOT_TIMEOUT_S = 15.0    # a slot not reached this long after becoming active is infeasible
 SLOT_REACH_M = 5.0       # a slot counts as reached inside this horizontal radius
