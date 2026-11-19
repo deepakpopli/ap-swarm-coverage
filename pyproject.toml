@@ -1,0 +1,20 @@
+[project]
+name = "swarm-coverage"
+version = "0.1.0"
+description = "Resilient multi-drone area coverage on ArduPilot SITL"
+requires-python = ">=3.10"
+dependencies = ["pymavlink", "numpy", "matplotlib"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = ["slow: real-time or subprocess tests (deselect with -m 'not slow')"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
