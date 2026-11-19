@@ -67,13 +67,20 @@ def _edges(x_west, x_east, n):
     return [[cuts[i], cuts[i + 1]] for i in range(n)]
 
 
+def _end_inset():
+    """How far lane ends lie inside the area's south and north edges. The agent counts a slot as
+    reached up to SLOT_REACH_M before it and turns there, so half the footprint length minus
+    that: the camera still reaches the edge (it missed the outermost 2-3 m in a Gazebo run)."""
+    return ALONG_M / 2 - config.SLOT_REACH_M
+
+
 def _strip(x_west, x_east):
-    """A full-height strip: lanes one swath apart, ends inset by half the footprint length."""
+    """A full-height strip: lanes one swath apart, ends inset by _end_inset()."""
     x0, x1, y0, y1 = config.AREA
     n_lanes = math.ceil((x_east - x_west) / SWATH_M - 1e-9)   # float noise must not add a lane
     width = (x_east - x_west) / n_lanes
     lane_xs = [x_west + (i + 0.5) * width for i in range(n_lanes)]
-    return _Strip([x_west, x_east, y0, y1], lane_xs, y0 + ALONG_M / 2, y1 - ALONG_M / 2, [])
+    return _Strip([x_west, x_east, y0, y1], lane_xs, y0 + _end_inset(), y1 - _end_inset(), [])
 
 
 def _leg(a, b, bad_keys):
@@ -166,12 +173,13 @@ def _zone_split(order, xy, zone):
     zone_agent = min(order, key=lambda a: (math.dist(xy[a], (zx, zy)), a))
     half = SWATH_M / 2
     lane_x = min(max(zx, x0 + half), x1 - half)          # lane footprint stays inside the area
-    y_south = max(y0 + ALONG_M / 2, zy - REACH_M)
-    y_north = min(y1 - ALONG_M / 2, zy + REACH_M)
+    y_south = max(y0 + _end_inset(), zy - REACH_M)
+    y_north = min(y1 - _end_inset(), zy + REACH_M)
     others = [a for a in order if a != zone_agent]
     n_west, n_east = _side_counts(len(others), lane_x - half - x0, x1 - lane_x - half)
     share = [x0 if n_west == 0 else lane_x - half, x1 if n_east == 0 else lane_x + half, y0, y1]
-    sweep = [lane_x - half, lane_x + half, y_south - ALONG_M / 2, y_north + ALONG_M / 2]
+    turn = config.SLOT_REACH_M - ALONG_M / 2           # the agent turns this far before an end
+    sweep = [lane_x - half, lane_x + half, y_south + turn, y_north - turn]
     strips = {zone_agent: _Strip(share, [lane_x], y_south, y_north, _uncovered(share, sweep))}
     for a, (sx0, sx1) in zip(others[:n_west], _edges(x0, lane_x - half, n_west)):
         strips[a] = _strip(sx0, sx1)

@@ -70,8 +70,8 @@ def test_spacing_bound_and_loop_closure(n, where):
 
 
 @pytest.mark.parametrize("alt_m, lanes, y_ends", [
-    (50, [125.0, 175.0], (24.0, 276.0)),     # 85 m swath: a 100 m strip needs 2 lanes
-    (60, [150.0], (28.5, 271.5)),            # 102 m swath: 1 lane
+    (50, [125.0, 175.0], (19.0, 281.0)),     # 85 m swath: a 100 m strip needs 2 lanes
+    (60, [150.0], (23.5, 276.5)),            # 102 m swath: 1 lane
 ])
 def test_lanes_from_swath(at_alt, alt_m, lanes, y_ends):
     at_alt(alt_m)
@@ -153,8 +153,8 @@ def lane_of(asg):
 
 
 @pytest.mark.parametrize("zone, zone_agent, uncovered", [
-    (MIDDLE_ZONE, 2, [[107.5, 192.5, 0.0, 5.0], [107.5, 192.5, 295.0, 300.0]]),
-    (CORNER_ZONE, 1, [[0.0, 85.0, 175.0, 300.0]]),
+    (MIDDLE_ZONE, 2, [[107.5, 192.5, 0.0, 10.0], [107.5, 192.5, 290.0, 300.0]]),
+    (CORNER_ZONE, 1, [[0.0, 85.0, 170.0, 300.0]]),
 ])
 def test_priority_zone(at_alt, zone, zone_agent, uncovered):
     at_alt(50)

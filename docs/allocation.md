@@ -9,8 +9,10 @@ Code: `swarm/allocator.py` (pure, deterministic), used by `swarm/ground.py`.
    not cross.
 2. **Lanes.** North-south, `ceil(strip width / swath)` of them, evenly spread over the strip.
    The swath is the camera footprint across track at the cruise altitude (85 m at 50 m). Lane
-   ends are inset by half the along-track footprint (24 m at 50 m), so the camera still
-   reaches the area's edge.
+   ends are inset by half the along-track footprint minus `SLOT_REACH_M` (24 - 5 = 19 m at
+   50 m): the agent counts a slot as reached up to 5 m before it and turns there, and the
+   camera must still reach the area's edge. (With a 24 m inset the outermost 2-3 m of the
+   area were never seen behind an out-and-back lane in a Gazebo run.)
 3. **Slots.** Transit points run from the agent to the nearest lane end. Then comes the
    repeating loop (`loop_from` = its first index). Consecutive slots are at most
    `SLOT_SPACING_M` = 80 m apart: 7 s at cruise, under 10 s from a standing start, against the
@@ -72,12 +74,13 @@ The parts of the zone agent's share that its camera never sweeps are returned as
 
 | Zone (xmin, ymin, xmax, ymax) | Lane ends (y) | Worst zone revisit | Uncovered |
 |---|---|---|---|
-| middle (120, 120, 180, 180) | 29 to 271 | 29.1 s | 5 m slivers at the south and north edge: 850 m² (0.9 %) |
-| corner (0, 0, 60, 60) | 24 to 151 | 29.1 s | x 0 to 85, y 175 to 300: 10 625 m² (11.8 %) |
-| (20, 200, 80, 260) | 109 to 276 | 29.1 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 85: 9 475 m² |
+| middle (120, 120, 180, 180) | 29 to 271 | 29.1 s | 10 m strips at the south and north edge: 1 700 m² (1.9 %) |
+| corner (0, 0, 60, 60) | 19 to 151 | 29.1 s | x 0 to 85, y 170 to 300: 11 050 m² (12.3 %) |
+| (20, 200, 80, 260) | 109 to 281 | 29.1 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 90: 9 900 m² |
 
 Revisit is computed from the plan: 2 x (distance from where the point leaves the footprint to
-the far end) / 11 + 6 s, worst point of the zone. 50 m altitude, 3 agents.
+the far end) / 11 + 6 s, worst point of the zone. 50 m altitude, 3 agents. Uncovered parts
+count from where the agent turns, 5 m before a lane end.
 
 ## Test hook: swap
 
