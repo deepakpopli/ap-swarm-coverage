@@ -6,8 +6,8 @@ yaw is rad, 0 = north, clockwise.
 
 How send_setpoint(vx, vy, z) flies: every call sends ONE position-only target
     target_xy = current_xy + (vx, vy) * lead_s(speed)
-lead_s() is the lead at which the autopilot flies at the commanded speed (1.06 s at 3 m/s,
-1.63 s at 11.5 m/s).
+lead_s() is the lead at which the autopilot flies at the commanded speed (with PARAMS:
+3.15 s at 3 m/s, 2.94 s at 11.5 m/s).
   - WP_SPD caps the speed of position targets but not of velocity targets
     (results/spike/speed_cap.md), so the autopilot itself enforces the speed limit.
   - The target is re-aimed from the current position on every call, so a velocity cut by the
@@ -44,8 +44,10 @@ POSITION_ONLY = 0x09F8   # SET_POSITION_TARGET type_mask: use position and yaw, 
 # RTL would fly home straight across the other agents' areas.
 PARAMS = {
     "WP_SPD": config.WP_SPD_MS,    # m/s, caps the speed of position targets in GUIDED
-    "WP_ACC": 6.0,                 # m/s^2 (default 2.5): stop from cruise in ~14 m, not ~28 m
-    "PSC_NE_JERK": 12.0,           # m/s^3 (default 5): same reason
+    "WP_ACC": 6.0,                 # m/s^2 (default 2.5): stop from cruise in ~20 m, not ~28 m
+    "PSC_NE_JERK": 4.0,            # m/s^3 (default 5): a low jerk keeps the vehicle on its
+                                   # shaped trajectory; at 12 it overshot WP_SPD by 2.3 m/s
+                                   # after a brake (config.WP_SPD_MS)
     "WP_SPD_UP": 4.0,              # m/s (default 2.5): an ALT_STEP_M climb must not slow cruise
     "WP_SPD_DN": 4.0,              # m/s (default 1.5): same for descents
     "ATC_ANGLE_MAX": 45.0,         # deg (default 30): the SITL quad tops out at 10.3 m/s at 30

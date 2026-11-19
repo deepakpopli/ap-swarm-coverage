@@ -23,11 +23,13 @@ def start_xy(index, n):
 
 # ---- flight
 V_MAX_MS = 12.0          # task limit
-WP_SPD_MS = 10.4         # autopilot speed cap (parameter WP_SPD) and cruise speed. The
-                         # autopilot overshoots its cap by up to WP_ACC^2 / (2 PSC_NE_JERK) =
-                         # 1.5 m/s when it speeds up at full acceleration (measured 1.47 m/s in
-                         # a Gazebo run at 11.0, 0.31 m/s on straight legs: speed_cap.md), so
-                         # 10.4 keeps every vehicle at or below 11.9 < V_MAX_MS.
+WP_SPD_MS = 11.5         # autopilot speed cap (parameter WP_SPD) and cruise speed. WP_SPD
+                         # caps the autopilot's shaped trajectory, not the vehicle: the vehicle
+                         # overshoots it by a tracking error that grows with PSC_NE_JERK
+                         # (mav_vehicle.PARAMS), worst after a brake and full re-acceleration.
+                         # Measured true speed over that manoeuvre set: 12.70 m/s at 10.4 with
+                         # jerk 12 (Gazebo), 11.52 (Gazebo) / 11.71 (SITL) at 11.5 with jerk 4.
+                         # So the jerk, not a lower cruise speed, keeps it under V_MAX_MS.
 CONTROL_HZ = 20.0        # setpoint rate to the autopilot (task: 10 Hz or faster)
 ALT_CRUISE_M = float(os.environ.get("SWARM_ALT", "50"))
 LAYER_STEP_M = 10.0      # vertical spacing of hold altitudes: D_MIN_M + 2 x 1 m tracking error
