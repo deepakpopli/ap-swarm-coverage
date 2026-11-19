@@ -1,36 +1,23 @@
 #!/usr/bin/env python3
-"""Run ONE coverage mission end to end and leave a complete run directory.
+"""Run ONE mission: a fleet, a radio, a ground station, N agents and a schedule of timed faults.
 
-    python run_mission.py --mission A --backend gazebo --n 3 --seed 1 --out runs/eval/seed_1
-        [--mission-s 180] [--port-base 0] [--base-instance 0] [--no-kill] [--kill-window 60 90]
-        [--kill-agent-too]
+    python run_mission.py --mission A|B|C|ref --backend gazebo|sitl|fake --n 3 --seed S --out DIR
+                          [--scenario NAME] [--mission-s 180] [--zone xmin,ymin,xmax,ymax]
 
-Missions
-  A  At a seeded mission time in --kill-window (default [60, 90] s) a seeded victim (1..N)
-     loses its SITL instance: SIGKILL of its arducopter only (Fleet.kill_vehicle). Its onboard
-     agent is not touched: it sees its autopilot link die, goes silent at once and exits by
-     itself about 2 s later (swarm/agent.py); that exit is expected and recorded in meta.json
-     ("victim_agent_exit"). --kill-agent-too also SIGKILLs the agent right after (old "whole
-     drone lost" behaviour). With --backend fake there is no arducopter, so the agent process
-     is SIGKILLed instead. --no-kill runs the same mission without the kill (baseline).
-  B  Needs a weights/priority-zone option in the ground station. Not implemented: exits 2.
-  C  No kill. The radio blacks out a seeded agent for 10 s starting at a seeded time in
-     --kill-window (chosen before launch because the radio needs it on its command line).
-  Seeding: rng = random.Random(seed); t = rng.uniform(*window); agent = rng.randint(1, n).
+The runner is test equipment: it starts processes, injects faults at mission times and stops
+everything. It never sends anything to the swarm; it learns t0 by re-reading ground.jsonl.
 
-Order of start: tools/wait_cool.sh (not for fake), Fleet (not for fake), radio, ground, agents.
-Every child runs under `nice -n 19`, logs to <out>/<name>.log and its PID is listed in
-run/pids/<out name>.pid so tools/thermal_guard.sh can pause it; the file is removed at the end.
+A fault is (t_mission, action, target):
+  kill sitl:<id>    SIGKILL the arducopter only; the agent must notice and go silent by itself
+  kill agent:<id>   SIGKILL the onboard process only; the autopilot's failsafe lands the vehicle
+  kill ground, start ground (same log file), kill radio, start radio
+The fake backend has no arducopter, so there "kill sitl" kills the agent (its vehicle lives in it).
 
-The runner is test equipment: it reads ground.jsonl to learn mission t0 (the "start" event) and
-never sends anything to the swarm.
-
-Exit codes: 0 ok, 1 aborted (watchdog / child died / error), 2 bad usage or mission B,
-3 tainted (thermal guard paused the run: run/TAINTED appeared or changed), 130 interrupted.
-meta.json is written at launch and rewritten at the end, whatever happens.
+Missions: A = seeded kill of a seeded victim at t in [60, 90]; ref = no fault; B = priority zone
+(default: the 60 x 60 m square in the middle) plus the A kill; C = seeded 10 s radio blackout.
+Scenarios: see SCENARIOS. Exit code 0 = valid run, 1 = invalid (meta.json "outcome" says why).
 """
 import argparse
-import datetime
 import json
 import os
 import random
@@ -39,474 +26,344 @@ import subprocess
 import sys
 import time
 
+from sim import launch
+from swarm import config
+from swarm.allocator import allocate
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, ROOT)
-
-from swarm import config, sensor  # noqa: E402
-
-PID_DIR = os.path.join(ROOT, "run", "pids")
 TAINT_FILE = os.path.join(ROOT, "run", "TAINTED")
-WAIT_COOL = os.path.join(ROOT, "tools", "wait_cool.sh")
-START_TIMEOUT_S = 300.0     # the ground's "start" must appear this soon after the agents launch
-BLACKOUT_S = 10.0
-END_GRACE_S = 1.0           # keep running this long past mission_s so the last samples land
-STOP_WAIT_S = 10.0          # SIGTERM -> SIGKILL grace per child
-LOOP_S = 0.05
-LANE_FOOTPRINT = sensor.lane_footprint(config.ALT_NOMINAL)   # (across, along) m at the flown altitude
+START_TIMEOUT_S = 400.0     # agents launched -> START: take-off, assignment, first loop slot
+END_GRACE_S = 1.0           # run on past the mission end so the last log rows land
+STOP_WAIT_S = 10.0          # SIGTERM -> SIGKILL
+LOOP_S = 0.2
+OBSTACLE_RADIUS_M = 10.0    # > 2 x SLOT_REACH_M: the agent cannot "fly past" the slot either
+MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)
+
+# scenario -> (the mission it modifies, what it tests)
+SCENARIOS = {
+    "nokill": ("B", "the priority zone without a loss"),
+    "swap": ("A", "re-plan with the strip order reversed at 30 s: everyone crosses at cruise"),
+    "obstacle": ("A", "an unknown obstacle on a loop slot: infeasible, blacklist, re-plan"),
+    "blackout13": ("C", "a 13 s blackout, longer than LOST_S: declared lost, then rejoins"),
+    "mute": ("A", "one agent's transmitter fails from 60 s to the end (it still hears)"),
+    "agentdeath": ("A", "kill the victim's agent process instead of its autopilot"),
+    "groundrestart": ("A", "ground down from 40 s to 55 s, then the Mission A kill"),
+    "radiooutage": ("A", "the radio is down from 60 s to 70 s"),
+    "groundloss": ("A", "ground down from 40 s for good, then the Mission A kill"),
+}
 
 
-class Abort(Exception):
-    """The run cannot continue; the message says why."""
+class Invalid(Exception):
+    """The run cannot count; the message says why."""
 
 
-class Interrupted(Exception):
-    """SIGINT / SIGTERM received by the runner."""
+def log(text):
+    print(f"[run_mission {time.strftime('%H:%M:%S')}] {text}", flush=True)
 
 
-# ------------------------------------------------------------------ small helpers
-def now_iso():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+def plan(args):
+    """The faults and the extra process options of this mission. Returns a dict."""
+    rng = random.Random(args.seed)      # the same two draws as always, so seeds keep meaning
+    t_event = round(rng.uniform(60.0, 90.0), 3)
+    agent = rng.randint(1, args.n)
+    out = {"faults": [], "ground": [], "radio": [], "agents": {}, "kill_agent": None,
+           "blackout": None, "mute": None, "priority_zone": None}
+    kill = (t_event, "kill", f"sitl:{agent}")
+    if args.mission == "A" and args.scenario in (None, "groundrestart", "groundloss"):
+        out["faults"].append(kill)
+    if args.mission == "B":
+        out["priority_zone"] = list(args.zone or MIDDLE_ZONE)
+        out["ground"] += ["--priority-zone", ",".join(str(v) for v in out["priority_zone"])]
+        if args.scenario != "nokill":
+            out["faults"].append(kill)
+    if args.mission == "C":
+        length_s = 13.0 if args.scenario == "blackout13" else 10.0
+        out["blackout"] = {"agent": agent, "t0": t_event, "t1": t_event + length_s}
+        out["radio"] += ["--blackout", f"{agent}:{t_event}:{t_event + length_s}"]
+    if args.scenario == "swap":
+        out["ground"] += ["--swap-at", "30"]
+    if args.scenario == "obstacle":
+        x, y = obstacle_slot(agent, args.n)
+        out["agents"][agent] = ["--obstacle", f"{x},{y},{OBSTACLE_RADIUS_M}"]
+        out["obstacle"] = {"agent": agent, "xy": [x, y], "radius_m": OBSTACLE_RADIUS_M}
+    if args.scenario == "mute":
+        out["mute"] = {"agent": agent, "t0": 60.0, "t1": args.mission_s}
+        out["radio"] += ["--mute", f"{agent}:60:{args.mission_s}"]
+    if args.scenario == "agentdeath":
+        out["faults"].append((t_event, "kill", f"agent:{agent}"))
+    if args.scenario in ("groundrestart", "groundloss"):
+        out["faults"].insert(0, (40.0, "kill", "ground"))
+    if args.scenario == "groundrestart":
+        out["faults"].insert(1, (55.0, "start", "ground"))
+    if args.scenario == "radiooutage":
+        out["faults"] += [(60.0, "kill", "radio"), (70.0, "start", "radio")]
+    if args.backend == "fake":     # no arducopter: the fake vehicle dies with its agent
+        out["faults"] = [(t, a, target.replace("sitl:", "agent:"))
+                         for t, a, target in out["faults"]]
+    for _, action, target in out["faults"]:
+        if action == "kill" and ":" in target:
+            out["kill_agent"] = int(target.split(":")[1])
+    return out
 
 
-def log(msg):
-    print(f"[run_mission {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+def obstacle_slot(agent, n):
+    """The last loop slot of the agent's first plan (the ground plans from the start line)."""
+    starts = {a: config.start_xy(a - 1, n) for a in range(1, n + 1)}
+    return allocate(list(starts), starts, set())[agent].slots[-1]
+
+
+def read_t0(ground_log):
+    """t0 of the first "start" record in ground.jsonl, or None."""
+    if not os.path.exists(ground_log):
+        return None
+    with open(ground_log) as f:
+        for line in f:
+            if line.endswith("\n") and json.loads(line)["event"] == "start":
+                return json.loads(line)["t0"]
+    return None
+
+
+def read_params(run_dir, n):
+    """The autopilot parameters each agent read back after setting them (None for fake)."""
+    params = {}
+    for a in range(1, n + 1):
+        with open(os.path.join(run_dir, f"agent_{a}.events.jsonl")) as f:
+            for line in f:
+                record = json.loads(line)
+                if record["event"] == "takeoff_done":
+                    params[a] = record["params"]
+    return params
 
 
 def git_commit():
-    """HEAD commit hash, with '-dirty' if the working tree has changes; None outside git."""
-    try:
-        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
-                              text=True, check=True).stdout.strip()
-        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True,
-                               text=True, check=True).stdout.strip()
-        return head + ("-dirty" if dirty else "")
-    except (OSError, subprocess.CalledProcessError):
-        return None
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
+                          text=True).stdout.strip()
+    dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT,
+                           capture_output=True, text=True).stdout.strip()
+    return head + ("-dirty" if dirty else "")
 
 
-def taint_stamp():
-    """mtime of run/TAINTED, or None if it does not exist."""
-    try:
-        return os.stat(TAINT_FILE).st_mtime
-    except FileNotFoundError:
-        return None
+def taint_mtime():
+    return os.stat(TAINT_FILE).st_mtime if os.path.exists(TAINT_FILE) else None
 
 
-def tail(path, n=20):
-    try:
-        with open(path, errors="replace") as f:
-            return "".join(f.readlines()[-n:])
-    except OSError as e:
-        return f"(cannot read {path}: {e})"
-
-
-def write_json(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f, indent=1)
-        f.write("\n")
-    os.replace(tmp, path)
-
-
-def plan_events(mission, seed, n, window, no_kill):
-    """Seeded choice of the mission event. Returns (kill_agent, kill_t, blackout or None)."""
-    rng = random.Random(seed)
-    t = round(rng.uniform(window[0], window[1]), 3)   # ms resolution, same as on the radio CLI
-    agent = rng.randint(1, n)
-    if mission == "A" and not no_kill:
-        return agent, t, None
-    if mission == "C":
-        return None, None, [agent, t, round(t + BLACKOUT_S, 3)]
-    return None, None, None
-
-
-# ------------------------------------------------------------------ child processes
-class Children:
-    """The processes this runner started itself (not the Fleet's; Fleet tracks those)."""
-
-    def __init__(self, run_dir, pid_file):
-        self.run_dir = run_dir
-        self.pid_file = pid_file
-        self.procs = {}          # name -> Popen, in start order
-        self.logs = {}           # name -> log path
-
-    def start(self, name, argv):
-        path = os.path.join(self.run_dir, name + ".log")
-        out = open(path, "w")
-        env = dict(os.environ, PYTHONPATH=ROOT, PYTHONUNBUFFERED="1")
-        # `nice` execs the command, so Popen.pid is the python process itself
-        p = subprocess.Popen(["nice", "-n", "19"] + argv, cwd=ROOT, env=env,
-                             stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-        out.close()
-        self.procs[name] = p
-        self.logs[name] = path
-        self.write_pid_file()
-        log(f"started {name} pid {p.pid}")
-        return p
-
-    def write_pid_file(self):
-        os.makedirs(PID_DIR, exist_ok=True)
-        pids = [str(p.pid) for p in self.procs.values() if p.poll() is None]
-        with open(self.pid_file, "w") as f:
-            f.write(" ".join(pids) + "\n")
-
-    def remove_pid_file(self):
-        if os.path.exists(self.pid_file):
-            os.remove(self.pid_file)
-
-    def sigkill(self, name):
-        """SIGKILL one child now (no wait). Returns the wall time of the signal."""
-        p = self.procs[name]
-        t = time.time()
-        if p.poll() is None:
-            os.kill(p.pid, signal.SIGKILL)
-        return t
-
-    def first_dead(self, ignore):
-        """Name of the first child (not in `ignore`) that has exited, or None."""
-        for name, p in self.procs.items():
-            if name not in ignore and p.poll() is not None:
-                return name
-        return None
-
-    def stop(self, names, sig_stop=signal.SIGTERM):
-        """SIGCONT (in case the thermal guard paused it) + sig_stop, wait, then SIGKILL."""
-        live = [self.procs[n] for n in names if n in self.procs and self.procs[n].poll() is None]
-        for p in live:
-            for sig in (signal.SIGCONT, sig_stop):
-                try:
-                    os.kill(p.pid, sig)
-                except ProcessLookupError:
-                    pass
-        deadline = time.time() + STOP_WAIT_S
-        for p in live:
-            try:
-                p.wait(timeout=max(0.1, deadline - time.time()))
-            except subprocess.TimeoutExpired:
-                log(f"pid {p.pid} ignored SIGTERM, SIGKILL")
-                p.kill()
-                p.wait(timeout=5)
-
-
-# ------------------------------------------------------------------ ground.jsonl watcher
-class StartWatcher:
-    """Reads ground.jsonl as it grows and returns t0 from the first "start" event."""
-
-    def __init__(self, path):
-        self.path = path
-        self.offset = 0
-        self.t0 = None
-
-    def poll(self):
-        if self.t0 is not None or not os.path.exists(self.path):
-            return self.t0
-        with open(self.path) as f:
-            f.seek(self.offset)
-            chunk = f.read()
-        end = chunk.rfind("\n")
-        if end < 0:
-            return None               # no complete line yet
-        self.offset += len(chunk[:end + 1].encode())
-        for line in chunk[:end + 1].splitlines():
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if rec.get("event") == "start":
-                self.t0 = float(rec["t0"])
-                break
-        return self.t0
-
-
-# ------------------------------------------------------------------ the mission
 class Mission:
-    def __init__(self, args):
-        self.a = args
-        self.run_dir = os.path.abspath(args.out)
-        self.name = os.path.basename(os.path.normpath(self.run_dir))
-        self.fake = args.backend == "fake"
-        self.children = Children(self.run_dir, os.path.join(PID_DIR, f"mission_{self.name}.pid"))
+    def __init__(self, args, faults_plan):
+        self.args = args
+        self.plan = faults_plan
+        self.out = os.path.abspath(args.out)
         self.fleet = None
-        self.taint0 = None
-        self.killed = set()       # agent ids this runner killed on purpose
-        self.kill_agent, self.kill_t, self.blackout = plan_events(
-            args.mission, args.seed, args.n, args.kill_window, args.no_kill)
-        self.meta = {
-            "seed": args.seed, "mission": args.mission, "n": args.n, "backend": args.backend,
-            "t0_wall": None, "kill_agent": self.kill_agent, "kill_t_mission": self.kill_t,
-            "kill_wall": None, "blackout": self.blackout, "mission_s": args.mission_s,
-            "kill_window": list(args.kill_window),
-            "radio": {"loss": args.loss, "delay": args.delay, "seed": args.seed},
-            "port_base": args.port_base, "base_instance": args.base_instance,
-            # altitude flown (SWARM_ALT, swarm/config.py) and the lane footprint the ground plans with
-            "alt_nominal": config.ALT_NOMINAL, "alt_band": list(config.ALT_BAND),
-            "swath_across": LANE_FOOTPRINT[0], "footprint_along": LANE_FOOTPRINT[1],
-            "tainted": False, "outcome": "running", "git_commit": git_commit(),
-            "started": now_iso(), "finished": None,
-        }
+        self.procs = {}             # name -> Popen of the processes we started ourselves
+        self.starts = {}            # name -> how often it was started (for its log name)
+        self.may_exit = set()       # names that may end without it being an error
+        self.taint0 = taint_mtime()
+        self.meta = {"mission": args.mission, "scenario": args.scenario, "seed": args.seed,
+                     "n": args.n, "backend": args.backend, "alt_cruise_m": config.ALT_CRUISE_M,
+                     "mission_s": args.mission_s, "t0_wall": None,
+                     "faults": [{"t_mission": t, "action": a, "target": target, "wall": None}
+                                for t, a, target in faults_plan["faults"]],
+                     "kill_agent": faults_plan["kill_agent"], "kill_wall": None,
+                     "blackout": faults_plan["blackout"], "mute": faults_plan["mute"],
+                     "priority_zone": faults_plan["priority_zone"],
+                     "obstacle": faults_plan.get("obstacle"), "autopilot_params": None,
+                     "rtf": None, "radio": {"loss": config.RADIO_LOSS,
+                                            "delay": config.RADIO_DELAY_S, "seed": args.seed},
+                     "outcome": "running", "tainted": False, "git_commit": git_commit(),
+                     "wall_s": None}
 
     def save_meta(self):
-        write_json(os.path.join(self.run_dir, "meta.json"), self.meta)
+        with open(os.path.join(self.out, "meta.json"), "w") as f:
+            json.dump(self.meta, f, indent=1)
 
-    # ---- checks run every loop
-    def check_taint(self):
-        if taint_stamp() != self.taint0:
-            self.meta["tainted"] = True
-            raise Abort("run/TAINTED appeared or changed: the thermal guard paused the run")
-
-    def check_children(self, t_mission):
-        ignore = {f"agent_{a}" for a in self.killed}
-        if t_mission is not None and t_mission >= self.a.mission_s - 2.0:
-            ignore.add("ground")      # the ground ends the mission by itself at t0 + mission_s
-        dead = self.children.first_dead(ignore)
-        if dead:
-            path = self.children.logs[dead]
-            rc = self.children.procs[dead].returncode
-            raise Abort(f"{dead} exited early (code {rc}); last lines of {path}:\n{tail(path)}")
-        if self.fleet is not None:
-            for a in range(1, self.a.n + 1):
-                if a not in self.killed and not self.fleet.alive(a):
-                    raise Abort(f"arducopter of agent {a} died early; see "
-                                f"{self.fleet.run_dir}/s{self.fleet.instance(a)}/sitl.log:\n"
-                                + tail(os.path.join(self.fleet.run_dir,
-                                                    f"s{self.fleet.instance(a)}", "sitl.log")))
-
-    # ---- launch
-    def start_fleet(self):
-        from sim.launch import Fleet
-        self.fleet = Fleet(self.a.backend, self.a.n, os.path.join(self.run_dir, "sim"),
-                           base_instance=self.a.base_instance)
-        log(f"starting Fleet backend={self.a.backend} n={self.a.n}")
-        self.fleet.start()
-        log(f"Fleet up: {self.fleet.pids}")
+    # ---- processes
+    def start(self, name, argv):
+        self.starts[name] = self.starts.get(name, 0) + 1
+        log_name = name if self.starts[name] == 1 else f"{name}.{self.starts[name]}"
+        process = launch.start_process([sys.executable, "-m"] + argv,
+                                       os.path.join(self.out, log_name + ".log"), cwd=ROOT)
+        self.procs[name] = process
+        self.may_exit.discard(name)
+        launch.register_pid(f"run_{name}", process.pid)
 
     def start_radio(self):
-        argv = [sys.executable, "-m", "swarm.radio", "--seed", str(self.a.seed),
-                "--loss", str(self.a.loss), "--delay", str(self.a.delay),
-                "--port-base", str(self.a.port_base),
-                "--log", os.path.join(self.run_dir, "radio.jsonl")]
-        if self.blackout:
-            agent, t_start, t_end = self.blackout
-            argv += ["--blackout", f"{agent}:{t_start:.3f}:{t_end:.3f}"]
-        self.children.start("radio", argv)
+        self.start("radio", ["sim.radio", "--seed", str(self.args.seed),
+                             "--log", os.path.join(self.out, "radio.jsonl")] + self.plan["radio"])
 
     def start_ground(self):
-        self.children.start("ground", [
-            sys.executable, "-m", "swarm.ground", "--n", str(self.a.n),
-            "--port-base", str(self.a.port_base), "--mission-s", str(self.a.mission_s),
-            "--swath-across", str(LANE_FOOTPRINT[0]), "--footprint-along", str(LANE_FOOTPRINT[1]),
-            "--log", os.path.join(self.run_dir, "ground.jsonl")])
+        self.start("ground", ["swarm.ground", "--n", str(self.args.n),
+                              "--mission-s", str(self.args.mission_s),
+                              "--log", os.path.join(self.out, "ground.jsonl")]
+                   + self.plan["ground"])
 
-    def start_agents(self):
-        for a in range(1, self.a.n + 1):
-            self.children.start(f"agent_{a}", [
-                sys.executable, "-m", "swarm.agent", "--id", str(a), "--n", str(self.a.n),
-                "--backend", "fake" if self.fake else "mav",
-                "--port-base", str(self.a.port_base),
-                "--base-instance", str(self.a.base_instance),
-                "--log-dir", self.run_dir])
+    def start_agent(self, a):
+        backend = "fake" if self.args.backend == "fake" else "mav"
+        self.start(f"agent_{a}", ["swarm.agent", "--id", str(a), "--n", str(self.args.n),
+                                  "--backend", backend, "--log-dir", self.out]
+                   + self.plan["agents"].get(a, []))
 
-    # ---- phases
-    def wait_for_start(self):
-        watcher = StartWatcher(os.path.join(self.run_dir, "ground.jsonl"))
-        deadline = time.time() + START_TIMEOUT_S
-        log("waiting for the ground's start event")
-        while watcher.poll() is None:
-            self.check_taint()
-            self.check_children(None)
-            if time.time() > deadline:
-                raise Abort(f"no 'start' event in ground.jsonl within {START_TIMEOUT_S:.0f} s; "
-                            f"last lines of ground.log:\n{tail(self.children.logs['ground'])}")
-            time.sleep(LOOP_S * 4)
-        self.meta["t0_wall"] = watcher.t0
-        self.save_meta()
-        log(f"mission t0 = {watcher.t0:.3f} (in {watcher.t0 - time.time():.1f} s)")
-        return watcher.t0
+    def kill(self, name):
+        self.may_exit.add(name)
+        self.procs[name].kill()
+        self.procs[name].wait()
+        launch.unregister_pids(f"run_{name}")
 
-    def kill_drone(self, t0):
-        a = self.kill_agent
-        self.killed.add(a)            # from now on its agent may exit by itself
-        if self.fleet is not None:
-            t_kill = self.fleet.kill_vehicle(a)          # SIGKILL of its arducopter only
-            if self.a.kill_agent_too:
-                self.children.sigkill(f"agent_{a}")
+    def apply(self, fault):
+        """Inject one fault now and record when."""
+        action, target = fault["action"], fault["target"]
+        fault["wall"] = time.time()
+        log(f"t = {fault['wall'] - self.meta['t0_wall']:.1f} s: {action} {target}")
+        if target.startswith("sitl:"):
+            agent = int(target.split(":")[1])
+            self.may_exit.add(f"agent_{agent}")       # it exits by itself once its link dies
+            self.fleet.kill_vehicle(agent)            # raises if the Gazebo model stays
+        elif action == "kill":
+            self.kill(target.replace("agent:", "agent_"))
+        elif target == "ground":
+            self.start_ground()
         else:
-            t_kill = self.children.sigkill(f"agent_{a}")  # fake backend: no autopilot to kill
-        log(f"KILLED {'agent' if self.fleet is None else 'arducopter of agent'} {a} at t_mission "
-            f"{t_kill - t0:.2f} (planned {self.kill_t:.2f})"
-            + (" + its agent" if self.fleet is not None and self.a.kill_agent_too else ""))
-        self.meta["kill_wall"] = t_kill
-        if self.fleet is not None and self.fleet.backend == "gazebo":
-            ok = self.fleet.removed_models.get(a)
-            self.meta["gz_model_removed"] = ok
-            log(f"gazebo model of agent {a} removed: {ok}")
-        self.meta["kill_agent_too"] = bool(self.a.kill_agent_too or self.fleet is None)
-        self.save_meta()
+            self.start_radio()
+        if ":" in target:
+            self.meta["kill_wall"] = fault["wall"]
 
-    def check_victim_exit(self, t0):
-        """Record when the victim's agent process exited after the kill (expected ~2 s after)."""
-        a = self.kill_agent
-        if a not in self.killed or "victim_agent_exit" in self.meta:
-            return
-        p = self.children.procs[f"agent_{a}"]
-        if p.poll() is not None:
-            now = time.time()
-            self.meta["victim_agent_exit"] = {"code": p.returncode, "t_mission": round(now - t0, 2),
-                                              "after_kill_s": round(now - self.meta["kill_wall"], 2)}
-            log(f"victim agent {a} exited (code {p.returncode}) {now - self.meta['kill_wall']:.1f} s "
-                "after the kill")
-            self.children.write_pid_file()
-            self.save_meta()
+    # ---- watching
+    def check(self, t_mission):
+        """Raise Invalid if the thermal guard paused anything or a process ended unexpectedly."""
+        if taint_mtime() != self.taint0:
+            self.meta["tainted"] = True
+            raise Invalid("tainted: the thermal guard paused the run")
+        for name, process in self.procs.items():
+            ended_on_time = name == "ground" and t_mission >= self.args.mission_s - 1.0
+            if process.poll() is not None and name not in self.may_exit and not ended_on_time:
+                raise Invalid(f"{name} died unexpectedly (exit {process.returncode})")
+        if self.fleet is not None:
+            for agent, process in self.fleet.autopilots.items():
+                if process.poll() is not None:
+                    raise Invalid(f"arducopter {agent} died unexpectedly")
+            if self.fleet.gz is not None and self.fleet.gz.poll() is not None:
+                raise Invalid("gz sim died unexpectedly")
 
-    def fly(self, t0):
-        t_end = t0 + self.a.mission_s + END_GRACE_S
-        next_report = t0 + 30.0
-        while True:
-            now = time.time()
-            if now >= t_end:
-                return
-            t_mission = now - t0
-            self.check_taint()
-            self.check_children(t_mission)
-            if self.kill_agent and self.kill_agent not in self.killed and t_mission >= self.kill_t:
-                self.kill_drone(t0)
-            if self.kill_agent:
-                self.check_victim_exit(t0)
-            if now >= next_report:
-                log(f"t_mission {t_mission:.0f} / {self.a.mission_s:.0f} s")
-                next_report += 30.0
+    def wait_until(self, t_wall):
+        while time.time() < t_wall:
+            self.check(time.time() - self.meta["t0_wall"])
             time.sleep(LOOP_S)
 
-    def teardown(self):
-        self.children.remove_pid_file()          # so the guard cannot re-pause them meanwhile
-        names = list(self.children.procs)
-        agents = [n for n in names if n.startswith("agent_")]
-        # agents first so they close their logs (they handle SIGINT and SIGTERM the same way)
-        self.children.stop(agents, signal.SIGTERM)
-        self.children.stop(["ground", "radio"])
+    def wait_for_start(self):
+        deadline = time.time() + START_TIMEOUT_S
+        while self.meta["t0_wall"] is None:
+            if time.time() > deadline:
+                raise Invalid(f"the mission never started (no START in {START_TIMEOUT_S:.0f} s)")
+            self.check(-config.COVERAGE_WINDOW_S)
+            time.sleep(LOOP_S)
+            self.meta["t0_wall"] = read_t0(os.path.join(self.out, "ground.jsonl"))
+        self.save_meta()
+        log(f"START received; t = 0 in {self.meta['t0_wall'] - time.time():.0f} s")
+
+    def rtf(self):
+        return self.fleet.real_time_factor() if self.args.backend == "gazebo" else None
+
+    # ---- the whole run
+    def run(self):
+        started = time.time()
+        if self.args.backend != "fake":
+            log("waiting for the machine to be cool")
+            subprocess.run(["bash", os.path.join(ROOT, "tools", "thermal_guard.sh"), "--wait"],
+                           check=True)
+            self.taint0 = taint_mtime()
+            self.fleet = launch.Fleet(self.args.backend, self.args.n,
+                                      os.path.join(self.out, "sim"))
+            self.fleet.start()
+        self.start_radio()
+        self.start_ground()
+        for a in range(1, self.args.n + 1):
+            self.start_agent(a)
+        self.wait_for_start()
+        t0 = self.meta["t0_wall"]
+        self.wait_until(t0)
+        rtf_start = self.rtf()
+        for fault in self.meta["faults"]:
+            self.wait_until(t0 + fault["t_mission"])
+            self.apply(fault)
+            self.save_meta()
+        self.wait_until(t0 + self.args.mission_s - 2.0)
         if self.fleet is not None:
-            for pid in self.fleet.pids.values():  # undo a thermal pause before stop()
-                try:
-                    os.kill(pid, signal.SIGCONT)
-                except ProcessLookupError:
-                    pass
+            self.meta["rtf"] = {"start": rtf_start, "end": self.rtf()}
+        self.wait_until(t0 + self.args.mission_s + END_GRACE_S)
+        self.meta["wall_s"] = round(time.time() - started)
+
+    def stop(self):
+        """Stop everything we started: agents first (they close their logs), then the rest."""
+        launch.unregister_pids("run_")              # the guard must not pause them again
+        names = sorted(self.procs, key=lambda name: not name.startswith("agent_"))
+        for name in names:
+            if self.procs[name].poll() is None:
+                self.procs[name].send_signal(signal.SIGCONT)
+                self.procs[name].terminate()
+        for name in names:
+            try:
+                self.procs[name].wait(timeout=STOP_WAIT_S)
+            except subprocess.TimeoutExpired:
+                log(f"{name} ignored SIGTERM: SIGKILL")
+                self.procs[name].kill()
+                self.procs[name].wait()
+        if self.fleet is not None:
             self.fleet.stop()
 
-    def run(self):
-        os.makedirs(self.run_dir, exist_ok=True)
-        self.save_meta()
-        log(f"mission {self.a.mission} seed {self.a.seed} backend {self.a.backend} -> {self.run_dir}"
-            f"; kill {self.kill_agent}@{self.kill_t} blackout {self.blackout}")
-        code = 1
-        launched = False
-        try:
-            if not self.fake:
-                log("waiting for the machine to be cool (tools/wait_cool.sh)")
-                subprocess.run(["bash", WAIT_COOL], check=True)
-            self.taint0 = taint_stamp()      # baseline: only changes from now on taint this run
-            launched = True
-            if not self.fake:
-                self.start_fleet()
-            self.start_radio()
-            self.start_ground()
-            self.start_agents()
-            t0 = self.wait_for_start()
-            self.fly(t0)
-            self.check_taint()
-            self.meta["outcome"] = "ok"
-            code = 0
-        except Abort as e:
-            first_line = str(e).splitlines()[0]      # the log tail is in the console output
-            self.meta["outcome"] = "tainted" if self.meta["tainted"] else f"aborted: {first_line}"
-            log(f"ABORT: {e}")
-            code = 3 if self.meta["tainted"] else 1
-        except Interrupted:
-            self.meta["outcome"] = "interrupted"
-            log("interrupted, tearing down")
-            code = 130
-        except Exception as e:
-            self.meta["outcome"] = f"error: {e!r}"
-            log(f"ERROR: {e!r}")
-            raise
-        finally:
-            signal.signal(signal.SIGINT, signal.SIG_IGN)   # do not interrupt the teardown
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            self.teardown()
-            if launched and taint_stamp() != self.taint0:
-                self.meta["tainted"] = True
-                self.meta["outcome"] = "tainted"
-                code = 3
-            self.meta["finished"] = now_iso()
-            self.save_meta()
-            log(f"done: {self.meta['outcome']} (exit {code})")
-        return code
 
-
-# ------------------------------------------------------------------ CLI
-def ground_has_priority_option():
-    """True if swarm.ground advertises a weights/priority-zone option (needed for mission B)."""
-    r = subprocess.run([sys.executable, "-m", "swarm.ground", "--help"], cwd=ROOT,
-                       capture_output=True, text=True)
-    return any(w in r.stdout for w in ("--weights", "--priority"))
+def interrupted(signum, frame):
+    raise Invalid(f"interrupted by signal {signum}")
 
 
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="Run one coverage mission end to end.")
-    ap.add_argument("--mission", choices=["A", "B", "C"], required=True)
-    ap.add_argument("--backend", choices=["sitl", "gazebo", "fake"], required=True)
+    ap = argparse.ArgumentParser(description="Run one mission end to end.")
+    ap.add_argument("--mission", choices=("A", "B", "C", "ref"), required=True)
+    ap.add_argument("--backend", choices=("gazebo", "sitl", "fake"), required=True)
     ap.add_argument("--n", type=int, default=3)
     ap.add_argument("--seed", type=int, required=True)
-    ap.add_argument("--out", required=True, help="run directory (must not exist or be empty)")
-    ap.add_argument("--mission-s", type=float, default=config.MISSION_S)
-    ap.add_argument("--port-base", type=int, default=0)
-    ap.add_argument("--base-instance", type=int, default=0)
-    ap.add_argument("--no-kill", action="store_true", help="mission A without the kill")
-    ap.add_argument("--kill-agent-too", action="store_true",
-                    help="mission A: also SIGKILL the victim's agent process (default: only its arducopter)")
-    ap.add_argument("--kill-window", type=float, nargs=2, default=[60.0, 90.0],
-                    metavar=("T_MIN", "T_MAX"),
-                    help="mission-time window for the A kill / C blackout start (default 60 90)")
-    ap.add_argument("--loss", type=float, default=config.RADIO_LOSS)
-    ap.add_argument("--delay", type=float, default=config.RADIO_DELAY_S)
-    a = ap.parse_args(argv)
-    lo, hi = a.kill_window
-    if not 0 <= lo <= hi:
-        ap.error("--kill-window needs 0 <= T_MIN <= T_MAX")
-    if a.mission != "B" and hi + (BLACKOUT_S if a.mission == "C" else 0) > a.mission_s:
-        ap.error("--kill-window must end inside the mission (and leave room for C's blackout)")
-    if a.n < 1:
-        ap.error("--n must be >= 1")
-    return a
+    ap.add_argument("--out", required=True, help="run directory; must not exist or be empty")
+    ap.add_argument("--scenario", choices=sorted(SCENARIOS))
+    ap.add_argument("--mission-s", type=float,
+                    help="default 180 s; 240 s for the obstacle scenario (blacklist expiry)")
+    ap.add_argument("--zone", type=lambda text: [float(v) for v in text.split(",")],
+                    help="Mission B priority zone xmin,ymin,xmax,ymax (default: the middle)")
+    args = ap.parse_args(argv)
+    if args.scenario and SCENARIOS[args.scenario][0] != args.mission:
+        ap.error(f"--scenario {args.scenario} needs --mission {SCENARIOS[args.scenario][0]}")
+    if args.mission_s is None:
+        args.mission_s = 240.0 if args.scenario == "obstacle" else config.MISSION_S
+    out = os.path.abspath(args.out)
+    if args.backend == "fake" and any(out.startswith(os.path.join(ROOT, d) + os.sep)
+                                      for d in ("runs", "results")):
+        ap.error("the fake backend is not a measurement: use run/, not runs/ or results/")
+    if os.path.isdir(out) and os.listdir(out):
+        ap.error(f"{args.out} is not empty (the ground would read an old ground.jsonl)")
+    return args
 
 
 def main(argv=None):
-    a = parse_args(argv)
-    if a.mission == "B":
-        if ground_has_priority_option():
-            print("mission B: the ground has a priority option, but run_mission.py does not "
-                  "drive it yet: not implemented", file=sys.stderr)
-        else:
-            print("mission B: not implemented (swarm/ground.py has no weights/priority-zone "
-                  "option)", file=sys.stderr)
-        return 2
-    if a.backend == "fake":
-        out = os.path.abspath(a.out)
-        for reserved in ("runs", "results"):     # measured data only
-            r = os.path.join(ROOT, reserved)
-            if out == r or out.startswith(r + os.sep):
-                print(f"--backend fake is not a measurement: refusing to write into {reserved}/ "
-                      "(use run/...)", file=sys.stderr)
-                return 2
-    if os.path.isdir(a.out) and os.listdir(a.out):
-        print(f"{a.out} exists and is not empty; refusing to mix runs "
-              "(the ground would read an old ground.jsonl)", file=sys.stderr)
-        return 2
-
-    def on_signal(signum, frame):
-        raise Interrupted()
-    signal.signal(signal.SIGINT, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
-    return Mission(a).run()
+    args = parse_args(argv)
+    os.makedirs(args.out, exist_ok=True)
+    launch.register_pid("run_mission", os.getpid())  # the guard pauses us with the rest
+    mission = Mission(args, plan(args))
+    mission.save_meta()
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, interrupted)
+    try:
+        mission.run()
+        mission.meta["outcome"] = "ok"
+    except (Invalid, RuntimeError, subprocess.CalledProcessError) as error:
+        mission.meta["outcome"] = f"invalid: {error}"
+    finally:
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, signal.SIG_IGN)       # a second signal must not stop the stop
+        mission.stop()
+    if taint_mtime() != mission.taint0:
+        mission.meta["tainted"] = True
+        mission.meta["outcome"] = "invalid: tainted: the thermal guard paused the run"
+    if args.backend != "fake" and mission.meta["t0_wall"] is not None:
+        mission.meta["autopilot_params"] = read_params(mission.out, args.n)
+    mission.save_meta()
+    log(f"{mission.meta['outcome']} -> {args.out}")
+    return 0 if mission.meta["outcome"] == "ok" else 1
 
 
 if __name__ == "__main__":

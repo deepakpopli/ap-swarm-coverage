@@ -1,183 +1,118 @@
 #!/usr/bin/env bash
-# One-command headless evaluation: N Mission A runs, one after the other, then the analysis.
+# The evaluation in one command: Mission A runs, one N-1 reference run and one no-loss baseline
+# run, one after the other and headless, then metrics, report, plots and one animation.
 #
-#   ./run_eval.sh                          # 5 runs, seeds 1..5, 180 s, backend gazebo
+#   ./run_eval.sh                      # gazebo, seeds 1..5, 50 m, 180 s
 #   BACKEND=sitl SEEDS="1 2 3" ./run_eval.sh
-#   SKIP_RUNS=1 ./run_eval.sh              # analysis only, on the runs already there
 #
-# Environment (all optional):
-#   BACKEND     gazebo | sitl | fake           (default gazebo)
-#   SEEDS       "1 2 3 4 5"
-#   MISSION     A (B is not implemented; C works)                (default A)
-#   MISSION_S   mission length, s                                (default 180)
-#   N           number of drones                                 (default 3)
-#   OUT         run root  (default runs/eval_<backend>; run/eval_fake for the fake backend,
-#               because fake runs are not measurements and never go under runs/ or results/)
-#   ANALYSIS_OUT  aggregate table, plots and the animation      (default results/ for measured
-#               backends, $OUT/analysis for fake: results/ only ever holds measured data)
-#   ANIM_SEED   seed whose run is animated                       (default: first of SEEDS)
-#   RETRIES     extra attempts for a tainted/failed run          (default 2)
-#   RUN_ARGS    extra run_mission.py flags, e.g. "--kill-window 20 30 --port-base 500"
-#   SKIP_RUNS=1 analysis only
-#   SWARM_ALT   nominal altitude, m (default 60; swarm/config.py). A run flown at another
-#               altitude (meta.json alt_nominal) does not count as done.
+# Environment: BACKEND (gazebo | sitl | fake, default gazebo), SEEDS (default "1 2 3 4 5"),
+# SWARM_ALT (cruise altitude in m, default 50), MISSION_S (default 180), FORCE=1 (re-run runs
+# that are already done). Set name: ${BACKEND}_${SWARM_ALT}m. Raw runs go to runs/<set>/
+# (git-ignored), tables and figures to results/<set>/. The fake backend is not a measurement:
+# it writes under run/ instead.
 #
-# Runs are SEQUENTIAL: never two simulators at once. A seed whose run already finished OK
-# (meta.json outcome "ok") is not run again; delete its directory to redo it. A failed or
-# tainted attempt is moved to $OUT/failed/ and retried after tools/wait_cool.sh. A seed that
-# still fails is listed as FAILED in the summary and left out of the analysis.
+# A run directory whose meta.json says outcome "ok" is done and skipped. A failed or tainted
+# attempt is moved to runs/<set>/failed/ and retried, at most 3 attempts per run.
 set -u
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$ROOT" || exit 1
+cd "$(dirname "$0")" || exit 1
 
 BACKEND=${BACKEND:-gazebo}
 SEEDS=${SEEDS:-"1 2 3 4 5"}
-MISSION=${MISSION:-A}
+export SWARM_ALT=${SWARM_ALT:-50}
 MISSION_S=${MISSION_S:-180}
-N=${N:-3}
-RETRIES=${RETRIES:-2}
-RUN_ARGS=${RUN_ARGS:-}
-SKIP_RUNS=${SKIP_RUNS:-0}
-if [ "$BACKEND" = fake ]; then OUT=${OUT:-run/eval_fake}; else OUT=${OUT:-runs/eval_$BACKEND}; fi
-if [ "$BACKEND" = fake ]; then ANALYSIS_OUT=${ANALYSIS_OUT:-$OUT/analysis}; else ANALYSIS_OUT=${ANALYSIS_OUT:-results}; fi
-ANIM_SEED=${ANIM_SEED:-$(echo $SEEDS | awk '{print $1}')}
-PY=${PYTHON:-python3}
-GUARD_PID_FILE="$ROOT/run/guard.pid"
-SUMMARY="$OUT/summary.txt"
-VIDEO="$ANALYSIS_OUT/replay_seed_$ANIM_SEED.mp4"
+FORCE=${FORCE:-0}
+SET="${BACKEND}_${SWARM_ALT}m"
+RUNS="runs/$SET"
+RESULTS="results/$SET"
+if [ "$BACKEND" = fake ]; then RUNS="run/runs/$SET"; RESULTS="run/results/$SET"; fi
+N=3
+ATTEMPTS=3
+SUMMARY=()
+mkdir -p "$RUNS"
 
 say() { echo "[run_eval $(date +%H:%M:%S)] $*"; }
 
-# ---------------------------------------------------------------- thermal guard
+is_done() {   # $1 = run directory
+  [ -f "$1/meta.json" ] && python3 -c 'import json, sys
+sys.exit(json.load(open(sys.argv[1]))["outcome"] != "ok")' "$1/meta.json"
+}
+
+move_to_failed() {   # $1 = run directory, $2 = label
+  mkdir -p "$RUNS/failed"
+  mv "$1" "$RUNS/failed/$(basename "$1")_$2_$(date +%Y%m%d-%H%M%S)"
+}
+
+run_one() {   # $1 = run name, then run_mission.py options
+  local name=$1 dir="$RUNS/$1" attempt
+  shift
+  if is_done "$dir" && [ "$FORCE" != 1 ]; then
+    SUMMARY+=("$name: done before, skipped")
+    return
+  fi
+  [ -e "$dir" ] && move_to_failed "$dir" replaced
+  for attempt in $(seq 1 $ATTEMPTS); do
+    say "$name: attempt $attempt of $ATTEMPTS"
+    python3 run_mission.py --backend "$BACKEND" --mission-s "$MISSION_S" --out "$dir" "$@"
+    if is_done "$dir"; then
+      SUMMARY+=("$name: ok on attempt $attempt")
+      return
+    fi
+    say "$name: $(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["outcome"])' \
+      "$dir/meta.json" 2> /dev/null)"
+    move_to_failed "$dir" "attempt$attempt"
+  done
+  SUMMARY+=("$name: FAILED $ATTEMPTS attempts (see $RUNS/failed/)")
+}
+
+# ---- thermal guard: start it if needed, and stop it again only if we started it
 guard_running() {
-  # run/guard.pid holds the pid as its last word ("12345" or "guard pid 12345")
-  [ -f "$GUARD_PID_FILE" ] || return 1
-  local pid; pid=$(awk '{print $NF}' "$GUARD_PID_FILE")
-  [ -n "$pid" ] && grep -q thermal_guard "/proc/$pid/cmdline" 2>/dev/null
+  local pid
+  pid=$(cat run/guard.pid 2> /dev/null) || return 1
+  grep -q thermal_guard "/proc/$pid/cmdline" 2> /dev/null
 }
+OUR_GUARD=""
+if ! guard_running; then
+  mkdir -p run
+  setsid nohup bash tools/thermal_guard.sh > /dev/null 2>&1 < /dev/null &
+  OUR_GUARD=$!
+  echo "$OUR_GUARD" > run/guard.pid
+  say "started the thermal guard (pid $OUR_GUARD)"
+fi
+stop_guard() { [ -n "$OUR_GUARD" ] && kill "$OUR_GUARD" && rm -f run/guard.pid; }
+trap 'stop_guard; exit 130' INT TERM HUP
 
-ensure_guard() {
-  if guard_running; then
-    say "thermal guard already running (pid $(awk '{print $NF}' "$GUARD_PID_FILE"))"
-    return
-  fi
-  mkdir -p "$ROOT/run"
-  setsid nohup bash "$ROOT/tools/thermal_guard.sh" > /dev/null 2>&1 < /dev/null &
-  echo "guard pid $!" > "$GUARD_PID_FILE"
-  say "started thermal guard (pid $!)"
-}
+# ---- the runs, sequential: never two simulations at once
+for s in $SEEDS; do
+  run_one "seed_$s" --mission A --n $N --seed "$s"
+done
+FIRST_SEED=${SEEDS%% *}
+run_one ref_n2 --mission ref --n $((N - 1)) --seed "$FIRST_SEED"
+run_one baseline_n3 --mission ref --n $N --seed "$FIRST_SEED"
+stop_guard
 
-wait_cool() {
-  [ "$BACKEND" = fake ] && return 0
-  bash "$ROOT/tools/wait_cool.sh"
-}
-
-# ---------------------------------------------------------------- runs
-run_ok() {  # $1 = run dir; true if its meta.json says outcome ok and not tainted
-  [ -f "$1/meta.json" ] && $PY - "$1/meta.json" <<'EOF'
-import json, os, sys
-m = json.load(open(sys.argv[1]))
-alt = float(os.environ.get("SWARM_ALT", "60"))   # never mix runs flown at another altitude
-sys.exit(0 if m.get("outcome") == "ok" and not m.get("tainted")
-         and float(m.get("alt_nominal", 60.0)) == alt else 1)
-EOF
-}
-
-move_aside() {  # $1 = run dir, $2 = attempt number
-  [ -e "$1" ] || return 0
-  mkdir -p "$OUT/failed"
-  local dest
-  dest="$OUT/failed/$(basename "$1")_attempt$2_$(date +%Y%m%d-%H%M%S)"
-  mv "$1" "$dest"
-  say "moved failed attempt to $dest"
-}
-
-run_seed() {  # $1 = seed; sets STATUS[seed]
-  local s=$1 dir="$OUT/seed_$1" attempt rc
-  if run_ok "$dir"; then
-    say "seed $s: already done ($dir), skipping"
-    STATUS[$s]="ok (existing)"
-    return
-  fi
-  for attempt in $(seq 0 "$RETRIES"); do
-    move_aside "$dir" "$attempt"
-    say "seed $s: attempt $((attempt + 1)) of $((RETRIES + 1))"
-    # shellcheck disable=SC2086
-    $PY run_mission.py --mission "$MISSION" --backend "$BACKEND" --n "$N" --seed "$s" \
-        --mission-s "$MISSION_S" --out "$dir" $RUN_ARGS
-    rc=$?
-    case $rc in
-      0)   STATUS[$s]="ok"; [ "$attempt" -gt 0 ] && STATUS[$s]="ok (after $attempt retries)"; return ;;
-      2)   STATUS[$s]="FAILED (usage error / not implemented, exit 2)"; return ;;
-      3)   STATUS[$s]="FAILED (tainted by thermal pause)" ;;
-      130) STATUS[$s]="INTERRUPTED"; return ;;
-      *)   STATUS[$s]="FAILED (exit $rc, see $dir/meta.json outcome)" ;;
-    esac
-    say "seed $s: ${STATUS[$s]}"
-    [ "$attempt" -lt "$RETRIES" ] && wait_cool
+# ---- analysis of the valid runs
+GOOD=(); REF=(); BASE=()
+for s in $SEEDS; do is_done "$RUNS/seed_$s" && GOOD+=("$RUNS/seed_$s"); done
+is_done "$RUNS/ref_n2" && REF+=("$RUNS/ref_n2")
+is_done "$RUNS/baseline_n3" && BASE+=("$RUNS/baseline_n3")
+ANALYSIS="not run: no valid Mission A run"
+if [ ${#GOOD[@]} -gt 0 ]; then
+  mkdir -p "$RESULTS"
+  ANALYSIS=ok
+  for dir in "${GOOD[@]}" "${REF[@]}" "${BASE[@]}"; do
+    nice -n 19 python3 -m analysis.metrics "$dir" || ANALYSIS="FAILED (metrics $dir)"
   done
-  # keep the last failed attempt in place for inspection
-}
-
-# ---------------------------------------------------------------- analysis
-analyse() {
-  local good=() s dir
-  for s in $SEEDS; do
-    dir="$OUT/seed_$s"
-    if run_ok "$dir"; then good+=("$dir"); else say "seed $s: no valid run, left out of the analysis"; fi
-  done
-  if [ ${#good[@]} -eq 0 ]; then say "no valid runs to analyse"; return 1; fi
-  local fail=0
-  for dir in "${good[@]}"; do
-    say "metrics: $dir"
-    nice -n 19 $PY -m analysis.metrics "$dir" || { say "metrics FAILED on $dir"; fail=1; }
-  done
-  mkdir -p "$ANALYSIS_OUT"
-  say "aggregate -> $ANALYSIS_OUT"
-  nice -n 19 $PY -m analysis.aggregate "${good[@]}" --out "$ANALYSIS_OUT" || { say "aggregate FAILED"; fail=1; }
-  say "plots -> $ANALYSIS_OUT"
-  nice -n 19 $PY -m analysis.plots "${good[@]}" --out "$ANALYSIS_OUT" || { say "plots FAILED"; fail=1; }
-  dir="$OUT/seed_$ANIM_SEED"
-  if run_ok "$dir"; then
-    say "animation of seed $ANIM_SEED -> $VIDEO"
-    nice -n 19 $PY -m analysis.animate "$dir" --out "$VIDEO" || { say "animate FAILED"; fail=1; }
-  else
-    say "seed $ANIM_SEED has no valid run: no animation"
-  fi
-  return $fail
-}
-
-# ---------------------------------------------------------------- main
-declare -A STATUS
-mkdir -p "$OUT"
-interrupted=0
-if [ "$SKIP_RUNS" != 1 ]; then
-  ensure_guard
-  for s in $SEEDS; do
-    run_seed "$s"
-    if [ "${STATUS[$s]}" = INTERRUPTED ]; then interrupted=1; break; fi
-  done
-else
-  for s in $SEEDS; do
-    if run_ok "$OUT/seed_$s"; then STATUS[$s]="ok (existing)"; else STATUS[$s]="no valid run"; fi
-  done
+  nice -n 19 python3 -m analysis.report --out "$RESULTS" --name "$SET" "${GOOD[@]}" \
+    --ref "${REF[@]}" --baseline "${BASE[@]}" || ANALYSIS="FAILED (report)"
+  nice -n 19 python3 -m analysis.plots --out "$RESULTS" "${GOOD[@]}" \
+    --ref "${REF[@]}" --baseline "${BASE[@]}" || ANALYSIS="FAILED (plots)"
+  nice -n 19 python3 -m analysis.animate "${GOOD[0]}" \
+    --out "$RESULTS/replay_$(basename "${GOOD[0]}").mp4" || ANALYSIS="FAILED (animation)"
 fi
 
-analysis_rc=1
-[ "$interrupted" = 0 ] && { analyse; analysis_rc=$?; }
-
 {
-  echo "evaluation $(date '+%F %T')  backend=$BACKEND mission=$MISSION mission_s=$MISSION_S n=$N alt=${SWARM_ALT:-60}"
-  for s in $SEEDS; do printf '  seed %-4s %s\n' "$s" "${STATUS[$s]:-not run}"; done
-  if [ "$analysis_rc" = 0 ]; then echo "  analysis: ok"; else echo "  analysis: INCOMPLETE (see output above)"; fi
-  echo "  runs:     $OUT/seed_<s>/   (failed attempts: $OUT/failed/)"
-  echo "  table:    $ANALYSIS_OUT/results.md"
-  echo "  plots:    $ANALYSIS_OUT/*.png"
-  if [ -f "$VIDEO" ]; then echo "  video:    $VIDEO"
-  else echo "  video:    none (seed $ANIM_SEED has no valid run or animate failed)"; fi
-} | tee "$SUMMARY"
-
-n_bad=0
-for s in $SEEDS; do case "${STATUS[$s]:-}" in ok*) ;; *) n_bad=$((n_bad + 1)) ;; esac; done
-[ "$n_bad" = 0 ] && [ "$analysis_rc" = 0 ] && exit 0
-exit 1
+  echo "evaluation $SET, $(date '+%F %T'), mission $MISSION_S s, seeds: $SEEDS"
+  printf '  %s\n' "${SUMMARY[@]}"
+  echo "  analysis: $ANALYSIS -> $RESULTS/"
+} | tee "$RUNS/summary.txt"
+[ "$ANALYSIS" = ok ] && [ ${#GOOD[@]} -eq "$(echo "$SEEDS" | wc -w)" ]
