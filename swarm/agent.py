@@ -1,7 +1,7 @@
 """Onboard agent process, one per drone.
 
     python -m swarm.agent --id K --n N --backend mav|fake --port-base P --log-dir DIR
-                          [--obstacle x,y,r]
+                          [--obstacle x,y,r] [--start-delay-s S]
 
 Every tick at CONTROL_HZ: coverage -> safety filter -> one setpoint to the own autopilot.
 Status, broadcast in STATE:
@@ -74,6 +74,8 @@ class Agent:
         self.not_guided_since: Optional[float] = None
         self.link_down_since: Optional[float] = None
         self.ticks = 0
+        self.start_delay_s = 0.0                     # test hook, see _start_delay_over
+        self.first_assign_at: Optional[float] = None
         os.makedirs(log_dir, exist_ok=True)
         self.csv_file = open(os.path.join(log_dir, f"agent_{agent_id}.csv"), "w", newline="")
         self.csv = csv.writer(self.csv_file)
@@ -119,10 +121,19 @@ class Agent:
         elif msg["type"] == "START" and msg["t0"] != self.t0:
             self.t0 = msg["t0"]
             self.events.write(now, "start", t0=self.t0)
-        elif msg["type"] == "ASSIGN":
+        elif msg["type"] == "ASSIGN" and self._start_delay_over(now):
             event = self.coverage.on_assign(msg, now, st.pos)
             if event is not None:
                 self.events.write(now, **event)
+
+    def _start_delay_over(self, now: float) -> bool:
+        """Test hook (--start-delay-s): ignore assignments for this long after the first one,
+        so this agent's loop runs out of phase with the others'."""
+        if self.first_assign_at is None:
+            self.first_assign_at = now
+            if self.start_delay_s > 0:
+                self.events.write(now, "start_delay", s=self.start_delay_s)
+        return now - self.first_assign_at >= self.start_delay_s
 
     def _send_state(self, st) -> None:
         self.link.send("all", "STATE", pos=[round(v, 2) for v in st.pos],
@@ -247,6 +258,8 @@ def main(argv=None) -> int:
     ap.add_argument("--port-base", type=int, default=0)
     ap.add_argument("--log-dir", default="run")
     ap.add_argument("--obstacle", default=None, help="test hook: x,y,radius in metres")
+    ap.add_argument("--start-delay-s", type=float, default=0.0,
+                    help="test hook: ignore assignments for this long after the first")
     args = ap.parse_args(argv)
     if args.backend == "mav":
         from swarm.mav_vehicle import MavVehicle
@@ -262,6 +275,7 @@ def main(argv=None) -> int:
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     agent = Agent(args.id, vehicle, link, args.log_dir)
+    agent.start_delay_s = args.start_delay_s
     if args.obstacle:
         x, y, radius_m = (float(v) for v in args.obstacle.split(","))
         agent.safety.add_obstacle(x, y, radius_m)

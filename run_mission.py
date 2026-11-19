@@ -3,6 +3,8 @@
 
     python run_mission.py --mission A|B|C|ref --backend gazebo|sitl|fake --n 3 --seed S --out DIR
                           [--scenario NAME] [--mission-s 180] [--zone xmin,ymin,xmax,ymax]
+                          [--lost-after-s S] [--start-delay AGENT:S]
+Environment: SWARM_ALT (cruise altitude), SWARM_LAYOUT (Mission A layout: strips | lanes).
 
 The runner is test equipment: it starts processes, injects faults at mission times and stops
 everything. It never sends anything to the swarm; it learns t0 by re-reading ground.jsonl.
@@ -80,6 +82,11 @@ def plan(args):
         length_s = 13.0 if args.scenario == "blackout13" else 10.0
         out["blackout"] = {"agent": agent, "t0": t_event, "t1": t_event + length_s}
         out["radio"] += ["--blackout", f"{agent}:{t_event}:{t_event + length_s}"]
+    if args.lost_after_s is not None:
+        out["ground"] += ["--lost-after-s", str(args.lost_after_s)]
+    for spec in args.start_delay or []:            # "agent:seconds"
+        a, delay_s = spec.split(":")
+        out["agents"].setdefault(int(a), []).extend(["--start-delay-s", delay_s])
     if args.scenario == "swap":
         out["ground"] += ["--swap-at", "30"]
     if args.scenario == "obstacle":
@@ -159,6 +166,8 @@ class Mission:
         self.taint0 = taint_mtime()
         self.meta = {"mission": args.mission, "scenario": args.scenario, "seed": args.seed,
                      "n": args.n, "backend": args.backend, "alt_cruise_m": config.ALT_CRUISE_M,
+                     "layout": config.LAYOUT, "lost_after_s": args.lost_after_s or config.LOST_S,
+                     "start_delay": args.start_delay, "wp_spd_ms": config.WP_SPD_MS,
                      "mission_s": args.mission_s, "t0_wall": None,
                      "faults": [{"t_mission": t, "action": a, "target": target, "wall": None}
                                 for t, a, target in faults_plan["faults"]],
@@ -325,6 +334,10 @@ def parse_args(argv=None):
                     help="default 180 s; 240 s for the obstacle scenario (blacklist expiry)")
     ap.add_argument("--zone", type=lambda text: [float(v) for v in text.split(",")],
                     help="Mission B priority zone xmin,ymin,xmax,ymax (default: the middle)")
+    ap.add_argument("--lost-after-s", type=float,
+                    help="ground: silence that drops an agent and re-plans (default LOST_S)")
+    ap.add_argument("--start-delay", action="append",
+                    help="agent:seconds, that agent ignores assignments this long (repeatable)")
     args = ap.parse_args(argv)
     if args.scenario and SCENARIOS[args.scenario][0] != args.mission:
         ap.error(f"--scenario {args.scenario} needs --mission {SCENARIOS[args.scenario][0]}")

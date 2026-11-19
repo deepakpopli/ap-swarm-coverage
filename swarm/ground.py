@@ -8,7 +8,8 @@ ready ones; they fly to their loops at once. When every assigned agent has reach
 loop under the current epoch (or ON_STATION_DEADLINE_S after the first plan), START is sent with
 t0 = now + COVERAGE_WINDOW_S: the swarm observes for one full coverage window before the
 mission clock reaches 0, so coverage at t = 0 already comes from a full window.
-Liveness, from STATE receive times: alive -> suspect (SUSPECT_S) -> lost (LOST_S). A status
+Liveness, from STATE receive times: alive -> suspect (SUSPECT_S) -> lost (--lost-after-s,
+default LOST_S). A status
 other than ready/cover/hold (e.g. "failsafe") counts as lost at once. A lost agent rejoins once
 it has been heard steadily for REJOIN_S. Re-plan on: lost, rejoin, accepted INFEASIBLE.
 Restart: see Ground.maybe_plan_first.
@@ -91,8 +92,9 @@ class AgentRecord:
 
 class Ground:
     def __init__(self, n, link, log, mission_s=config.MISSION_S, priority_zone=None,
-                 previous_t0=None, swap_at=None):
+                 previous_t0=None, swap_at=None, lost_after_s=config.LOST_S):
         self.n = n
+        self.lost_after_s = lost_after_s  # silence that drops an agent from the plan (re-plan)
         self.link = link
         self.log = log
         self.mission_s = mission_s
@@ -245,7 +247,7 @@ class Ground:
         for a in sorted(self.agents):
             rec = self.agents[a]
             silent_s = now - rec.last_heard
-            if rec.status not in FLYING or silent_s >= config.LOST_S:
+            if rec.status not in FLYING or silent_s >= self.lost_after_s:
                 new = "lost"
             elif rec.liveness == "lost" and not self.heard_steadily(rec, now):
                 new = "lost"
@@ -289,7 +291,7 @@ class Ground:
         if members:
             positions = {a: self.agents[a].xy for a in members}
             new = allocate(members, positions, set(self.blacklist), self.assignments,
-                           self.priority_zone, reverse)
+                           self.priority_zone, reverse, now=now)
         old = self.assignments
         changed = sorted(a for a in set(old) | set(new) if old.get(a) != new.get(a))
         uncovered = [rect for a in sorted(new) for rect in new[a].uncovered]
@@ -330,6 +332,9 @@ def main(argv=None):
                     help="Mission B: xmin,ymin,xmax,ymax")
     ap.add_argument("--swap-at", type=float, default=None,
                     help="test hook: re-plan with the strip order reversed at this mission time")
+    ap.add_argument("--lost-after-s", type=float, default=config.LOST_S,
+                    help="silence after which an agent is lost and the plan re-made "
+                         "(default LOST_S; SUSPECT_S = act at suspect)")
     args = ap.parse_args(argv)
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGINT, _exit_on_signal)
@@ -338,7 +343,7 @@ def main(argv=None):
     link = RadioLink(config.GROUND_ID, args.port_base)
     try:
         Ground(args.n, link, log, args.mission_s, args.priority_zone, previous_t0,
-               args.swap_at).run()
+               args.swap_at, args.lost_after_s).run()
     finally:
         log.close()
         link.close()
