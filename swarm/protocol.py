@@ -13,7 +13,8 @@ Messages
                 {"pos": [x, y, z], "vel": [vx, vy, vz],
                  "t_pos": wall time the position was sampled,
                  "epoch": int, "slot": int, "status": str}
-                status: "takeoff", "ready", "cover", "hold" (deaf or blocked), "failsafe"
+                status: "takeoff", "ready", "cover", "hold" (deaf, blocked, or holding after a
+                reported infeasible slot), "failsafe"
                 (the autopilot left GUIDED mode; the agent no longer controls the vehicle).
     START       ground -> all, repeated: {"t0": wall time of mission t = 0}
     ASSIGN      ground -> one agent, repeated at ASSIGN_HZ:
@@ -32,7 +33,7 @@ Agent log (agent_<id>.csv), one row per control tick, the only input of the offl
 import json
 
 AGENT_CSV_COLUMNS = [
-    "t_wall", "t_mission",            # s; t_mission is empty before the mission starts
+    "t_wall", "t_mission",            # s; empty until START, negative during the warm-up
     "x", "y", "z", "vx", "vy", "vz",  # own state from the own autopilot, area ENU frame
     "yaw",                            # rad, 0 = north, clockwise
     "status", "epoch", "slot",

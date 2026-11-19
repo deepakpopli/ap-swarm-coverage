@@ -3,7 +3,7 @@
 Implementations: swarm/mav_vehicle.py (pymavlink, real SITL) and sim/fake_vehicle.py (tests).
 """
 from dataclasses import dataclass
-from typing import Optional, Protocol, Tuple
+from typing import Dict, Optional, Protocol, Tuple
 
 
 @dataclass
@@ -19,8 +19,9 @@ class VehicleState:
 class Vehicle(Protocol):
     def connect(self) -> None: ...
 
-    def arm_and_takeoff(self, alt_m: float, timeout_s: float = 180.0) -> None:
-        """Set the parameters (speed cap, failsafes), arm, climb straight up to alt_m."""
+    def arm_and_takeoff(self, alt_m: float, timeout_s: float = 180.0) -> Dict[str, float]:
+        """Set the parameters (speed cap, failsafes), arm, climb straight up to alt_m.
+        Returns the parameters as read back from the autopilot."""
 
     def poll(self) -> None:
         """Read incoming telemetry without blocking. Call at CONTROL_HZ or faster."""

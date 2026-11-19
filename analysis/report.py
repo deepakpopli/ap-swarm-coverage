@@ -20,7 +20,7 @@ from analysis import metrics
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 METRICS = [   # (key = path in metrics.json, label, unit, digits)
-    ("coverage.mean_from_60s_pct", "Coverage from 60 s to the end, mean", "%", 1),
+    ("coverage.mean_pct", "Coverage over the mission, mean", "%", 1),
     ("loss.before_pct", "Coverage before the loss, mean (P)", "%", 1),
     ("loss.before_min_pct", "Coverage before the loss, min", "%", 1),
     ("loss.after_mean_pct", "Coverage after the loss (from L + 60 s), mean", "%", 1),
@@ -28,8 +28,8 @@ METRICS = [   # (key = path in metrics.json, label, unit, digits)
     ("coverage.end_of_run_pct", "Coverage at the end of the run (last 30 s), mean", "%", 1),
     ("coverage.end_of_run_min_pct", "Coverage at the end of the run (last 30 s), min", "%", 1),
     ("loss.share_pct", "(N-1)/N x P", "%", 1),
-    ("attainable_pct", "Attainable with N-1: no-loss N-1 runs, from 60 s", "%", 1),
-    ("baseline_pct", "No-loss N runs, from 60 s", "%", 1),
+    ("attainable_pct", "Attainable with N-1: no-loss N-1 runs, mean", "%", 1),
+    ("baseline_pct", "No-loss N runs, mean", "%", 1),
     ("loss.after_over_share", "After / ((N-1)/N x P)", "ratio", 2),
     ("loss.after_over_attainable", "After / attainable with N-1", "ratio", 2),
     ("loss.recovery_s", "Recovery to 0.9 x P", "s", 1),
@@ -133,13 +133,13 @@ def load_metrics(run_dir):
 
 def summarise_set(runs, refs, baselines):
     """{key: summary} for every key in METRICS, over the runs."""
-    attainable = summarise([m["coverage"]["mean_from_60s_pct"] for m in refs])
+    attainable = summarise([m["coverage"]["mean_pct"] for m in refs])
     for m in runs:
         if m["loss"] is not None and attainable["n"]:
             m["loss"]["after_over_attainable"] = m["loss"]["after_mean_pct"] / attainable["median"]
     summary = {key: summarise([lookup(m, key) for m in runs]) for key, *_ in METRICS}
     summary["attainable_pct"] = attainable
-    summary["baseline_pct"] = summarise([m["coverage"]["mean_from_60s_pct"] for m in baselines])
+    summary["baseline_pct"] = summarise([m["coverage"]["mean_pct"] for m in baselines])
     return summary
 
 
@@ -191,11 +191,6 @@ def render(name, runs, summary):
     lines = [f"# {name}", "",
              f"{len(runs)} runs, backend {', '.join(backends)}, N = {runs[0]['n']}. "
              "Cells: median [min, max] over runs. Definitions: docs/metrics.md.", ""]
-    partial = [m["run"] for m in runs if m["loss"] and m["loss"]["before_window_partial"]]
-    if partial:
-        lines += [f"**Warning:** in {len(partial)} of {len(runs)} runs the before window "
-                  "[L - 60 s, L) starts before t = 60 s, while coverage is still filling from "
-                  "the empty map at t = 0; P is lowered by that.", ""]
     if summary["loss.before_pct"]["n"]:
         lines += phase_table(summary) + [""]
     lines += ["| Metric | Unit | Median [min, max] | n |", "|---|---|---|---|"]

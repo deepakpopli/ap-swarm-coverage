@@ -71,7 +71,7 @@ def plot_coverage(runs, refs, baselines, out_dir):
     ax.plot(since_loss, np.nanmedian(aligned, axis=0), color=ACCENT, lw=2.5)
     ax.set_xlim(since_loss[0], since_loss[-1])
     if baselines:
-        levels = [b["m"]["coverage"]["mean_from_60s_pct"] for b in baselines]
+        levels = [b["m"]["coverage"]["mean_pct"] for b in baselines]
         ax.axhspan(min(levels), max(levels), color=ACCENT, alpha=0.12, lw=0)
         ax.text(since_loss[0] + 1, max(levels) + 1, "no-loss runs with N agents", color=INK_2,
                 fontsize=8)
@@ -79,7 +79,7 @@ def plot_coverage(runs, refs, baselines, out_dir):
     reference_line(ax, before, INK, "-", "P (before)")
     reference_line(ax, 0.9 * before, INK_2, ":", "0.9 P")
     if refs:
-        reference_line(ax, median_of(refs, "coverage.mean_from_60s_pct"), ACCENT, "--",
+        reference_line(ax, median_of(refs, "coverage.mean_pct"), ACCENT, "--",
                        "attainable N-1")
     reference_line(ax, median_of(runs, "loss.share_pct"), ACCENT_2, "--", "(N-1)/N x P")
     ax.axvline(0.0, color=CRITICAL, lw=1.2)
@@ -116,7 +116,7 @@ def plot_before_after(runs, refs, out_dir):
     coverage_ax = axes[0]
     reference_line(coverage_ax, median_of(runs, "loss.share_pct"), ACCENT_2, "--", "(N-1)/N P")
     if refs:
-        reference_line(coverage_ax, median_of(refs, "coverage.mean_from_60s_pct"), ACCENT, "--",
+        reference_line(coverage_ax, median_of(refs, "coverage.mean_pct"), ACCENT, "--",
                        "N-1")
     fig.suptitle("Before the loss vs after it (grey: runs, blue: median)", x=0.01, ha="left",
                  fontweight="bold", fontsize=11)

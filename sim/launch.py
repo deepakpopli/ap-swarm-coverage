@@ -50,8 +50,9 @@ def _die_with_parent() -> None:
     ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
 
 
-def _start(cmd: list, log_path: str, **popen_args) -> subprocess.Popen:
-    """Start cmd under nice -n 19, output to log_path, killed when we die."""
+def start_process(cmd: list, log_path: str, **popen_args) -> subprocess.Popen:
+    """Start cmd under nice -n 19, output to log_path, killed when we die (call it from the
+    main thread). nice execs cmd, so the Popen pid is the pid of cmd itself."""
     log = open(log_path, "w")
     return subprocess.Popen(["nice", "-n", "19"] + cmd, stdout=log, stderr=subprocess.STDOUT,
                             preexec_fn=_die_with_parent, **popen_args)
@@ -102,7 +103,7 @@ class Fleet:
         gz_dir = os.path.join(self.run_dir, "gz")
         positions = [config.start_xy(i, self.n) for i in range(self.n)]
         sdf = gazebo_world.generate(gz_dir, positions, config.ORIGIN_LLA)
-        self.gz = _start(["gz", "sim", "-s", "-r", "-v", "2", sdf],
+        self.gz = start_process(["gz", "sim", "-s", "-r", "-v", "2", sdf],
                          os.path.join(self.run_dir, "gz.log"), env=self.env)
         register_pid("fleet_gz", self.gz.pid)
 
@@ -121,8 +122,7 @@ class Fleet:
         home = f"{lat:.8f},{lon:.8f},{config.ORIGIN_LLA[2]},0"
         cmd = [ARDUCOPTER, "-w", "--model", model, "-I", str(instance), "--sysid", str(agent_id),
                "--home", home, "--defaults", params]
-        # nice execs arducopter, so the Popen pid is the arducopter pid
-        process = _start(cmd, os.path.join(work_dir, "sitl.log"), cwd=work_dir)
+        process = start_process(cmd, os.path.join(work_dir, "sitl.log"), cwd=work_dir)
         self.autopilots[agent_id] = process
         register_pid(f"fleet_sitl{agent_id}", process.pid)
 

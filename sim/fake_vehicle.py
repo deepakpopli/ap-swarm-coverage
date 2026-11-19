@@ -41,8 +41,9 @@ class FakeVehicle:
     def connect(self) -> None:
         pass
 
-    def arm_and_takeoff(self, alt_m: float, timeout_s: float = 180.0) -> None:
-        """Climb straight up to alt_m. Blocks, polling in real time, like MavVehicle."""
+    def arm_and_takeoff(self, alt_m: float, timeout_s: float = 180.0) -> dict:
+        """Climb straight up to alt_m. Blocks, polling in real time, like MavVehicle.
+        Returns no parameters: there is no autopilot to read them from."""
         self.guided = True
         self.send_setpoint(0.0, 0.0, alt_m)
         deadline = time.monotonic() + timeout_s
@@ -51,6 +52,7 @@ class FakeVehicle:
                 raise RuntimeError(f"agent {self.id}: takeoff timeout")
             self.poll()
             time.sleep(0.002)
+        return {}
 
     def poll(self) -> None:
         with self.lock:

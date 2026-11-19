@@ -96,10 +96,12 @@ class CoverageTest(unittest.TestCase):
         self.assertAlmostEqual(coverage[0], expected, delta=0.02 * expected)
         self.assertAlmostEqual(coverage[180], coverage[0])
 
-    def test_rows_before_the_start_do_not_count(self):
-        run = make_run({1: agent_log(track(-30.0, 0.0, 150.0, 150.0))})
+    def test_warm_up_rows_count_and_earlier_rows_do_not(self):
+        run = make_run({1: agent_log(track(-90.0, -61.0, 60.0, 150.0)
+                                     + track(-30.0, 0.0, 240.0, 150.0))})
         _, coverage = coverage_of(run)
-        self.assertEqual(coverage.max(), 0.0)
+        one_footprint = 100.0 * np.prod(sensor.footprint_size(50.0)) / 300.0 ** 2
+        self.assertAlmostEqual(coverage[0], one_footprint, delta=0.02 * one_footprint)
 
 
 class RevisitGapTest(unittest.TestCase):
@@ -159,7 +161,6 @@ class LossTest(unittest.TestCase):
         self.assertEqual(loss["dip_pct"], 50.0)
         self.assertIsNone(loss["recovery_s"])
         self.assertEqual(loss["recovery_to_share_s"], 29.5)  # 0.9 x 60 = 54: back at t = 130
-        self.assertTrue(loss["before_window_partial"])      # 100.5 - 60 < 60
 
 
 class ChurnTest(unittest.TestCase):
@@ -198,7 +199,7 @@ class SafetyTest(unittest.TestCase):
 
 class MissionTest(unittest.TestCase):
     def test_priority_zone_gap(self):
-        rows = (track(0.0, 20.0, 150.0, 150.0) + track(20.0, 51.0, 250.0, 250.0)
+        rows = (track(-60.0, 20.0, 150.0, 150.0) + track(20.0, 51.0, 250.0, 250.0)
                 + track(51.0, 180.0, 150.0, 150.0))
         run = make_run({1: agent_log(rows)}, mission="B", priority_zone=[140, 140, 160, 160])
         zone = metrics.priority_zone_block(run, metrics.sightings(run), np.arange(0.0, 181.0))

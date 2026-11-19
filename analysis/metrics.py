@@ -42,19 +42,23 @@ def first_time(times, mask):
     return float(times[mask][0])
 
 
-def mission_rows(run, agent_id):
-    """Rows of an agent that count: from the start until the end, or until the loss."""
+def mission_rows(run, agent_id, from_s=0.0):
+    """Rows of an agent that count: from from_s until the end, or until the loss."""
     t = run.agents[agent_id]["t"]
-    return (t >= 0.0) & (t <= run.live_until(agent_id))
+    return (t >= from_s) & (t <= run.live_until(agent_id))
 
 
 # ---------------------------------------------------------------------- coverage
 
 def sightings(run):
-    """[(t, indices of the cells seen)] for every counted log row, in time order."""
+    """[(t, indices of the cells seen)] for every counted log row, in time order.
+
+    Rows count from t = -WINDOW_S: the swarm observes for one window before the mission clock
+    starts, so coverage(0) already comes from a full window.
+    """
     out = []
     for agent_id, log in run.agents.items():
-        for i in np.flatnonzero(mission_rows(run, agent_id)):
+        for i in np.flatnonzero(mission_rows(run, agent_id, -WINDOW_S)):
             seen = sensor.seen_mask(CELL_X_M, CELL_Y_M, log["x"][i], log["y"][i],
                                     log["z"][i], log["yaw"][i])
             out.append((log["t"][i], np.flatnonzero(seen).astype(np.int32)))
@@ -65,7 +69,7 @@ def sightings(run):
 def last_seen_at(sightings_list, times):
     """For each of the ascending times, yield (t, per-cell time of the latest sighting <= t).
 
-    -inf means not seen since the start. The same array is updated and yielded every time.
+    -inf means never seen. The same array is updated and yielded every time.
     """
     last = np.full(CELL_X_M.size, -np.inf)
     i = 0
@@ -86,9 +90,8 @@ def percent_fresh(sightings_list, ticks, window_s, cells):
 
 
 def coverage_block(ticks, coverage, end_s):
-    full_window = in_phase(ticks, WINDOW_S, math.inf)
     end_of_run = coverage[in_phase(ticks, end_s - END_OF_RUN_S, math.inf)]
-    return {"mean_from_60s_pct": float(np.mean(coverage[full_window])),
+    return {"mean_pct": float(np.mean(coverage)),
             "end_of_run_pct": float(np.mean(end_of_run)),
             "end_of_run_min_pct": float(np.min(end_of_run))}
 
@@ -188,7 +191,6 @@ def loss_block(run, ticks, coverage):
         milestones = recovery_milestones(run, recovery_s)
     return {"loss_s": loss_s,
             "lost_declared_s": lost_declared_s,
-            "before_window_partial": bool(loss_s - WINDOW_S < WINDOW_S),
             "before_pct": before_pct,
             "before_min_pct": float(np.min(before)),
             "after_mean_pct": float(np.mean(after)),
@@ -324,12 +326,14 @@ def control_block(run):
 # ---------------------------------------------------------------- missions B and C
 
 def longest_unseen(sightings_list, end_s):
-    """Per cell: the longest time without a sighting in [0, end_s], including the time before
-    the first sighting and after the last one."""
-    last = np.zeros(CELL_X_M.size)
+    """Per cell: the largest age (time since the last sighting) at any moment of [0, end_s].
+    The last sighting may lie in the warm-up; a cell not seen since counting began
+    (t = -WINDOW_S) counts from there."""
+    last = np.full(CELL_X_M.size, -WINDOW_S)
     longest = np.zeros(CELL_X_M.size)
     for t, cells in sightings_list:
-        longest[cells] = np.maximum(longest[cells], t - last[cells])
+        if t >= 0.0:
+            longest[cells] = np.maximum(longest[cells], t - last[cells])
         last[cells] = t
     return np.maximum(longest, end_s - last)
 
@@ -417,5 +421,5 @@ def read_coverage_csv(run_dir):
 
 if __name__ == "__main__":
     result = analyse(sys.argv[1])
-    print(f"{result['run']}: coverage from 60 s {result['coverage']['mean_from_60s_pct']:.1f} %,"
+    print(f"{result['run']}: coverage {result['coverage']['mean_pct']:.1f} %,"
           f" min separation {result['safety']['min_separation_m']:.1f} m")

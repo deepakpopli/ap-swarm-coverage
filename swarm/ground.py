@@ -1,12 +1,13 @@
 """Ground station: tracks liveness, runs the allocator, sends assignments (never velocities).
 
     python -m swarm.ground --n 3 --port-base 0 --log run/ground.jsonl [--mission-s 180]
-                           [--priority-zone xmin,ymin,xmax,ymax]
+                           [--priority-zone xmin,ymin,xmax,ymax] [--swap-at T]
 
 Start: when all n agents report "ready" (or READY_DEADLINE_S after the first did), plan for the
-ready ones; they fly to their loops at once. When every assigned agent reports the current
-epoch at a slot >= loop_from (or ON_STATION_DEADLINE_S after the first plan), t0 = now + 1 s
-and START is sent: the mission clock starts with the swarm on station.
+ready ones; they fly to their loops at once. When every assigned agent has reached a slot of its
+loop under the current epoch (or ON_STATION_DEADLINE_S after the first plan), START is sent with
+t0 = now + COVERAGE_WINDOW_S: the swarm observes for one full coverage window before the
+mission clock reaches 0, so coverage at t = 0 already comes from a full window.
 Liveness, from STATE receive times: alive -> suspect (SUSPECT_S) -> lost (LOST_S). A status
 other than ready/cover/hold (e.g. "failsafe") counts as lost at once. A lost agent rejoins once
 it has been heard steadily for REJOIN_S. Re-plan on: lost, rejoin, accepted INFEASIBLE.
@@ -17,7 +18,7 @@ ground.jsonl: one JSON object per line, each with "t_wall", "t_mission" (null be
   ready       {agent}
   assign      {epoch, trigger, assignments: {id: {share, slots, loop_from}}, changed: [ids],
                uncovered: [[xmin, xmax, ymin, ymax], ...] or null}
-  start       {t0, late: [ids not on station]}
+  start       {t0, late: [ids not on station]}   (t_mission = -COVERAGE_WINDOW_S)
   liveness    {agent, from, to, status}       alive | suspect | lost; status = last reported
   infeasible  {agent, epoch, slot_xy, accepted, why}
   blacklist   {pairs: [{agent, slot_key, expires_t_wall}]}
@@ -36,7 +37,6 @@ from swarm.net import RadioLink
 
 READY_DEADLINE_S = 120.0       # plan without the agents not ready this long after the first
 ON_STATION_DEADLINE_S = 120.0  # start without the agents not on their loop this long after
-START_LEAD_S = 1.0             # t0 = now + this, so START reaches everyone before t = 0
 REJOIN_S = 3.0                 # a lost agent must be heard steadily this long to rejoin
 RESTART_LISTEN_S = 3.0         # a restarted ground listens this long before planning
 EPOCH_STRIDE = 1000            # a restarted ground jumps this far above any epoch it hears
@@ -85,17 +85,19 @@ class AgentRecord:
     status: str = ""
     epoch: int = 0
     slot: int = -1
+    on_loop: bool = False      # has reached a slot of its loop under its reported epoch
     liveness: str = "lost"     # alive | suspect | lost; lost = not in the plan
 
 
 class Ground:
     def __init__(self, n, link, log, mission_s=config.MISSION_S, priority_zone=None,
-                 previous_t0=None):
+                 previous_t0=None, swap_at=None):
         self.n = n
         self.link = link
         self.log = log
         self.mission_s = mission_s
         self.priority_zone = priority_zone
+        self.swap_at = swap_at           # test hook, see maybe_swap
         self.previous_t0 = previous_t0   # from the log of a ground that ran before this one
         self.agents = {}                 # id -> AgentRecord
         self.first_ready = None          # when the first agent reported "ready"
@@ -123,6 +125,7 @@ class Ground:
         self.expire_blacklist(now)
         if self.t0 is None:
             self.maybe_start(now)
+        self.maybe_swap(now)
         self.send_due(now)
         return self.t0 is None or now < self.t0 + self.mission_s
 
@@ -146,8 +149,21 @@ class Ground:
         rec.last_heard = now
         rec.xy = msg["pos"][:2]
         rec.status = msg["status"]
-        rec.epoch = msg["epoch"] or 0    # null or 0 before the agent's first ASSIGN
+        epoch = msg["epoch"] or 0        # null or 0 before the agent's first ASSIGN
+        self.note_slot(a, rec, epoch, msg["slot"])
+        rec.epoch = epoch
         rec.slot = msg["slot"]
+
+    def note_slot(self, a, rec, epoch, slot):
+        """The active slot only moves on when the agent reaches it. So when the slot changes
+        under the same epoch, the previously reported slot was reached; if it is a loop slot,
+        the agent is on station. A lost STATE can only delay this, never make it early."""
+        if epoch != rec.epoch:
+            rec.on_loop = False
+            return
+        plan = self.assignments.get(a)
+        if plan is not None and epoch == self.epoch and slot != rec.slot:
+            rec.on_loop = rec.on_loop or rec.slot >= plan.loop_from
 
     def on_infeasible(self, msg, now):
         """Blacklist the slot and re-plan, whatever epoch the report names, as long as the point
@@ -203,17 +219,26 @@ class Ground:
         late = sorted(a for a in self.assignments if not self.on_station(a))
         if late and now < self.planned_at + ON_STATION_DEADLINE_S:
             return
-        self.set_t0(now + START_LEAD_S)
+        self.set_t0(now + config.COVERAGE_WINDOW_S)
         self.log.write(now, "start", t0=self.t0, late=late)
 
     def on_station(self, a) -> bool:
         rec = self.agents[a]
-        return rec.epoch == self.epoch and rec.slot >= self.assignments[a].loop_from
+        return rec.epoch == self.epoch and rec.on_loop
 
     def set_t0(self, t0):
         self.t0 = t0
         self.log.t0 = t0
         self.next_start = 0.0            # send START now
+
+    # ---- test hook for the "swap" scenario (run_mission.py --scenario swap)
+    def maybe_swap(self, now):
+        """At mission time swap_at, re-plan once with the strip order reversed, so every
+        agent has to cross the others at cruise altitude: a stress test of the safety filter."""
+        if self.swap_at is None or self.t0 is None or now < self.t0 + self.swap_at:
+            return
+        self.swap_at = None
+        self.replan(now, "swap", reverse=True)
 
     # ---- liveness
     def update_liveness(self, now):
@@ -258,13 +283,13 @@ class Ground:
         self.log.write(now, "blacklist", pairs=pairs)
 
     # ---- planning and sending
-    def replan(self, now, trigger):
+    def replan(self, now, trigger, reverse=False):
         members = sorted(a for a, r in self.agents.items() if r.liveness != "lost")
         new = {}
         if members:
             positions = {a: self.agents[a].xy for a in members}
             new = allocate(members, positions, set(self.blacklist), self.assignments,
-                           self.priority_zone)
+                           self.priority_zone, reverse)
         old = self.assignments
         changed = sorted(a for a in set(old) | set(new) if old.get(a) != new.get(a))
         uncovered = [rect for a in sorted(new) for rect in new[a].uncovered]
@@ -303,6 +328,8 @@ def main(argv=None):
     ap.add_argument("--mission-s", type=float, default=config.MISSION_S)
     ap.add_argument("--priority-zone", type=parse_zone, default=None,
                     help="Mission B: xmin,ymin,xmax,ymax")
+    ap.add_argument("--swap-at", type=float, default=None,
+                    help="test hook: re-plan with the strip order reversed at this mission time")
     args = ap.parse_args(argv)
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGINT, _exit_on_signal)
@@ -310,7 +337,8 @@ def main(argv=None):
     log = JsonLines(args.log)
     link = RadioLink(config.GROUND_ID, args.port_base)
     try:
-        Ground(args.n, link, log, args.mission_s, args.priority_zone, previous_t0).run()
+        Ground(args.n, link, log, args.mission_s, args.priority_zone, previous_t0,
+               args.swap_at).run()
     finally:
         log.close()
         link.close()

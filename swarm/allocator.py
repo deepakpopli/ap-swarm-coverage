@@ -181,16 +181,19 @@ def _zone_split(order, xy, zone):
 
 
 def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
-             priority_zone: tuple = None) -> dict:
+             priority_zone: tuple = None, reverse: bool = False) -> dict:
     """{agent_id: Assignment} for agent_ids.
 
     positions: {id: (x, y, ...)} for every id. blacklist: (agent_id, slot_key) pairs that must
     not be issued. previous: the last result; an agent whose share is unchanged and whose old
     plan has no blacklisted point keeps its old Assignment object (no churn).
     priority_zone: (xmin, ymin, xmax, ymax) for Mission B, else None.
+    reverse: hand the strips out east to west instead (only the ground's "swap" test hook).
     """
     xy = {a: [positions[a][0], positions[a][1]] for a in agent_ids}
     order = sorted(agent_ids, key=lambda a: (xy[a][0], a))   # west to east, ties by id
+    if reverse:
+        order.reverse()
     if priority_zone is None:
         strips = _even_split(order)
     else:

@@ -1,17 +1,21 @@
 """Onboard agent process, one per drone.
 
     python -m swarm.agent --id K --n N --backend mav|fake --port-base P --log-dir DIR
+                          [--obstacle x,y,r]
 
 Every tick at CONTROL_HZ: coverage -> safety filter -> one setpoint to the own autopilot.
 Status, broadcast in STATE:
   takeoff   listen LISTEN_S, wait for clear_for_takeoff(), climb straight up to the hold altitude
   ready     at the hold altitude, no assignment yet
-  cover     flying the assignment, from the first ASSIGN on (START only sets t0 for the logs)
+  cover     flying the assignment, from the first ASSIGN on (START only sets t0 for the logs;
+            t_mission is logged from then on, negative during the warm-up)
   hold      the filter keeps us at the hold altitude (deaf, blocked, or nothing to fly)
   failsafe  the autopilot left GUIDED for > GUIDED_LOST_S: no more setpoints, STATE goes on
 If the own autopilot link dies the agent sends nothing more and exits after LINK_DEAD_S, so
 neighbours never get a stale position with a fresh time stamp.
-Logs: agent_<id>.csv (protocol.AGENT_CSV_COLUMNS, a row per tick) and agent_<id>.events.jsonl.
+Logs: agent_<id>.csv (protocol.AGENT_CSV_COLUMNS, a row per tick) and agent_<id>.events.jsonl
+(its "takeoff_done" event holds the autopilot parameters as read back).
+--obstacle: test hook, a static keep-out disc only this agent knows about (SafetyFilter).
 """
 import argparse
 import csv
@@ -66,6 +70,7 @@ class Agent:
         self.t_listen: Optional[float] = None        # first tick: start of listening
         self.takeoff_thread: Optional[threading.Thread] = None
         self.takeoff_error: Optional[Exception] = None
+        self.params: Optional[dict] = None           # read back from the autopilot
         self.not_guided_since: Optional[float] = None
         self.link_down_since: Optional[float] = None
         self.ticks = 0
@@ -145,12 +150,12 @@ class Agent:
             self.events.write(now, "takeoff_failed", error=repr(self.takeoff_error))
             return False
         self.status = "ready"
-        self.events.write(now, "takeoff_done", z=round(st.pos[2], 2))
+        self.events.write(now, "takeoff_done", z=round(st.pos[2], 2), params=self.params)
         return True
 
     def _climb(self) -> None:
         try:
-            self.vehicle.arm_and_takeoff(self.safety.hold_z)
+            self.params = self.vehicle.arm_and_takeoff(self.safety.hold_z)
         except Exception as e:               # reported by _takeoff() on the main thread
             self.takeoff_error = e
 
@@ -199,7 +204,7 @@ class Agent:
 
     def _log_row(self, now: float, st, nominal, cmd) -> None:
         t_mission = None
-        if self.t0 is not None and now >= self.t0:
+        if self.t0 is not None:
             t_mission = now - self.t0
         row = [_num(now, 3), _num(t_mission, 3)]
         row += [_num(v) for v in st.pos + st.vel] + [_num(st.yaw, 3)]
@@ -241,6 +246,7 @@ def main(argv=None) -> int:
     ap.add_argument("--backend", choices=("mav", "fake"), default="mav")
     ap.add_argument("--port-base", type=int, default=0)
     ap.add_argument("--log-dir", default="run")
+    ap.add_argument("--obstacle", default=None, help="test hook: x,y,radius in metres")
     args = ap.parse_args(argv)
     if args.backend == "mav":
         from swarm.mav_vehicle import MavVehicle
@@ -255,7 +261,11 @@ def main(argv=None) -> int:
     def stop(signum, frame):                 # SIGTERM ends the loop like Ctrl-C
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
-    return Agent(args.id, vehicle, link, args.log_dir).run()
+    agent = Agent(args.id, vehicle, link, args.log_dir)
+    if args.obstacle:
+        x, y, radius_m = (float(v) for v in args.obstacle.split(","))
+        agent.safety.add_obstacle(x, y, radius_m)
+    return agent.run()
 
 
 if __name__ == "__main__":

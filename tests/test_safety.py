@@ -127,7 +127,7 @@ def test_fake_vehicle_matches_measured_autopilot():
 def test_keep_out_radius_numbers_in_the_doc():
     p = SafetyParams()
     assert p.t_go_s == pytest.approx(4.6)
-    assert [round(p.radius_m(a), 2) for a in (0.2, 1.0, 3.0, 10.0)] == [9.16, 13.0, 36.73, 80.73]
+    assert [round(p.radius_m(a), 2) for a in (0.2, 1.0, 3.0, 10.0)] == [9.22, 14.5, 39.4, 83.4]
 
 
 def test_hold_and_cruise_agents_are_vertically_separated():

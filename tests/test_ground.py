@@ -24,8 +24,8 @@ class FakeLink:
 
 
 class FakeAgent:
-    """Talks STATE every tick while `talking`; adopts the newest ASSIGN and, if `on_loop`,
-    reports a slot inside its loop, else the slot before it."""
+    """Talks STATE every tick while `talking`. On a new ASSIGN it starts at loop_from; if
+    `on_loop` it reaches one slot per tick from then on, else it never moves on."""
 
     def __init__(self, agent_id, n):
         self.id = agent_id
@@ -37,12 +37,16 @@ class FakeAgent:
         self.slot = -1
 
     def state(self):
-        return {"src": self.id, "type": "STATE", "pos": self.xy + [50.0], "epoch": self.epoch,
-                "slot": self.slot, "status": self.status}
+        msg = {"src": self.id, "type": "STATE", "pos": self.xy + [50.0], "epoch": self.epoch,
+               "slot": self.slot, "status": self.status}
+        if self.on_loop and self.epoch > 0:
+            self.slot += 1
+        return msg
 
     def hear(self, body):
-        self.epoch = body["epoch"]
-        self.slot = body["loop_from"] if self.on_loop else body["loop_from"] - 1
+        if body["epoch"] != self.epoch:
+            self.epoch = body["epoch"]
+            self.slot = body["loop_from"]
 
 
 class Sim:
@@ -84,7 +88,9 @@ def test_start_when_all_ready_and_on_station(tmp_path):
     assert [r["trigger"] for r in sim.events("assign")] == ["start"]
     assert sim.events("assign")[0]["changed"] == [1, 2, 3]
     [start] = sim.events("start")
-    assert start["late"] == [] and start["t0"] == pytest.approx(start["t_wall"] + 1.0)
+    assert start["late"] == []
+    assert start["t0"] == pytest.approx(start["t_wall"] + config.COVERAGE_WINDOW_S)
+    assert start["t_mission"] == pytest.approx(-config.COVERAGE_WINDOW_S)
     assert len(sim.events("ready")) == 3
 
 
@@ -200,3 +206,13 @@ def test_last_t0_reads_the_old_log(tmp_path):
     path.write_text(json.dumps({"event": "start", "t0": 500.0}) + "\n" + '{"event": "ass')
     assert ground.last_t0(str(path)) == 500.0
     assert ground.last_t0(str(tmp_path / "missing.jsonl")) is None
+
+
+def test_swap_hook_reverses_the_strips_once(tmp_path):
+    sim = Sim(tmp_path)
+    sim.ground.swap_at = 5.0 - config.COVERAGE_WINDOW_S   # 5 s after START
+    sim.run(2.0)
+    west_first = [sim.plan(a).share[0] for a in (1, 2, 3)]
+    sim.run(5.0)
+    assert [r["trigger"] for r in sim.events("assign")] == ["start", "swap"]
+    assert [sim.plan(a).share[0] for a in (1, 2, 3)] == west_first[::-1]

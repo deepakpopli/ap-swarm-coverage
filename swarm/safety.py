@@ -23,19 +23,29 @@ SIDESTEP_BELOW_MS = 1.0   # head-on: less tangential speed than this -> also ste
 FILTERED_MS = 0.1         # log "filtered" when the output differs from the nominal by more
 WANTS_TO_MOVE_MS = 1.0    # blocked: the controller asks for at least this ...
 NO_PROGRESS_MS = 0.5      # ... and the filter lets through less than this in that direction
+PROGRESS_TAU_S = 1.0      # (averaged over about this long)
+OBSTACLE_ID = config.GROUND_ID   # never a neighbour's id, so free for the test obstacle
 
 
 @dataclass(frozen=True)
 class SafetyParams:
-    """Measured values: results/spike/speed_cap.md and motion_bounds.json."""
+    """Measured values (SITL / Gazebo): results/spike/motion_bounds_{sitl,gazebo}.json.
+
+    Braking model: stop_offset + v t_react + v^2 / (2 a_brake) needs 28.6 m from 11.5 m/s;
+    measured 19.15 / 14.08 m. The drift model with a_max and dv_max covers the measured deviation
+    from the constant-velocity prediction: 5.5 / 17.9 / 30.4 m at 1 / 2 / 3 s against
+    3.6 / 13.5 / 28.4 (SITL) and 4.2 / 14.6 / 30.2 m (Gazebo), and 1.38 m at 0.5 s against 1.27.
+    """
     margin_m: float = 1.0       # position error of both agents (estimate and sample timing)
-    a_brake_ms2: float = 3.0    # braking we count on; measured 4.2 (10 m/s stops in 14-15 m)
-    t_react_s: float = 0.4      # measured autopilot reaction 0.2-0.3 s + one 50 ms tick
-    stop_offset_m: float = 2.0  # measured overshoot past the rest point <= 1.23 m
-    a_max_ms2: float = 8.0      # measured peak horizontal acceleration 7.8 m/s^2
-    dv_max_ms: float = 12.5     # speed cap 11.5 + measured overshoot 0.35: a full stop
+    a_brake_ms2: float = 3.0    # braking we count on (see the braking model above)
+    t_react_s: float = 0.4      # autopilot reaction + one 50 ms tick (in the braking model)
+    stop_offset_m: float = 2.0  # measured back-track after a stop <= 0.45 m
+    a_max_ms2: float = 11.0     # drift envelope, not a physical acceleration (measured peak
+                                # 7.02 / 7.80 m/s^2): velocity samples lag, so 8 left the
+                                # deviation at 0.5 s and 1 s outside the disc
+    dv_max_ms: float = 12.5     # a full stop from the measured top speed 11.81 m/s
     t_gap_s: float = 1.0        # 5 STATEs lost in a row at 20 % loss: p = 3e-4
-    z_track_m: float = 1.0      # measured altitude error 0.08 m steady, ~1 m after takeoff
+    z_track_m: float = 1.0      # measured altitude error <= 0.08 m cruising, 0.94 m after takeoff
     plan_ahead_s: float = 0.6   # design: plan as if the next 3 STATEs are lost
     blocked_s: float = 3.0      # design: no progress this long while wanting to move = blocked
     clear_gap_m: float = 5.0    # design: return to cruise when every disc is this far ...
@@ -74,6 +84,7 @@ class Neighbour:
     vel: Tuple[float, float, float]
     t_pos: float            # wall time its position was sampled
     failsafe: bool          # its autopilot left GUIDED: its altitude is unknown
+    size_m: float = 0.0     # added to the keep-out radius (the static obstacle's radius)
 
 
 @dataclass
@@ -128,7 +139,16 @@ class SafetyFilter:
         self.deaf = False
         self.last_heard: Optional[float] = None
         self.stuck_since: Optional[float] = None
+        self.progress_ms = 0.0              # output speed toward the nominal goal, averaged
+        self.last_step: Optional[float] = None
         self.clear_since: Optional[float] = None
+        self.obstacle: Optional[Neighbour] = None
+
+    def add_obstacle(self, x: float, y: float, radius_m: float) -> None:
+        """Test hook (scenario "obstacle"): a static disc of unknown height that the allocator
+        does not know about. It is a neighbour that never moves, is always fresh and has an
+        unknown altitude, so the filter treats it exactly like a hovering failsafe drone."""
+        self.obstacle = Neighbour((x, y, 0.0), (0.0, 0.0, 0.0), 0.0, True, radius_m)
 
     def heard(self, now: float) -> None:
         """Any message from anyone arrived."""
@@ -146,6 +166,9 @@ class SafetyFilter:
     def step(self, now: float, pos, vel, v_nom: Tuple[float, float],
              want_hold: bool) -> SafeCommand:
         """pos, vel: own state from the autopilot. v_nom: what coverage asks for (m/s)."""
+        if self.obstacle is not None:
+            self.obstacle.t_pos = now
+            self.nbrs[OBSTACLE_ID] = self.obstacle
         events = self._forget_lost(now)
         if self._update_deaf(now, events):
             return self._output(0.0, 0.0, ["deaf"], events, now, pos)
@@ -167,6 +190,7 @@ class SafetyFilter:
             flags.append("blocked")
             if not self.holding:
                 self.holding = True
+                self.clear_since = None          # back to cruise only after clear_s anew
                 events.append({"event": "blocked"})
         return self._output(vx, vy, flags, events, now, pos)
 
@@ -201,8 +225,9 @@ class SafetyFilter:
             dy = nb.pos[1] + nb.vel[1] * t - pos[1]
             dist = math.hypot(dx, dy)
             n = (dx / dist, dy / dist) if dist > 1e-6 else (1.0, 0.0)
-            plan_gap = dist - self.p.radius_m(age + self.p.plan_ahead_s)
-            discs.append(Disc(n, dist - self.p.radius_m(age), self.p.v_stop_ms(plan_gap) / 2))
+            plan_gap = dist - self.p.radius_m(age + self.p.plan_ahead_s) - nb.size_m
+            gap = dist - self.p.radius_m(age) - nb.size_m
+            discs.append(Disc(n, gap, self.p.v_stop_ms(plan_gap) / 2))
         return discs
 
     def _limit(self, v_nom, discs: List[Disc]) -> Tuple[float, float]:
@@ -232,12 +257,17 @@ class SafetyFilter:
         """For blocked_s the filter has let through (almost) no speed where coverage wants to go.
 
         Measured along the nominal direction: sliding sideways around a neighbour is no progress.
+        Averaged over PROGRESS_TAU_S: between two discs the output can chatter from tick to tick,
+        and a single tick with progress must not restart the timer.
         """
         wanted = math.hypot(*v_nom)
-        stuck = False
+        progress = 0.0
         if wanted >= WANTS_TO_MOVE_MS:
             progress = (v_out[0] * v_nom[0] + v_out[1] * v_nom[1]) / wanted
-            stuck = progress < NO_PROGRESS_MS
+        dt = 0.0 if self.last_step is None else now - self.last_step
+        self.last_step = now
+        self.progress_ms += (progress - self.progress_ms) * min(1.0, dt / PROGRESS_TAU_S)
+        stuck = wanted >= WANTS_TO_MOVE_MS and self.progress_ms < NO_PROGRESS_MS
         if not stuck:
             self.stuck_since = None
             return False
