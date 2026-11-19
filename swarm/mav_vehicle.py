@@ -14,9 +14,6 @@ lead_s() is the lead at which the autopilot flies at the commanded speed (1.06 s
     safety filter takes effect at once. (The old "rabbit" target kept the vehicle flying its
     old heading for ~1.5 s and broke the 8 m separation in crossings.)
   - Zero velocity puts the target on the current position, and the autopilot brakes.
-  - The speed asked for is at most SPEED_STEP_MS above the measured speed. Speeding up from a
-    brake or a sharp turn with the full step overshot WP_SPD = 11 by up to 1.1 m/s (12.1 m/s
-    in Gazebo mission runs), above the 12 m/s limit.
 The altitude part of the target is at most ALT_STEP_M from the current altitude. The autopilot
 flies a straight 3D line to the target and caps the speed along it by WP_SPD horizontally and
 WP_SPD_UP/DN vertically, so a large altitude step would slow the horizontal flight.
@@ -36,7 +33,6 @@ from swarm.vehicle_api import VehicleState
 
 LAG_S = 0.15             # s, vehicle behind the autopilot's shaped position (see lead_s)
 ALT_STEP_M = 5.0         # m, largest altitude change put into one target
-SPEED_STEP_MS = 2.0      # m/s, largest commanded speed above the measured speed
 LINK_TIMEOUT_S = 1.0     # silence after which link_ok turns False
 HEARTBEAT_S = 1.0
 TELEMETRY_HZ = 20.0      # rate of GLOBAL_POSITION_INT
@@ -256,10 +252,6 @@ class MavVehicle:
     def send_setpoint(self, vx: float, vy: float, z: float) -> None:
         """Position-only target lead_s ahead along (vx, vy) ENU m/s, altitude z m. Yaw north."""
         x_m, y_m, z_m = self.pos
-        speed_ms = math.hypot(vx, vy)
-        allowed_ms = math.hypot(self.vel[0], self.vel[1]) + SPEED_STEP_MS
-        if speed_ms > allowed_ms:
-            vx, vy = vx * allowed_ms / speed_ms, vy * allowed_ms / speed_ms
         t_lead_s = lead_s(math.hypot(vx, vy))
         lat, lon = config.enu_to_lla(x_m + vx * t_lead_s, y_m + vy * t_lead_s)
         z_target_m = z_m + max(-ALT_STEP_M, min(ALT_STEP_M, z - z_m))
