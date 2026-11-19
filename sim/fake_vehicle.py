@@ -1,118 +1,99 @@
-"""FakeVehicle: kinematic stand-in for the autopilot, implementing the Vehicle protocol.
+"""FakeVehicle: a stand-in autopilot for tests, with the same actuator path as MavVehicle.
 
-Model (per poll(), integrated in sub-steps of <= 20 ms):
-  horizontal: first-order velocity response to the commanded (vx, vy) with time constant TAU_V,
-              acceleration magnitude limited to A_MAX_XY (3 m/s^2), speed limited to V_MAX.
-  vertical:   vz_cmd = clamp(KP_Z * (z_cmd - z), +-VZ_MAX) (2.5 m/s), same first-order response.
-  guided timeout: if no setpoint for GUIDED_TIMEOUT_S, the commanded velocity becomes zero.
-Real time by default; tests pass `clock` (and `sleep`) to run in simulated time.
+send_setpoint(vx, vy, z) becomes a position target, position + v * T_LEAD_S, as in MavVehicle.
+The autopilot acts on it REACT_S later (the target is aimed from where the vehicle is then) and
+flies toward it the way the measured ArduCopter does: it speeds up at A_UP_MS2, slows down at
+A_BRAKE_MS2, never exceeds WP_SPD_MS, and climbs or descends at most VZ_MAX_MS. A zero velocity
+puts the target on the vehicle, so it brakes as hard as it can, like the real one.
+Numbers: results/spike/speed_cap.md. Real time through poll(); tests call step(dt) or pass a
+simulated clock.
 """
 import math
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from collections import deque
 
-from swarm import config as C
+from swarm import config
 from swarm.vehicle_api import VehicleState
 
-TAU_V = 0.3
-A_MAX_XY = 3.0
-VZ_MAX = 2.5
-A_MAX_Z = 3.0
-KP_Z = 1.0
-GUIDED_TIMEOUT_S = 3.0
-MAX_SUBSTEP = 0.02
+T_LEAD_S = 1.4       # lead of the target; MavVehicle's lead_s() is 1.05-1.63 s by speed
+REACT_S = 0.25       # measured: speed starts to fall 0.2-0.3 s after a zero setpoint
+A_UP_MS2 = 2.6       # measured: 0 -> 95 % of 10 m/s in 3.5-4.2 s
+A_BRAKE_MS2 = 4.2    # measured: stop from 10 m/s in 13.9-15.0 m and 2.4-2.9 s
+VZ_MAX_MS = 2.9      # measured: max vertical speed 2.91-2.92 m/s
+KP_Z = 0.5           # measured: 10 m climb in 5.1 s, 20 m descent in 8.6 s (within 1 m)
+SUBSTEP_S = 0.01
 
 
 class FakeVehicle:
-    def __init__(self, agent_id: int, start: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-                 clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
+    def __init__(self, agent_id: int, start=(0.0, 0.0, 0.0), clock=time.time):
         self.id = agent_id
-        self.clock, self.sleep = clock, sleep
+        self.clock = clock
+        self.t = clock()
         self.pos = list(start)
         self.vel = [0.0, 0.0, 0.0]
-        self.cmd = (0.0, 0.0, start[2])
-        self.armed = start[2] > 0.5
-        self.link_ok = True
-        self._t_last: Optional[float] = None
-        self._t_cmd: Optional[float] = None
-        self._connected = False
-        self._lock = threading.Lock()
+        self.target = tuple(start)
+        self.pending = deque()   # (time the autopilot acts on it, (vx, vy, z))
+        self.link_ok = True      # tests set these two to simulate failures
+        self.guided = start[2] > 1.0
+        self.lock = threading.Lock()
 
-    # ---- Vehicle protocol -------------------------------------------------------------------
     def connect(self) -> None:
-        self._connected = True
-        self._t_last = self.clock()
-        self._t_cmd = self._t_last
+        pass
 
-    def arm_and_takeoff(self, alt: float, timeout: float = 180.0) -> None:
-        """Blocks until within 0.5 m of `alt`. Holds position horizontally while climbing."""
-        t0 = self.clock()
-        with self._lock:
-            self.armed = True
-        while True:
-            with self._lock:
-                self.cmd = (0.0, 0.0, alt)
-                self._t_cmd = self.clock()
+    def arm_and_takeoff(self, alt_m: float, timeout_s: float = 180.0) -> None:
+        """Climb straight up to alt_m. Blocks, polling in real time, like MavVehicle."""
+        self.guided = True
+        self.send_setpoint(0.0, 0.0, alt_m)
+        deadline = time.monotonic() + timeout_s
+        while self.pos[2] < alt_m - 1.0:
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"agent {self.id}: takeoff timeout")
             self.poll()
-            if abs(self.pos[2] - alt) < 0.5:
-                return
-            if self.clock() - t0 > timeout:
-                raise TimeoutError("takeoff timeout")
-            self.sleep(0.05)
+            time.sleep(0.002)
 
     def poll(self) -> None:
-        now = self.clock()
-        with self._lock:
-            if self._t_last is None:
-                self._t_last = now
-            dt = now - self._t_last
-            self._t_last = now
-            while dt > 1e-9:
-                h = min(dt, MAX_SUBSTEP)
-                self._integrate(h, now)
-                dt -= h
+        with self.lock:
+            self._advance(self.clock() - self.t)
 
-    def state(self) -> Optional[VehicleState]:
-        if not self._connected:
-            return None
-        with self._lock:
-            return VehicleState(t=self._t_last, pos=tuple(self.pos), vel=tuple(self.vel), yaw=0.0,
-                                armed=self.armed, link_ok=self.link_ok)
+    def step(self, dt: float) -> None:
+        with self.lock:
+            self._advance(dt)
+
+    def state(self) -> VehicleState:
+        return VehicleState(self.t, tuple(self.pos), tuple(self.vel), 0.0, self.link_ok,
+                            self.guided)
 
     def send_setpoint(self, vx: float, vy: float, z: float) -> None:
-        with self._lock:
-            self.cmd = (vx, vy, z)
-            self._t_cmd = self.clock()
+        with self.lock:
+            self.pending.append((self.t + REACT_S, (vx, vy, z)))
 
-    # ---- test helpers -----------------------------------------------------------------------
-    def kill_link(self) -> None:
-        """Simulate the autopilot link dying (state().link_ok becomes False)."""
-        self.link_ok = False
+    def _advance(self, dt: float) -> None:
+        while dt > 1e-9:
+            h = min(dt, SUBSTEP_S)
+            self._integrate(h)
+            self.t += h
+            dt -= h
 
-    # ---- dynamics ---------------------------------------------------------------------------
-    def _integrate(self, h: float, now: float) -> None:
-        if not self.armed:
-            return
-        vx_c, vy_c, z_c = self.cmd
-        if self._t_cmd is not None and now - self._t_cmd > GUIDED_TIMEOUT_S:
-            vx_c, vy_c = 0.0, 0.0
-        s = math.hypot(vx_c, vy_c)
-        if s > C.V_MAX:
-            vx_c, vy_c = vx_c * C.V_MAX / s, vy_c * C.V_MAX / s
-        # horizontal: first-order response, acceleration-limited
-        ax = (vx_c - self.vel[0]) / TAU_V
-        ay = (vy_c - self.vel[1]) / TAU_V
-        a = math.hypot(ax, ay)
-        if a > A_MAX_XY:
-            ax, ay = ax * A_MAX_XY / a, ay * A_MAX_XY / a
-        self.vel[0] += ax * h
-        self.vel[1] += ay * h
-        # vertical
-        vz_c = max(-VZ_MAX, min(VZ_MAX, KP_Z * (z_c - self.pos[2])))
-        az = max(-A_MAX_Z, min(A_MAX_Z, (vz_c - self.vel[2]) / TAU_V))
-        self.vel[2] += az * h
+    def _integrate(self, h: float) -> None:
+        while self.pending and self.pending[0][0] <= self.t:
+            vx, vy, z = self.pending.popleft()[1]
+            self.target = (self.pos[0] + vx * T_LEAD_S, self.pos[1] + vy * T_LEAD_S, z)
+        # horizontal: fly toward the target at the speed that covers the lead in T_LEAD_S
+        want_x = (self.target[0] - self.pos[0]) / T_LEAD_S
+        want_y = (self.target[1] - self.pos[1]) / T_LEAD_S
+        want = math.hypot(want_x, want_y)
+        if want > config.WP_SPD_MS:
+            want_x, want_y = want_x * config.WP_SPD_MS / want, want_y * config.WP_SPD_MS / want
+        speed = math.hypot(self.vel[0], self.vel[1])
+        accel = A_BRAKE_MS2 if math.hypot(want_x, want_y) < speed else A_UP_MS2
+        dvx, dvy = want_x - self.vel[0], want_y - self.vel[1]
+        dv = math.hypot(dvx, dvy)
+        if dv > accel * h:
+            dvx, dvy = dvx * accel * h / dv, dvy * accel * h / dv
+        self.vel[0] += dvx
+        self.vel[1] += dvy
+        # vertical: proportional climb or descent, speed-limited
+        self.vel[2] = max(-VZ_MAX_MS, min(VZ_MAX_MS, KP_Z * (self.target[2] - self.pos[2])))
         for i in range(3):
             self.pos[i] += self.vel[i] * h
-        if self.pos[2] < 0.0:
-            self.pos[2], self.vel[2] = 0.0, 0.0

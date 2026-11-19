@@ -1,6 +1,7 @@
-"""Test doubles: simulated clock and an in-memory radio with loss, delay and blackouts.
+"""Test doubles: a simulated clock and an in-memory radio with loss, delay and blackouts.
 
-FakeLink has the same two methods as swarm.net.RadioLink: send(dst, mtype, **body) and recv_all().
+FakeLink has the same two methods as swarm.net.RadioLink: send(dst, mtype, **body) and
+recv_all() -> list of message dicts, each with "t_recv" added.
 """
 import heapq
 import itertools
@@ -19,19 +20,18 @@ class SimClock:
 
 
 class FakeRadio:
-    """Every message passes here. loss: drop probability per recipient; delay: s."""
+    """Every message passes here. loss: drop probability per recipient; delay_s: latency."""
 
-    def __init__(self, clock, loss=0.0, delay=0.0, seed=0):
-        self.clock, self.loss, self.delay = clock, loss, delay
+    def __init__(self, clock, loss=0.0, delay_s=0.0, seed=0):
+        self.clock, self.loss, self.delay_s = clock, loss, delay_s
         self.rng = random.Random(seed)
         self.nodes = set()
-        self.queue = []          # (deliver_t, counter, dst, msg)
-        self._ctr = itertools.count()
-        self.blackouts = []      # (node, t_from, t_to): node neither sends nor receives
-        self.dead = set()
+        self.queue = []          # (delivery time, counter, dst, msg)
+        self.counter = itertools.count()
+        self.blackouts = []      # (node, t_from, t_to): the node neither sends nor receives
 
     def blacked_out(self, node, t) -> bool:
-        return node in self.dead or any(n == node and a <= t < b for n, a, b in self.blackouts)
+        return any(n == node and t_from <= t < t_to for n, t_from, t_to in self.blackouts)
 
     def link(self, node_id):
         self.nodes.add(node_id)
@@ -43,20 +43,18 @@ class FakeRadio:
             return
         targets = [n for n in self.nodes if n != src] if dst == "all" else [dst]
         for d in targets:
-            if d not in self.nodes or self.rng.random() < self.loss:
-                continue
-            heapq.heappush(self.queue, (now + self.delay, next(self._ctr), d, msg))
+            if self.rng.random() >= self.loss:
+                heapq.heappush(self.queue, (now + self.delay_s, next(self.counter), d, msg))
 
     def collect(self, node):
         now = self.clock()
         out, keep = [], []
         while self.queue and self.queue[0][0] <= now:
-            t, c, d, msg = heapq.heappop(self.queue)
-            if d == node:
-                if not self.blacked_out(node, t):
-                    out.append(dict(msg))
-            else:
-                keep.append((t, c, d, msg))
+            item = heapq.heappop(self.queue)
+            if item[2] != node:
+                keep.append(item)
+            elif not self.blacked_out(node, item[0]):
+                out.append(dict(item[3], t_recv=now))
         for item in keep:
             heapq.heappush(self.queue, item)
         return out
@@ -70,8 +68,8 @@ class FakeLink:
 
     def send(self, dst, mtype, **body):
         self.seq += 1
-        msg = {"src": self.id, "dst": dst, "seq": self.seq, "t": self.radio.clock(), "type": mtype}
-        msg.update(body)
+        msg = {"src": self.id, "dst": dst, "seq": self.seq, "t": self.radio.clock(),
+               "type": mtype, **body}
         self.sent.append(msg)
         self.radio.submit(self.id, dst, msg)
 

@@ -1,42 +1,25 @@
-"""Coverage controller: assigned slot list -> nominal command (vx, vy, z). Pure logic, no I/O, no clock.
+"""Coverage controller: the assigned slot list -> nominal horizontal velocity. Pure logic.
 
-Slot sequence: slots[0..] are flown once (transit), then slots[loop_from:] repeat forever.
-If loop_from is out of range it is clamped to the last slot (the agent then station-keeps there).
+Slots 0.. are flown once, then slots[loop_from:] repeat. The agent flies straight at the active
+slot at WP_SPD_MS, keeps full speed through gentle turns and slows before sharp ones. The
+safety filter picks the altitude (cruise or hold) and may change the velocity.
 
-Speed profile: aim straight at the active slot at V_CRUISE (10 m/s). Decelerate only into a slot where
-the path turns sharply: turn angle <= 30 deg -> pass through at cruise; otherwise the corner speed is
-max(2 m/s, V_CRUISE*cos(turn)), approached on a braking curve with A_COV = 1.5 m/s^2. A loop of one
-slot (or the final station-keeping slot) is approached to a stop and then held with a P-controller.
-
-Slot reached (either):
-  * horizontal distance <= SLOT_REACH_M (5 m), or
-  * passed along-track: projected onto the segment (previous slot -> active slot) we are beyond the
-    slot, and the cross-track error is <= 2*SLOT_REACH_M (10 m; the safety filter may have pushed us
-    sideways). This avoids turning back for a slot we flew past while sidestepping.
-The first segment after an ASSIGN starts at our position at activation.
-
-Epochs: ASSIGN with epoch <= current is ignored. A newer epoch restarts at slot 0, unless the new list
-contains the currently active slot (same x, y within 1 m): then we continue from that index.
-
-Timeout: the active slot must be reached within SLOT_TIMEOUT_S (15 s) of becoming active (activation =
-slot switch, new epoch, or mission start), not counting time the agent spent held by the safety layer
-(pause_timer(); the agent calls it while the deaf rule or a neighbour-caused fallback holds it still).
-A blackout or a fallback is not evidence that the slot is unreachable, and it is reported separately
-(fallback raises its own "safety" infeasible). Otherwise: one infeasible event (epoch, slot, "timeout"), and
-nominal velocity zero (hold) until a newer epoch. INFEASIBLE is re-sent at 1 Hz via
-infeasible_message(). At most one infeasible per epoch, whatever the reason ("timeout" or "safety").
+Feasibility feedback: a slot not reached within SLOT_TIMEOUT_S of becoming active is reported
+once (event "infeasible"); the agent then holds and re-sends INFEASIBLE every second until a
+newer epoch arrives. The timer pauses only while the agent is deaf: it could not report, and a
+blackout says nothing about the slot. It keeps running while the safety filter blocks us,
+because a slot we are kept away from is exactly what the ground has to hear about.
+A newer epoch with the same slot list keeps the active slot, its timer and its report.
 """
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from swarm import config as C
+from swarm import config
 
-SAME_SLOT_M = 1.0
-TURN_PASS_DEG = 30.0
-V_TURN_MIN = 2.0
-A_COV = 1.5
-STATION_KP = 0.5
+TURN_PASS_DEG = 30.0        # gentler turns are flown at full speed
+V_TURN_MIN_MS = 2.0         # slowest corner speed
+A_SLOW_MS2 = 1.5            # deceleration into sharp corners, well below the measured 4.2
 INFEASIBLE_RESEND_S = 1.0
 
 
@@ -44,173 +27,126 @@ INFEASIBLE_RESEND_S = 1.0
 class CoverageOutput:
     vx: float
     vy: float
-    z: float
-    slot: int                 # active slot index, -1 if none
-    holding: bool             # True when coverage itself asks to hold (no plan, or timed out)
+    idle: bool              # nothing to fly: no plan yet, or the active slot timed out
     events: List[dict] = field(default_factory=list)
 
 
-def _sub(a, b):
-    return (a[0] - b[0], a[1] - b[1])
-
-
-def _norm(v):
-    return math.hypot(v[0], v[1])
-
-
-def _angle_deg(u, v) -> float:
-    nu, nv = _norm(u), _norm(v)
-    if nu < 1e-6 or nv < 1e-6:
-        return 180.0
-    c = (u[0] * v[0] + u[1] * v[1]) / (nu * nv)
-    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+def _dist(a, b) -> float:
+    return math.hypot(b[0] - a[0], b[1] - a[1])
 
 
 class CoverageController:
-    def __init__(self, agent_id: int, v_cruise: float = C.V_CRUISE, z: float = C.ALT_NOMINAL,
-                 reach_m: float = C.SLOT_REACH_M, timeout_s: float = C.SLOT_TIMEOUT_S):
-        self.id = agent_id
-        self.v_cruise, self.z, self.reach_m, self.timeout_s = v_cruise, z, reach_m, timeout_s
+    def __init__(self):
         self.epoch: Optional[int] = None
-        self.slots: List[tuple] = []
+        self.slots: List[Tuple[float, float]] = []
         self.loop_from = 0
-        self.idx = 0
-        self._active_since: Optional[float] = None   # None = activate on next step()
-        self._seg_start: Optional[tuple] = None
-        self._timed_out = False
-        self._infeasible: Optional[dict] = None       # body of the pending INFEASIBLE for this epoch
-        self._infeasible_sent_at: Optional[float] = None
+        self.idx = -1                      # active slot, -1 without a plan
+        self.seg_start = (0.0, 0.0)        # where the leg to the active slot began
+        self.active_s = 0.0                # time the active slot has been active (not deaf)
+        self.reported = False              # the active slot timed out and was reported
+        self.infeasible: Optional[dict] = None   # INFEASIBLE body, re-sent until a new epoch
+        self.last_sent: Optional[float] = None
+        self.last_now: Optional[float] = None
 
-    # ---- inputs -----------------------------------------------------------------------------
-    def on_assign(self, body: dict, now: float) -> Optional[dict]:
-        """Apply an ASSIGN body. Returns an event dict if accepted, None if ignored (old epoch)."""
-        epoch = int(body["epoch"])
-        if self.epoch is not None and epoch <= self.epoch:
+    def on_assign(self, msg: dict, now: float, xy) -> Optional[dict]:
+        """Apply an ASSIGN. Returns an event to log, or None for an old epoch."""
+        if self.epoch is not None and msg["epoch"] <= self.epoch:
             return None
-        slots = [(float(s[0]), float(s[1])) for s in body.get("slots", [])]
-        old_active = self.active_slot()
-        new_idx = 0
-        continued = False
-        if old_active is not None:
-            for i, s in enumerate(slots):
-                if _norm(_sub(s, old_active)) <= SAME_SLOT_M:
-                    new_idx, continued = i, True
-                    break
-        self.epoch = epoch
-        self.slots = slots
-        lf = int(body.get("loop_from", 0))
-        self.loop_from = min(max(lf, 0), max(len(slots) - 1, 0))
-        self.idx = new_idx
-        self._active_since = None
-        if not continued:
-            self._seg_start = None
-        self._timed_out = False
-        self._infeasible = None
-        self._infeasible_sent_at = None
-        return {"event": "assign", "epoch": epoch, "n_slots": len(slots), "loop_from": self.loop_from,
-                "start_idx": new_idx, "continued": continued}
+        self.epoch = msg["epoch"]
+        self.infeasible = None
+        slots = [(s[0], s[1]) for s in msg["slots"]]
+        if slots == self.slots and msg["loop_from"] == self.loop_from:
+            return {"event": "assign", "epoch": self.epoch, "same_plan": True}
+        self.slots, self.loop_from = slots, msg["loop_from"]
+        self.idx = self._nearest_slot(xy)
+        self.seg_start = (xy[0], xy[1])
+        self.active_s = 0.0
+        self.reported = False
+        return {"event": "assign", "epoch": self.epoch, "same_plan": False, "start": self.idx}
 
-    def active_slot(self) -> Optional[tuple]:
+    def _nearest_slot(self, xy) -> int:
+        """Start where we are: the nearest slot, the lowest index on a tie (-1 if none)."""
         if not self.slots:
-            return None
-        return self.slots[self.idx]
+            return -1
+        return min(range(len(self.slots)), key=lambda i: (_dist(xy, self.slots[i]), i))
 
-    def _next_idx(self, i: int) -> int:
+    def infeasible_due(self, now: float) -> Optional[dict]:
+        """The INFEASIBLE body to send now (about once a second), or None."""
+        if self.infeasible is None:
+            return None
+        if self.last_sent is not None and now - self.last_sent < INFEASIBLE_RESEND_S:
+            return None
+        self.last_sent = now
+        return self.infeasible
+
+    def step(self, now: float, xy, deaf: bool) -> CoverageOutput:
+        """xy: own horizontal position (m). deaf: the safety filter heard nobody lately."""
+        dt = 0.0 if self.last_now is None else now - self.last_now
+        self.last_now = now
+        if not self.slots or self.infeasible is not None:
+            return CoverageOutput(0.0, 0.0, True)
+        if not deaf:
+            self.active_s += dt
+        events = []
+        if self._reached(xy):
+            self._next_slot(events)
+        if self.active_s > config.SLOT_TIMEOUT_S and not self.reported:
+            self.reported = True
+            self.infeasible = {"epoch": self.epoch, "slot": self.idx,
+                               "slot_xy": list(self.slots[self.idx])}
+            events.append(dict(self.infeasible, event="infeasible"))
+            return CoverageOutput(0.0, 0.0, True, events)
+        vx, vy = self._velocity(xy)
+        return CoverageOutput(vx, vy, False, events)
+
+    def _next_index(self, i: int) -> int:
         return i + 1 if i + 1 < len(self.slots) else self.loop_from
 
-    def _station_keeping(self) -> bool:
-        """True if the active slot is a loop of one (next slot is itself)."""
-        return self._next_idx(self.idx) == self.idx
-
-    # ---- infeasible handling ----------------------------------------------------------------
-    def _raise(self, now: float, reason: str, pos) -> Optional[dict]:
-        if self.epoch is None or self._infeasible is not None:
-            return None
-        self._infeasible = {"epoch": self.epoch, "slot": self.idx, "reason": reason,
-                            "pos": [round(p, 2) for p in pos]}
-        return dict(self._infeasible, event="infeasible")
-
-    def pause_timer(self, dt: float) -> None:
-        """Do not count the last dt seconds against the active slot's timeout (agent held by safety)."""
-        if self._active_since is not None and not self._timed_out:
-            self._active_since += dt
-
-    def report_safety(self, now: float, pos) -> Optional[dict]:
-        """The safety filter entered fallback. Returns an event if this is the first report this epoch."""
-        return self._raise(now, "safety", pos)
-
-    def infeasible_message(self, now: float) -> Optional[dict]:
-        """INFEASIBLE body to send now (first time immediately, then every 1 s), or None."""
-        if self._infeasible is None:
-            return None
-        if self._infeasible_sent_at is not None and now - self._infeasible_sent_at < INFEASIBLE_RESEND_S:
-            return None
-        self._infeasible_sent_at = now
-        return dict(self._infeasible)
-
-    # ---- main entry -------------------------------------------------------------------------
-    def step(self, now: float, pos) -> CoverageOutput:
-        """pos: own (x, y, z) in m. Returns the nominal command."""
-        events: List[dict] = []
-        if not self.slots:
-            return CoverageOutput(0.0, 0.0, self.z, -1, True, events)
-        xy = (pos[0], pos[1])
-        if self._active_since is None:
-            self._active_since = now
-            if self._seg_start is None:
-                self._seg_start = xy
-        if self._timed_out:
-            return CoverageOutput(0.0, 0.0, self.z, self.idx, True, events)
-
-        if not self._station_keeping():
-            for _ in range(len(self.slots)):
-                if not self._reached(xy):
-                    break
-                events.append({"event": "slot_reached", "epoch": self.epoch, "slot": self.idx,
-                               "dt_s": round(now - self._active_since, 2)})
-                self._seg_start = self.slots[self.idx]
-                self.idx = self._next_idx(self.idx)
-                self._active_since = now
-                if self._station_keeping():
-                    break
-            if now - self._active_since > self.timeout_s:
-                self._timed_out = True
-                ev = self._raise(now, "timeout", pos)
-                if ev:
-                    events.append(ev)
-                return CoverageOutput(0.0, 0.0, self.z, self.idx, True, events)
-
-        vx, vy = self._velocity(xy)
-        return CoverageOutput(vx, vy, self.z, self.idx, False, events)
+    def _next_slot(self, events: List[dict]) -> None:
+        self.active_s = 0.0
+        self.reported = False
+        nxt = self._next_index(self.idx)
+        if nxt == self.idx:                # a loop of one slot: stay on it
+            return
+        events.append({"event": "slot_reached", "epoch": self.epoch, "slot": self.idx})
+        self.seg_start = self.slots[self.idx]
+        self.idx = nxt
 
     def _reached(self, xy) -> bool:
+        """Within SLOT_REACH_M, or flown past it (the filter may have pushed us sideways)."""
         slot = self.slots[self.idx]
-        if _norm(_sub(slot, xy)) <= self.reach_m:
+        if _dist(xy, slot) <= config.SLOT_REACH_M:
             return True
-        seg = _sub(slot, self._seg_start)
-        L = _norm(seg)
-        if L < 1e-6:
+        leg = _dist(self.seg_start, slot)
+        if leg < 1.0:
             return False
-        u = (seg[0] / L, seg[1] / L)
-        rel = _sub(xy, self._seg_start)
-        along = rel[0] * u[0] + rel[1] * u[1]
-        cross = abs(rel[0] * u[1] - rel[1] * u[0])
-        return along >= L and cross <= 2.0 * self.reach_m
+        ux = (slot[0] - self.seg_start[0]) / leg
+        uy = (slot[1] - self.seg_start[1]) / leg
+        rx, ry = xy[0] - self.seg_start[0], xy[1] - self.seg_start[1]
+        along = rx * ux + ry * uy
+        across = abs(rx * uy - ry * ux)
+        return along >= leg and across <= 2.0 * config.SLOT_REACH_M
 
-    def _velocity(self, xy):
+    def _velocity(self, xy) -> Tuple[float, float]:
         slot = self.slots[self.idx]
-        to = _sub(slot, xy)
-        d = _norm(to)
-        if d < 1e-6:
+        d = _dist(xy, slot)
+        if d < 0.01:
             return 0.0, 0.0
-        if self._station_keeping():
-            speed = min(self.v_cruise, STATION_KP * d, math.sqrt(2.0 * A_COV * d))
-        else:
-            nxt = self.slots[self._next_idx(self.idx)]
-            turn = _angle_deg(_sub(slot, self._seg_start), _sub(nxt, slot))
-            if turn <= TURN_PASS_DEG:
-                v_corner = self.v_cruise
-            else:
-                v_corner = max(V_TURN_MIN, self.v_cruise * math.cos(math.radians(turn)))
-            speed = min(self.v_cruise, math.sqrt(v_corner ** 2 + 2.0 * A_COV * d))
-        return speed * to[0] / d, speed * to[1] / d
+        corner = self._corner_speed_ms()
+        speed = min(config.WP_SPD_MS, math.sqrt(corner ** 2 + 2.0 * A_SLOW_MS2 * d))
+        return speed * (slot[0] - xy[0]) / d, speed * (slot[1] - xy[1]) / d
+
+    def _corner_speed_ms(self) -> float:
+        """Speed at the active slot: full through gentle turns, slower the sharper the turn."""
+        slot = self.slots[self.idx]
+        nxt = self.slots[self._next_index(self.idx)]
+        leg_in, leg_out = _dist(self.seg_start, slot), _dist(slot, nxt)
+        if leg_out < 1.0:                  # a loop of one slot: stop on it
+            return 0.0
+        if leg_in < 1.0:
+            return V_TURN_MIN_MS
+        cos_turn = ((slot[0] - self.seg_start[0]) * (nxt[0] - slot[0])
+                    + (slot[1] - self.seg_start[1]) * (nxt[1] - slot[1])) / (leg_in * leg_out)
+        if cos_turn >= math.cos(math.radians(TURN_PASS_DEG)):
+            return config.WP_SPD_MS
+        return max(V_TURN_MIN_MS, config.WP_SPD_MS * cos_turn)
