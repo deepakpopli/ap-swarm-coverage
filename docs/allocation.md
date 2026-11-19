@@ -15,7 +15,7 @@ Code: `swarm/allocator.py` (pure, deterministic), used by `swarm/ground.py`.
    area were never seen behind an out-and-back lane in a Gazebo run.)
 3. **Slots.** Transit points run from the agent to the nearest lane end. Then comes the
    repeating loop (`loop_from` = its first index). Consecutive slots are at most
-   `SLOT_SPACING_M` = 80 m apart: 7 s at cruise, under 10 s from a standing start, against the
+   `SLOT_SPACING_M` = 80 m apart: 7.7 s at cruise, about 10 s from a standing start, against the
    15 s slot timeout. A single-lane strip is flown out and back, so its loop has every point
    twice. Nothing relies on slots being unique.
 4. **Stability.** An agent whose share is unchanged and whose previous plan has no
@@ -57,11 +57,11 @@ The zone (60 x 60 m) must be seen at least every `PRIORITY_REVISIT_S` = 30 s.
   single out-and-back lane whose ends are each at most `REACH_M` north or south of the zone
   centre.
 * A point on an out-and-back lane is revisited after 2 x (distance to the far end) / speed +
-  `TURN_S`. So `REACH_M = (30 - margin 2 - TURN_S 6) x 11 / 2 = 121 m`. `TURN_S` = 6 s: the
-  measured time lost in a 180 degree turn at 11.5 m/s is 4.6 s (SITL) / 4.5 s (Gazebo)
-  (`results/spike/motion_bounds_*.json`), plus 1.4 s margin because the coverage controller
-  slows into a lane end at 1.5 m/s^2 instead of reversing at once (5.3 s per lane end with the
-  fake vehicle).
+  `TURN_S`. So `REACH_M = (30 - margin 2 - TURN_S 6) x 10.4 / 2 = 114.4 m`. `TURN_S` = 6 s:
+  the largest measured time lost in a 180 degree turn, 4.6 s (SITL, 11.5 m/s; Gazebo 4.5 s,
+  `results/spike/motion_bounds_*.json`), plus 1.4 s margin. In a Gazebo Mission B run a lane end
+  cost about 2.5 s (revisit of the zone centre 24.3-24.6 s at 11 m/s against 22.0 s of
+  straight flight), so the margin is large.
 * The margin pays for points 30 m off the zone centre. The footprint's 24 m half-length leaves
   6 m, which is 0.5 s each way. About 1 s is left for flying below cruise speed near the ends.
 * The other agents split the area west and east of the zone strip, in proportion to width.
@@ -74,12 +74,12 @@ The parts of the zone agent's share that its camera never sweeps are returned as
 
 | Zone (xmin, ymin, xmax, ymax) | Lane ends (y) | Worst zone revisit | Uncovered |
 |---|---|---|---|
-| middle (120, 120, 180, 180) | 29 to 271 | 29.1 s | 10 m strips at the south and north edge: 1 700 m² (1.9 %) |
-| corner (0, 0, 60, 60) | 19 to 151 | 29.1 s | x 0 to 85, y 170 to 300: 11 050 m² (12.3 %) |
-| (20, 200, 80, 260) | 109 to 281 | 29.1 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 90: 9 900 m² |
+| middle (120, 120, 180, 180) | 35.6 to 264.4 | 29.2 s | 16.6 m strips at the south and north edge: 2 822 m² (3.1 %) |
+| corner (0, 0, 60, 60) | 19 to 144.4 | 29.2 s | x 0 to 85, y 163.4 to 300: 11 611 m² (12.9 %) |
+| (20, 200, 80, 260) | 115.6 to 281 | 29.2 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 96.6: 10 461 m² |
 
 Revisit is computed from the plan: 2 x (distance from where the point leaves the footprint to
-the far end) / 11 + 6 s, worst point of the zone. 50 m altitude, 3 agents. Uncovered parts
+the far end) / 10.4 + 6 s, worst point of the zone. 50 m altitude, 3 agents. Uncovered parts
 count from where the agent turns, 5 m before a lane end.
 
 ## Test hook: swap

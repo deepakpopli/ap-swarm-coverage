@@ -184,7 +184,7 @@ def test_crossing_at_cruise_speed(angle_deg, seed):
     far = 150.0
     flyers, d_min = fly([(1, (-far, 0.0, CRUISE), [(far, 0.0)]),
                          (2, (-far * math.cos(a), -far * math.sin(a), CRUISE),
-                          [(far * math.cos(a), far * math.sin(a))])], 45.0, seed)
+                          [(far * math.cos(a), far * math.sin(a))])], 60.0, seed)
     assert d_min >= config.D_MIN_M
     assert all(f.at_goal() for f in flyers)
 

@@ -12,8 +12,8 @@ from swarm import config, sensor
 SWATH_M, ALONG_M = sensor.lane_footprint(config.ALT_CRUISE_M)
 
 # Legs are cut 1 m below SLOT_SPACING_M so rounding slots to 1 cm can never break the bound.
-# 80 m at 11 m/s cruise is 7.3 s. From a standing start at 2 m/s^2 or more, add at most
-# 11 / (2 x 2) = 2.8 s: about 10 s against the 15 s SLOT_TIMEOUT_S, a third of it spare.
+# 80 m at 10.4 m/s cruise is 7.7 s. From a standing start at 2 m/s^2 or more, add at most
+# 10.4 / (2 x 2) = 2.6 s: about 10 s against the 15 s SLOT_TIMEOUT_S, a third of it spare.
 LEG_M = config.SLOT_SPACING_M - 1.0
 
 # Mission B. TURN_S: time lost in a 180 degree turn at a lane end. Placeholder: to be measured

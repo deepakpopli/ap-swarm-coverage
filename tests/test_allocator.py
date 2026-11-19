@@ -153,8 +153,8 @@ def lane_of(asg):
 
 
 @pytest.mark.parametrize("zone, zone_agent, uncovered", [
-    (MIDDLE_ZONE, 2, [[107.5, 192.5, 0.0, 10.0], [107.5, 192.5, 290.0, 300.0]]),
-    (CORNER_ZONE, 1, [[0.0, 85.0, 170.0, 300.0]]),
+    (MIDDLE_ZONE, 2, [[107.5, 192.5, 0.0, 16.6], [107.5, 192.5, 283.4, 300.0]]),
+    (CORNER_ZONE, 1, [[0.0, 85.0, 163.4, 300.0]]),
 ])
 def test_priority_zone(at_alt, zone, zone_agent, uncovered):
     at_alt(50)

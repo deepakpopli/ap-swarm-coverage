@@ -52,4 +52,4 @@ Detection should work on the live stream, not only afterwards on the recording. 
 
 ## Update rate
 
-The camera records at 25 fps. The coverage metric uses one footprint per agent log row, at 20 Hz. At 11 m/s the vehicle moves 0.55 m between rows, much less than the 48 m along-track footprint. Sampling at 20 Hz rather than 25 fps therefore misses no ground.
+The camera records at 25 fps. The coverage metric uses one footprint per agent log row, at 20 Hz. At 10.4 m/s the vehicle moves 0.52 m between rows, much less than the 48 m along-track footprint. Sampling at 20 Hz rather than 25 fps therefore misses no ground.
