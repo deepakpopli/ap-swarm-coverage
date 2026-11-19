@@ -1,8 +1,9 @@
 """Shared constants. Every process imports this file. Units are in the names:
 _M metres, _S seconds, _MS metres per second, _HZ hertz.
 
-One value can be changed per run: SWARM_ALT=<metres> in the environment sets the cruise altitude
-(default 50). run_mission.py passes its environment to every child, so all processes agree.
+Per run, from the environment: SWARM_ALT=<metres> sets the cruise altitude (default 50),
+SWARM_LAYOUT the Mission A layout, SWARM_WP_SPD=<m/s> the cruise speed (default 11.5).
+run_mission.py passes its environment to every child, so all processes agree.
 """
 import math
 import os
@@ -23,7 +24,9 @@ def start_xy(index, n):
 
 # ---- flight
 V_MAX_MS = 12.0          # task limit
-WP_SPD_MS = 11.5         # autopilot speed cap (parameter WP_SPD) and cruise speed. WP_SPD
+# SWARM_WP_SPD=<m/s> overrides it for one run (a sensitivity check; meta.json records it).
+WP_SPD_MS = float(os.environ.get("SWARM_WP_SPD", "11.5"))
+                         # autopilot speed cap (parameter WP_SPD) and cruise speed. WP_SPD
                          # caps the autopilot's shaped trajectory, not the vehicle: the vehicle
                          # overshoots it by a tracking error that grows with PSC_NE_JERK
                          # (mav_vehicle.PARAMS), worst after a brake and full re-acceleration.
@@ -68,7 +71,9 @@ LOST_S = 12.0            # silent this long: lost. Longer than Mission C's 10 s 
 # ---- Mission A coverage layout, one per run (SWARM_LAYOUT=lanes|strips, like SWARM_ALT):
 # "strips" = one equal strip per agent, re-cut on every membership change (the prototype);
 # "lanes" = lanes fixed over the whole area, flown as one shared tour or as lane groups
-# (swarm/allocator.py, docs/allocation.md).
+# (swarm/allocator.py, docs/allocation.md);
+# "groups" = the same fixed lanes, always as contiguous lane groups, one loop per agent: no
+# tour, so no schedule in the assignment and no clock the agents must agree on.
 LAYOUT = os.environ.get("SWARM_LAYOUT", "strips")
 
 # ---- feasibility feedback

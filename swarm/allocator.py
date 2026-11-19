@@ -344,17 +344,22 @@ def use_tour(n) -> bool:
 def _split_plans(order, xy, blacklist, previous, reverse):
     """Contiguous lane groups; agent-to-group by the smallest total distance to the group's
     loop (ties: the first permutation of the agents sorted by id). reverse (swap test hook):
-    the groups go to the agents in the opposite order, so they must cross."""
-    groups = best_split(len(order))[1]
+    the groups go to the agents in the opposite order, so they must cross.
+    More agents than lanes (layout "groups" only; "lanes" takes the tour then): one lane each,
+    and the agents left over get no slots. They idle at their private hold altitude, out of
+    the lanes' way, until a loss frees a lane."""
+    n_flying = min(len(order), len(area_lanes()))
+    groups = best_split(n_flying)[1]
     strips = [_lanes_strip(g) for g in groups]
     loops = [_loop(st, True, True) for st in strips]
 
     def cost(perm):
         return sum(min(math.dist(xy[a], p) for p in loop) for a, loop in zip(perm, loops))
-    perm = min(itertools.permutations(sorted(order)), key=lambda pm: round(cost(pm), 3))
+    perms = itertools.permutations(sorted(order), n_flying)
+    perm = min(perms, key=lambda pm: round(cost(pm), 3))
     if reverse:
         perm = perm[::-1]
-    result = {}
+    result = {a: Assignment(list(config.AREA), [], 0, []) for a in order if a not in perm}
     for a, strip in zip(perm, strips):
         old = (previous or {}).get(a)
         if (old is not None and old.team == 1 and old.share == strip.share
@@ -482,6 +487,8 @@ def _tour_plans(order, xy, blacklist, previous, now, reverse):
 def _first_slots(asg, xy) -> list:
     """The slots an agent flies to first: its transit and the slot it starts on (a scheduled
     plan starts at slot 0; otherwise CoverageController starts at the nearest slot)."""
+    if not asg.slots:                    # a spare agent of layout "groups": it flies nowhere
+        return []
     if asg.due_s is not None:
         return asg.slots[:asg.loop_from + 1]
     start = min(range(len(asg.slots)), key=lambda i: (math.dist(xy, asg.slots[i]), i))
@@ -489,8 +496,8 @@ def _first_slots(asg, xy) -> list:
 
 
 def _gap_m(asg_a, xy_a, asg_b, xy_b) -> float:
-    return min(math.dist(p, q) for p in _first_slots(asg_a, xy_a)
-               for q in _first_slots(asg_b, xy_b))
+    return min((math.dist(p, q) for p in _first_slots(asg_a, xy_a)
+                for q in _first_slots(asg_b, xy_b)), default=math.inf)
 
 
 def _clear_leg(a, b, avoid):
@@ -543,14 +550,16 @@ def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
     plan has no blacklisted point keeps its old Assignment object (no churn).
     priority_zone: (xmin, ymin, xmax, ymax) for Mission B, else None.
     reverse: hand the strips out east to west instead (only the ground's "swap" test hook).
-    layout: Mission A layout, "strips" (equal strips per agent) or "lanes" (fixed lanes over
-    the whole area, shared tour or lane groups); default config.LAYOUT. Mission B always
-    uses strips. now: wall time of the plan (the shared tour's schedule counts from it).
+    layout: Mission A layout, "strips" (equal strips per agent), "lanes" (fixed lanes over
+    the whole area, shared tour or lane groups) or "groups" (the same fixed lanes, always
+    lane groups: no tour, no schedule, no shared clock); default config.LAYOUT. Mission B
+    always uses strips. now: wall time of the plan (the shared tour's schedule counts from it).
     """
     xy = {a: [positions[a][0], positions[a][1]] for a in agent_ids}
     order = sorted(agent_ids, key=lambda a: (xy[a][0], a))   # west to east, ties by id
-    if (layout or config.LAYOUT) == "lanes" and priority_zone is None:
-        if use_tour(len(order)):
+    layout = layout or config.LAYOUT
+    if layout in ("lanes", "groups") and priority_zone is None:
+        if layout == "lanes" and use_tour(len(order)):
             result = _tour_plans(order, xy, blacklist, previous, now, reverse)
         else:
             result = _split_plans(order, xy, blacklist, previous, reverse)

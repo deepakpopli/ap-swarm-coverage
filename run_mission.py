@@ -4,7 +4,8 @@
     python run_mission.py --mission A|B|C|ref --backend gazebo|sitl|fake --n 3 --seed S --out DIR
                           [--scenario NAME] [--mission-s 180] [--zone xmin,ymin,xmax,ymax]
                           [--lost-after-s S] [--start-delay AGENT:S]
-Environment: SWARM_ALT (cruise altitude), SWARM_LAYOUT (Mission A layout: strips | lanes).
+Environment: SWARM_ALT (cruise altitude), SWARM_LAYOUT (Mission A layout: strips | lanes | groups),
+SWARM_WP_SPD (cruise speed, m/s; default 11.5).
 
 The runner is test equipment: it starts processes, injects faults at mission times and stops
 everything. It never sends anything to the swarm; it learns t0 by re-reading ground.jsonl.

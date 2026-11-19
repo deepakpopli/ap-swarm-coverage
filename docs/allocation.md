@@ -59,6 +59,24 @@ Code: `swarm/allocator.py` (pure, deterministic), used by `swarm/ground.py`.
   next agent (by id) and takes over its phase (with lane groups: the groups go to the agents
   in reverse order), so they must cross.
 
+## Layout "groups" (SWARM_LAYOUT=groups)
+
+The same fixed lanes as "lanes", but always contiguous lane groups with one loop per agent,
+for every N; never the tour. Assignments carry no `t_ref` / `due_s` / `period_s`, so no clock
+needs to agree between ground and agents.
+
+* **Cut.** The contiguous cut with the shortest longest loop; ties go to the first cut in
+  order, so at 50 m: N = 2 -> 2+2, N = 3 -> 1+1+2 west to east (the 2-lane group is always the
+  east pair, x = 187.5 and 262.5), N = 4 -> 1+1+1+1.
+* **Owners.** Groups go to agents by the smallest total distance from each agent to its
+  group's loop; ties: the first permutation of the ids in ascending order. Deterministic for
+  given positions; from the start line (x = 140, 150, 160) agent 3 gets the east pair.
+* **More agents than lanes** (N >= 5 at 50 m): one lane each, the rest get no slots and idle at
+  their private hold altitude until a loss frees a lane.
+* **On a loss** only ownership changes: the cut for N - 1 is made on the same lanes (for N = 3
+  -> 2 that is 2+2, the same as "lanes" does), and a survivor whose group is unchanged keeps
+  its plan. Lanes never move.
+
 ## Infeasible slots
 
 The blacklist is a set of `(agent, slot_key)` pairs. `slot_key` is the slot rounded to whole

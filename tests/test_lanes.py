@@ -162,3 +162,58 @@ def test_no_hold_mid_lane_and_lap_count():
 def test_plain_assignment_has_no_schedule():
     asg = allocate([1, 2], starts(2), set(), layout="lanes")[1]
     assert "due_s" not in asg.to_dict()
+
+
+# ---- layout "groups": the same fixed lanes, always lane groups, never the tour
+
+def groups(ids, positions, previous=None, now=0.0):
+    return allocate(ids, positions, set(), previous, layout="groups", now=now)
+
+
+@pytest.mark.parametrize("n, sizes", [(2, [2, 2]), (3, [1, 1, 2]), (4, [1, 1, 1, 1]),
+                                      (5, [0, 1, 1, 1, 1])])
+def test_groups_for_every_n(n, sizes):
+    """Contiguous groups that share out all lanes once; no schedule; N = 5: one spare."""
+    result = groups(range(1, n + 1), starts(n))
+    flown = [lane_xs(asg) for asg in result.values()]
+    assert sorted(len(g) for g in flown) == sizes
+    assert sorted(x for g in flown for x in g) == LANES
+    for g in flown:
+        assert [x for x in LANES if min(g, default=0) <= x <= max(g, default=0)] == sorted(g)
+    for asg in result.values():
+        assert asg.team == 1 and asg.t_ref is None and asg.due_s is None
+        assert asg.period_s is None and "due_s" not in asg.to_dict()
+
+
+def test_groups_n3_east_pair_to_agent_3():
+    result = groups([1, 2, 3], starts(3))
+    assert [sorted(lane_xs(result[a])) for a in (1, 2, 3)] == [[37.5], [112.5], [187.5, 262.5]]
+
+
+def test_groups_n2_same_as_lanes():
+    assert groups([1, 2], starts(2)) == plan([1, 2], starts(2))
+
+
+def test_groups_determinism():
+    """Same result for any input order and any clock: nothing depends on the time."""
+    pos = {1: (40.0, 100.0), 2: (150.0, 20.0), 3: (260.0, 200.0)}
+    a = groups([3, 1, 2], pos, now=100.0)
+    b = groups([2, 3, 1], dict(reversed(list(pos.items()))), now=5000.0)
+    assert a == b
+
+
+@pytest.mark.parametrize("victim", [1, 2, 3])
+def test_groups_lanes_fixed_across_membership(victim):
+    """A loss and a return only change who flies which of the same four lanes."""
+    rnd = random.Random(victim)
+    before = groups([1, 2, 3], starts(3))
+    pos = {a: tuple(rnd.choice(before[a].slots)) for a in before}
+    alive = [a for a in (1, 2, 3) if a != victim]
+    after = groups(alive, pos, previous=before, now=80.0)
+    assert sorted(len(lane_xs(after[a])) for a in alive) == [2, 2]
+    assert sorted(x for a in alive for x in lane_xs(after[a])) == LANES
+    for a in alive:                                  # an unchanged group keeps its plan
+        if lane_xs(after[a]) == lane_xs(before[a]):
+            assert after[a] is before[a]
+    back = groups([1, 2, 3], pos, previous=after, now=100.0)
+    assert sorted(x for asg in back.values() for x in lane_xs(asg)) == LANES
