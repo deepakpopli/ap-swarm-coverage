@@ -1,47 +1,30 @@
-"""Radio emulator: every node-to-node message passes through here.
+"""Radio emulator: one UDP relay that every message between nodes passes through.
 
-    python -m swarm.radio --seed S --loss 0.2 --delay 0.2 --port-base 0 \
-        --log run_dir/radio.jsonl [--blackout ID:T_START:T_END ...]
+    python -m sim.radio --seed S --loss 0.2 --delay 0.2 --port-base 0 --log run/radio.jsonl
+                        [--blackout ID:T0:T1 ...] [--mute ID:T0:T1 ...]
 
-One UDP socket on 127.0.0.1:(RADIO_PORT + port_base).
+HELLO {"port"} registers a node; nodes repeat it every second, so a restarted radio relearns
+them. Any other message goes to each receiver (dst, or every registered node but src for "all"):
+per receiver, dropped with probability `loss`, else forwarded unchanged after `delay` seconds.
+--blackout drops everything to and from agent ID in mission time [T0, T1); --mute drops only
+what ID sends (a one-way failure: it still hears). Mission time needs t0, which the radio
+learns from the ground's START: the only place it reads inside a payload.
 
-* HELLO {"src": id, "port": p} registers (or re-registers) node `id` at 127.0.0.1:p.
-  Nodes re-send HELLO every second, so a restarted radio relearns everyone within ~1 s.
-  HELLO is never forwarded and never counted.
-* Every other datagram is parsed only for "src", "dst", "seq", "t" (envelope). The receivers are
-  [dst] for a numbered dst, or every registered node except src for dst "all". For each receiver
-  independently: dropped by blackout, else dropped with probability `loss`, else forwarded
-  unchanged (same bytes) after `delay` seconds.
-* Blackout (Mission C): `--blackout ID:T0:T1` drops every message to AND from agent ID whose
-  arrival at the radio falls in mission time [T0, T1). Mission t0 is learned by sniffing the
-  ground station's START message ({"t0": wall time}); this is the ONLY place the radio looks
-  inside a payload. Until a START has been seen no blackout is active. The latest START wins
-  (a restarted ground that re-sends START with the same t0 changes nothing).
+Determinism: the drop of one copy is a hash of (seed, src, dst, seq), so with the same seed
+the k-th message from A to B is dropped in every run or in none. Not fixed by the seed: which
+message gets seq k, what falls inside a window, and whether a receiver had registered in time.
+More in docs/allocation.md.
 
-Determinism (what --seed does and does not fix)
-  The drop decision for one (src, dst, seq) triple is a pure function:
-      u = blake2b(f"{seed}:{src}:{dst}:{seq}") mapped to [0, 1);  dropped  <=>  u < loss
-  It does not depend on arrival order, timing, or what other packets exist. So, for a given
-  seed, "the k-th data message node 2 sends, as seen by node 3" is always dropped or always
-  delivered, in every run.
-  NOT deterministic (real time decides it): which message content gets seq k (e.g. whether the
-  k-th message of an agent is a STATE or an INFEASIBLE), how many messages a node sends before
-  some event, whether a receiver had registered (HELLO) when a broadcast arrived, which packets
-  fall inside a blackout window, and the exact delivery times (delay is a timer, jitter ~1 ms
-  plus OS scheduling). The overall drop rate per pair therefore matches `loss` statistically,
-  and the exact set of dropped messages is reproducible only up to that timing.
+Queue bound: each pass reads one datagram and forwards every copy that is due, so no copy
+waits longer than `delay` plus one pass. The queue therefore holds at most what the radio read
+in the last `delay` seconds; senders faster than the radio reads lose datagrams in the kernel's
+fixed-size socket buffer, never in this queue.
 
-Log (JSON lines, one object per line, every line has "t_wall" and "event"):
-  {"event": "config", seed, loss, delay, port, blackout: [[id, t0, t1], ...]}
-  {"event": "register", "node": id, "port": p}                 first HELLO or changed port
-  {"event": "start_seen", "t0": float}                          START sniffed (t0 changed)
-  {"event": "stats", "final": bool, "pairs": {"src->dst": {sent, delivered, dropped_loss,
-        dropped_blackout, no_route, delay_mean, delay_max}}, "total": {same keys}}
-     sent = per-receiver copies offered (a broadcast to 3 receivers counts 3).
-     delay = (wall time the radio forwarded the copy) - (sender's envelope "t"), seconds,
-             i.e. measured sender->radio-out latency, over delivered copies.
-     no_route = receiver id never registered (not a loss; nobody was listening).
-  "stats" is written every --stats-every seconds (cumulative) and once more at exit (final).
+Log (JSON lines, each with "t_wall" and "event"): "config" at start, "register", "start_seen",
+and "stats" once at exit: per "src->dst" pair and in total {sent, delivered, dropped_loss,
+dropped_window, delay_mean_s, delay_max_s}. sent - delivered - dropped = copies with no
+registered receiver, a failed sendto, or still queued at exit. Delay = forward time - the
+sender's "t".
 """
 import argparse
 import hashlib
@@ -50,183 +33,142 @@ import json
 import select
 import signal
 import socket
-import sys
 import time
+from dataclasses import dataclass
 
-from swarm import config
+from swarm import config, protocol
 
 HOST = "127.0.0.1"
 
 
-def drop_draw(seed, src, dst, seq):
-    """Deterministic uniform number in [0, 1) for one (src, dst, seq) copy."""
-    h = hashlib.blake2b(f"{seed}:{src}:{dst}:{seq}".encode(), digest_size=8).digest()
-    return int.from_bytes(h, "big") / 2.0 ** 64
+def drop_draw(seed, src, dst, seq) -> float:
+    """A uniform number in [0, 1) that depends only on (seed, src, dst, seq)."""
+    digest = hashlib.blake2b(f"{seed}:{src}:{dst}:{seq}".encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big") / 2.0 ** 64
 
 
-def parse_blackout(text):
-    """'ID:T_START:T_END' -> (id, t_start, t_end) in mission seconds."""
-    parts = text.split(":")
-    if len(parts) != 3:
-        raise argparse.ArgumentTypeError("blackout must be ID:T_START:T_END")
-    return (int(parts[0]), float(parts[1]), float(parts[2]))
+def in_window(windows, node, t_mission) -> bool:
+    return any(node == w_id and t_start <= t_mission < t_end for w_id, t_start, t_end in windows)
 
 
+def window_drop(src, dst, t_mission, blackouts, mutes) -> bool:
+    """True if a blackout of src or dst, or a mute of src, covers this mission time."""
+    return (in_window(blackouts, src, t_mission) or in_window(blackouts, dst, t_mission)
+            or in_window(mutes, src, t_mission))
+
+
+def parse_window(text) -> tuple:
+    """'ID:T0:T1' -> (id, t0, t1), times in mission seconds."""
+    node, t_start, t_end = text.split(":")
+    return (int(node), float(t_start), float(t_end))
+
+
+@dataclass
 class PairStats:
-    def __init__(self):
-        self.sent = 0
-        self.delivered = 0
-        self.dropped_loss = 0
-        self.dropped_blackout = 0
-        self.no_route = 0
-        self.delay_sum = 0.0
-        self.delay_max = 0.0
+    sent: int = 0
+    delivered: int = 0
+    dropped_loss: int = 0
+    dropped_window: int = 0
+    delay_sum_s: float = 0.0
+    delay_max_s: float = 0.0
 
-    def add_delivered(self, delay):
-        self.delivered += 1
-        self.delay_sum += delay
-        self.delay_max = max(self.delay_max, delay)
+    def add(self, other):
+        self.sent += other.sent
+        self.delivered += other.delivered
+        self.dropped_loss += other.dropped_loss
+        self.dropped_window += other.dropped_window
+        self.delay_sum_s += other.delay_sum_s
+        self.delay_max_s = max(self.delay_max_s, other.delay_max_s)
 
-    def merge(self, other):
-        for k in ("sent", "delivered", "dropped_loss", "dropped_blackout", "no_route", "delay_sum"):
-            setattr(self, k, getattr(self, k) + getattr(other, k))
-        self.delay_max = max(self.delay_max, other.delay_max)
-
-    def to_dict(self):
-        mean = self.delay_sum / self.delivered if self.delivered else None
+    def to_dict(self) -> dict:
+        mean = self.delay_sum_s / self.delivered if self.delivered else None
         return {"sent": self.sent, "delivered": self.delivered,
-                "dropped_loss": self.dropped_loss, "dropped_blackout": self.dropped_blackout,
-                "no_route": self.no_route,
-                "delay_mean": round(mean, 4) if mean is not None else None,
-                "delay_max": round(self.delay_max, 4) if self.delivered else None}
+                "dropped_loss": self.dropped_loss, "dropped_window": self.dropped_window,
+                "delay_mean_s": mean, "delay_max_s": self.delay_max_s}
 
 
 class Radio:
-    def __init__(self, seed, loss, delay, port_base, log_path, blackouts=(), stats_every=5.0):
+    def __init__(self, seed, loss, delay_s, port_base, log_path, blackouts, mutes):
         self.seed = seed
         self.loss = loss
-        self.delay = delay
-        self.blackouts = list(blackouts)
-        self.stats_every = stats_every
-        self.port = config.RADIO_PORT + port_base
-        self.nodes = {}          # node id -> listen port
-        self.t0 = None           # mission t0 (wall), from the ground's START
-        self.queue = []          # heap of (due_wall, counter, data, port, pair_key, t_sent)
-        self.counter = 0
-        self.stats = {}          # "src->dst" -> PairStats
-        self.log = open(log_path, "a") if log_path else None
+        self.delay_s = delay_s
+        self.blackouts = blackouts
+        self.mutes = mutes
+        self.nodes = {}            # node id -> listen port
+        self.t0 = None             # mission t0 (wall time), from the ground's START
+        self.queue = []            # heap of (due time, count, data, src, dst, sender's t)
+        self.count = 0             # tie-breaker: copies due at the same time keep their order
+        self.stats = {}            # "src->dst" -> PairStats
+        self.log = open(log_path, "a")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((HOST, self.port))
-        self.sock.setblocking(False)
-        self.write({"event": "config", "seed": seed, "loss": loss, "delay": delay,
-                    "port": self.port, "blackout": [list(b) for b in self.blackouts]})
+        self.sock.bind((HOST, config.RADIO_PORT + port_base))
+        self.write("config", seed=seed, loss=loss, delay_s=delay_s, port_base=port_base,
+                   blackouts=blackouts, mutes=mutes)
 
-    # ---- logging
-    def write(self, rec):
-        if self.log is None:
-            return
-        rec = dict(rec, t_wall=time.time())
-        self.log.write(json.dumps(rec) + "\n")
+    def write(self, event, **fields):
+        self.log.write(json.dumps({"t_wall": time.time(), "event": event, **fields}) + "\n")
         self.log.flush()
 
-    def write_stats(self, final):
-        total = PairStats()
-        for s in self.stats.values():
-            total.merge(s)
-        self.write({"event": "stats", "final": final,
-                    "pairs": {k: self.stats[k].to_dict() for k in sorted(self.stats)},
-                    "total": total.to_dict()})
-
-    # ---- decisions
-    def blacked_out(self, node, now):
-        if self.t0 is None:
-            return False
-        t_mission = now - self.t0
-        return any(node == bid and t_start <= t_mission < t_end
-                   for bid, t_start, t_end in self.blackouts)
-
-    def receivers(self, src, dst):
-        if dst == "all":
-            return sorted(n for n in self.nodes if n != src)
-        return [dst]
-
-    # ---- packet handling
     def on_datagram(self, data, now):
-        try:
-            msg = json.loads(data.decode())
-            src, dst, mtype = msg["src"], msg["dst"], msg["type"]
-        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        msg = protocol.decode(data)
+        src = msg["src"]
+        if msg["type"] == "HELLO":
+            if self.nodes.get(src) != msg["port"]:
+                self.nodes[src] = msg["port"]
+                self.write("register", node=src, port=msg["port"])
             return
-        if mtype == "HELLO":
-            port = int(msg.get("port", 0))
-            if self.nodes.get(src) != port:
-                self.nodes[src] = port
-                self.write({"event": "register", "node": src, "port": port})
-            return
-        if mtype == "START" and src == config.GROUND_ID:   # the one payload peek (see docstring)
-            t0 = float(msg.get("t0"))
-            if t0 != self.t0:
-                self.t0 = t0
-                self.write({"event": "start_seen", "t0": t0})
-        seq = msg.get("seq", 0)
-        t_sent = msg.get("t", now)
-        for rx in self.receivers(src, dst):
-            self.route_copy(data, src, rx, seq, t_sent, now)
+        if msg["type"] == "START" and msg["t0"] != self.t0:   # the one payload read
+            self.t0 = msg["t0"]
+            self.write("start_seen", t0=self.t0)
+        receivers = [msg["dst"]] if msg["dst"] != "all" else sorted(set(self.nodes) - {src})
+        for dst in receivers:
+            self.route(data, src, dst, msg["seq"], msg["t"], now)
 
-    def route_copy(self, data, src, rx, seq, t_sent, now):
-        key = f"{src}->{rx}"
-        st = self.stats.setdefault(key, PairStats())
-        st.sent += 1
-        if self.blacked_out(src, now) or self.blacked_out(rx, now):
-            st.dropped_blackout += 1
-            return
-        if drop_draw(self.seed, src, rx, seq) < self.loss:
-            st.dropped_loss += 1
-            return
-        port = self.nodes.get(rx)
-        if port is None:
-            st.no_route += 1
-            return
-        self.counter += 1
-        heapq.heappush(self.queue, (now + self.delay, self.counter, data, port, key, t_sent))
+    def route(self, data, src, dst, seq, t_sent, now):
+        stats = self.stats.setdefault(f"{src}->{dst}", PairStats())
+        stats.sent += 1
+        if self.t0 is not None and window_drop(src, dst, now - self.t0, self.blackouts,
+                                               self.mutes):
+            stats.dropped_window += 1
+        elif drop_draw(self.seed, src, dst, seq) < self.loss:
+            stats.dropped_loss += 1
+        else:
+            self.count += 1
+            heapq.heappush(self.queue, (now + self.delay_s, self.count, data, src, dst, t_sent))
 
-    def flush_due(self, now):
+    def forward_due(self, now):
         while self.queue and self.queue[0][0] <= now:
-            _, _, data, port, key, t_sent = heapq.heappop(self.queue)
+            _, _, data, src, dst, t_sent = heapq.heappop(self.queue)
+            if dst not in self.nodes:
+                continue
             try:
-                self.sock.sendto(data, (HOST, port))
+                self.sock.sendto(data, (HOST, self.nodes[dst]))
             except OSError:
-                pass
-            self.stats[key].add_delivered(time.time() - t_sent)
+                continue
+            delay = time.time() - t_sent
+            stats = self.stats[f"{src}->{dst}"]
+            stats.delivered += 1
+            stats.delay_sum_s += delay
+            stats.delay_max_s = max(stats.delay_max_s, delay)
 
-    # ---- main loop
     def run(self):
-        next_stats = time.time() + self.stats_every
         try:
             while True:
-                now = time.time()
-                wait = 0.05
-                if self.queue:
-                    wait = min(wait, max(0.0, self.queue[0][0] - now))
-                ready, _, _ = select.select([self.sock], [], [], wait)
-                if ready:
-                    while True:
-                        try:
-                            data, _ = self.sock.recvfrom(65535)
-                        except (BlockingIOError, InterruptedError):
-                            break
-                        except OSError:
-                            continue
-                        self.on_datagram(data, time.time())
-                now = time.time()
-                self.flush_due(now)
-                if now >= next_stats:
-                    self.write_stats(final=False)
-                    next_stats = now + self.stats_every
+                wait_s = None if not self.queue else max(0.0, self.queue[0][0] - time.time())
+                readable, _, _ = select.select([self.sock], [], [], wait_s)
+                if readable:
+                    self.on_datagram(self.sock.recv(65535), time.time())
+                self.forward_due(time.time())
         finally:
-            self.write_stats(final=True)
-            if self.log:
-                self.log.close()
+            self.write_stats()
+            self.log.close()
+
+    def write_stats(self):
+        total = PairStats()
+        for pair in self.stats.values():
+            total.add(pair)
+        self.write("stats", pairs={k: v.to_dict() for k, v in sorted(self.stats.items())},
+                   total=total.to_dict())
 
 
 def _exit_on_signal(signum, frame):
@@ -234,20 +176,20 @@ def _exit_on_signal(signum, frame):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description="Radio emulator")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--loss", type=float, default=config.RADIO_LOSS)
     ap.add_argument("--delay", type=float, default=config.RADIO_DELAY_S)
     ap.add_argument("--port-base", type=int, default=0)
-    ap.add_argument("--log", default=None)
-    ap.add_argument("--blackout", type=parse_blackout, action="append", default=[])
-    ap.add_argument("--stats-every", type=float, default=5.0)
+    ap.add_argument("--log", required=True)
+    ap.add_argument("--blackout", type=parse_window, action="append", default=[])
+    ap.add_argument("--mute", type=parse_window, action="append", default=[])
     args = ap.parse_args(argv)
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGINT, _exit_on_signal)
-    Radio(args.seed, args.loss, args.delay, args.port_base, args.log,
-          args.blackout, args.stats_every).run()
+    Radio(args.seed, args.loss, args.delay, args.port_base, args.log, args.blackout,
+          args.mute).run()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

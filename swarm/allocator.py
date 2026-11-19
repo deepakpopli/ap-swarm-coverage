@@ -1,336 +1,207 @@
-"""Deterministic coverage allocator. Pure functions, no I/O, no randomness.
-
-    allocate(alive_ids, positions, blacklist, params) -> {agent_id: Assignment}
-
-Same inputs => identical output: ids are sorted, ties broken by id, nothing depends on dict
-or set iteration order, coordinates are rounded to 1 cm.
-
-1. Shares. AREA is cut into len(alive) vertical strips (full height). Widths are equal by
-   default, or proportional to `params.weights` (one positive number per strip, left to right).
-   Strips are handed out left-to-right to agents sorted by current x (ties by id), so
-   neighbours stay neighbours and paths do not cross.
-   Mission B (priority zone) would use weights: give each strip an equal *workload*, where
-   ground inside the priority zone counts k times; the ground computes the weights for the
-   current number of agents and passes them in. The allocator itself stays the same.
-
-2. Slots. An ordered list of goal points: TRANSIT points from the agent's last known position to
-   the entry of its lawnmower, then the repeating boustrophedon LOOP (loop_from = index of the
-   first loop slot; after the last slot the agent goes back to slots[loop_from]).
-   Lanes run north-south: n_lanes = ceil(strip_width / swath_across), one lane centred in each of
-   n_lanes equal sub-strips; lane ends inset by footprint_along / 2 from the south/north edges.
-   Consecutive slots (and the agent's position -> first slot, and last slot -> slots[loop_from])
-   are at most max_slot_spacing apart; longer legs get evenly spaced intermediate points.
-   The default entry is the strip corner nearest to the agent.
-
-3. Infeasible (agent, slot) pairs. `blacklist` is a set of (agent_id, slot_key) where
-   slot_key(p) = (round(x), round(y)) in whole metres. A blacklisted pair is never issued.
-   For an agent whose plan contains a blacklisted point, the rule is, in this order:
-     (1) Variants: try the other loop variants (4 = entry lane west/east x first lane
-         northbound/southbound, ordered by distance from the agent to the entry). The first
-         variant with no blacklisted point wins. This changes entry point and transit route.
-     (2) Nudge/skip, per variant in the same order: a blacklisted TRANSIT point is dropped; a
-         blacklisted LOOP point is moved nudge_step metres toward the share centre (repeated
-         while still blacklisted, up to max_nudges). Legs that become too long get intermediate
-         points again; an intermediate point that is blacklisted is moved sideways by nudge_step
-         (left, right, 2x left, 2x right). The first variant that ends clean wins.
-     (3) Swap strips with the right neighbour, else the left one; accepted only if both agents
-         get a clean plan in the swapped strips (each via steps 1-2).
-     (4) Last resort (should not happen in practice): blacklisted points are simply removed;
-         the spacing bound may then be violated. Assignment.note says so.
+"""Coverage allocator: which agent flies which slots. Pure and deterministic: same inputs, same
+output (no randomness, no I/O, sorted ids, ties broken by id). Rules and reasons:
+docs/allocation.md.
 """
 import math
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
 from swarm import config, sensor
 
-# Sensor footprint at config.ALT_NOMINAL (SIYI A8 mini, swarm.sensor), whole metres rounded down:
-# 102 x 57 at the default 60 m, 85 x 48 at 50 m. Defaults only: AllocParams can override them.
-DEFAULT_SWATH_ACROSS_M, DEFAULT_FOOTPRINT_ALONG_M = sensor.lane_footprint(config.ALT_NOMINAL)
-DEFAULT_MAX_SLOT_SPACING_M = 90.0
+# Camera footprint at the cruise altitude in whole metres (85 x 48 at 50 m). Read at call time,
+# so a test can patch them to plan for another altitude.
+SWATH_M, ALONG_M = sensor.lane_footprint(config.ALT_CRUISE_M)
 
-_SPACING_MARGIN_M = 0.5     # legs are cut at spacing - margin, so 1 cm rounding never breaks the bound
-_EPS = 1e-9
+# Legs are cut 1 m below SLOT_SPACING_M so rounding slots to 1 cm can never break the bound.
+# 80 m at 11.5 m/s cruise is 7.0 s. From a standing start at 2 m/s^2 or more, add at most
+# 11.5 / (2 x 2) = 2.9 s: under 10 s against the 15 s SLOT_TIMEOUT_S, a third of it spare.
+LEG_M = config.SLOT_SPACING_M - 1.0
 
+# Mission B. TURN_S: time lost in a 180 degree turn at a lane end. Placeholder: to be measured
+# in SITL. A point on an out-and-back lane is revisited after 2 x (distance to the far end) /
+# speed + TURN_S, so lane ends at most REACH_M from the zone centre keep the zone centre's
+# revisit under PRIORITY_REVISIT_S - REVISIT_MARGIN_S. The margin pays for zone points up to
+# 30 m off centre (the footprint's 24 m half-length absorbs all but 6 m = 0.5 s each way) and
+# leaves about 1 s for flying below cruise speed near the ends.
+TURN_S = 6.0
+REVISIT_MARGIN_S = 2.0
+REACH_M = (config.PRIORITY_REVISIT_S - REVISIT_MARGIN_S - TURN_S) * config.WP_SPD_MS / 2
 
-@dataclass(frozen=True)
-class AllocParams:
-    area: Tuple[float, float, float, float] = config.AREA
-    swath_across: float = DEFAULT_SWATH_ACROSS_M
-    footprint_along: float = DEFAULT_FOOTPRINT_ALONG_M
-    max_slot_spacing: float = DEFAULT_MAX_SLOT_SPACING_M
-    weights: Optional[Tuple[float, ...]] = None    # per strip, left to right; None = equal
-    nudge_step: float = 10.0
-    max_nudges: int = 3
-    reach_m: float = config.SLOT_REACH_M           # closer than this to the entry -> no transit
+# Loop variants (west lane first?, first lane northbound?), tried nearest entry first.
+VARIANTS = [(True, True), (True, False), (False, True), (False, False)]
 
 
 @dataclass
 class Assignment:
-    share: List[float]                 # [xmin, xmax, ymin, ymax]
-    slots: List[List[float]]           # [[x, y], ...]
-    loop_from: int
-    note: str = ""                     # "" normally; explains steps 1-4 if any were used
+    share: list           # [xmin, xmax, ymin, ymax]
+    slots: list           # [[x, y], ...]
+    loop_from: int        # after the last slot, continue from slots[loop_from]
+    uncovered: list       # rectangles of the share the camera never sweeps (Mission B only)
 
-    def to_dict(self):
-        return {"share": list(self.share), "slots": [list(p) for p in self.slots],
-                "loop_from": self.loop_from}
-
-
-# ------------------------------------------------------------------ small geometry helpers
-
-def slot_key(p):
-    """Geometric identity of a slot: position rounded to whole metres (round half up)."""
-    return (int(math.floor(p[0] + 0.5)), int(math.floor(p[1] + 0.5)))
+    def to_dict(self) -> dict:
+        """The ASSIGN body and the log record (uncovered is logged separately)."""
+        return {"share": self.share, "slots": self.slots, "loop_from": self.loop_from}
 
 
-def _r(v):
-    return round(v + 0.0, 2) + 0.0     # 1 cm, and no -0.0
+@dataclass
+class _Strip:
+    """What one agent must cover, before slots are planned."""
+    share: list
+    lane_xs: list
+    y_south: float        # lane ends
+    y_north: float
+    uncovered: list
 
 
-def _pt(x, y):
-    return [_r(x), _r(y)]
+def slot_key(xy) -> tuple:
+    """A slot's identity on the blacklist: its position rounded to whole metres."""
+    return (round(xy[0]), round(xy[1]))
 
 
-def _dist(a, b):
-    return math.hypot(b[0] - a[0], b[1] - a[1])
+def _point(x, y):
+    return [round(x, 2), round(y, 2)]
 
 
-def _leg_points(a, b, spacing):
-    """Evenly spaced points strictly between a and b so that no gap exceeds `spacing`."""
-    d = _dist(a, b)
-    n = max(1, math.ceil(d / spacing - _EPS))
-    return [_pt(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n) for k in range(1, n)]
+def _edges(x_west, x_east, n):
+    """n equal strips [xmin, xmax] from x_west to x_east, west to east, tiling exactly."""
+    cuts = [x_west + i * (x_east - x_west) / n for i in range(n)] + [x_east]
+    return [[cuts[i], cuts[i + 1]] for i in range(n)]
 
 
-# ------------------------------------------------------------------ shares
-
-def compute_strips(n, area=config.AREA, weights=None):
-    """n vertical strips [xmin, xmax, ymin, ymax] tiling `area` exactly, left to right."""
-    xmin, xmax, ymin, ymax = area
-    if n <= 0:
-        return []
-    if weights is None:
-        weights = [1.0] * n
-    if len(weights) != n or any(w <= 0 for w in weights):
-        raise ValueError("weights must be n positive numbers")
-    total = float(sum(weights))
-    cuts = [xmin]
-    acc = 0.0
-    for w in weights[:-1]:
-        acc += w
-        cuts.append(xmin + (xmax - xmin) * acc / total)
-    cuts.append(xmax)          # exact right edge, no float drift
-    return [[cuts[i], cuts[i + 1], ymin, ymax] for i in range(n)]
+def _strip(x_west, x_east):
+    """A full-height strip: lanes one swath apart, ends inset by half the footprint length."""
+    x0, x1, y0, y1 = config.AREA
+    n_lanes = math.ceil((x_east - x_west) / SWATH_M - 1e-9)   # float noise must not add a lane
+    width = (x_east - x_west) / n_lanes
+    lane_xs = [x_west + (i + 0.5) * width for i in range(n_lanes)]
+    return _Strip([x_west, x_east, y0, y1], lane_xs, y0 + ALONG_M / 2, y1 - ALONG_M / 2, [])
 
 
-def order_agents(alive_ids, positions):
-    """Agents sorted west to east by current x, ties by id; unknown positions last (by id)."""
-    def key(a):
-        p = positions.get(a)
-        return (0, p[0], a) if p is not None else (1, 0.0, a)
-    return sorted(alive_ids, key=key)
+def _leg(a, b, bad_keys):
+    """Evenly spaced points strictly between a and b, no gap longer than LEG_M.
 
-
-# ------------------------------------------------------------------ lawnmower loop
-
-def lane_xs(share, swath_across):
-    x0, x1 = share[0], share[1]
-    n = max(1, math.ceil((x1 - x0) / swath_across - _EPS))
-    w = (x1 - x0) / n
-    return [x0 + (i + 0.5) * w for i in range(n)]
-
-
-def lane_ys(share, footprint_along):
-    y0, y1 = share[2] + footprint_along / 2.0, share[3] - footprint_along / 2.0
-    if y1 < y0:                    # strip shorter than one footprint: a single row in the middle
-        y0 = y1 = (share[2] + share[3]) / 2.0
-    return y0, y1
-
-
-def loop_corners(share, params, east_first, south_first):
-    """Lane end points in flying order for one variant (before densification)."""
-    xs = lane_xs(share, params.swath_across)
-    if east_first:
-        xs = xs[::-1]
-    y_s, y_n = lane_ys(share, params.footprint_along)
-    pts = []
-    northbound = south_first
-    for x in xs:
-        a, b = (y_s, y_n) if northbound else (y_n, y_s)
-        pts.append(_pt(x, a))
-        if b != a:
-            pts.append(_pt(x, b))
-        northbound = not northbound
-    return pts
-
-
-def densify_loop(corners, spacing):
-    """Closed loop through `corners` with intermediate points, including the closing leg."""
-    out = []
-    n = len(corners)
-    for i in range(n):
-        out.append(corners[i])
-        if n > 1:
-            out.extend(_leg_points(corners[i], corners[(i + 1) % n], spacing))
-    return out
-
-
-def variants(share, pos, params):
-    """The 4 loop variants, nearest entry first (ties in fixed order). Each: (name, loop)."""
-    spacing = params.max_slot_spacing - _SPACING_MARGIN_M
-    out = []
-    for i, (east_first, south_first) in enumerate([(False, True), (False, False),
-                                                    (True, True), (True, False)]):
-        loop = densify_loop(loop_corners(share, params, east_first, south_first), spacing)
-        name = ("E" if east_first else "W") + ("N" if south_first else "S")
-        d = _dist(pos, loop[0]) if pos is not None else 0.0
-        out.append((round(d, 6), i, name, loop))
-    out.sort(key=lambda v: (v[0], v[1]))
-    return [(name, loop) for _, _, name, loop in out]
-
-
-def transit_points(pos, entry, params):
-    """Points from pos (exclusive) to entry (exclusive)."""
-    if pos is None or _dist(pos, entry) <= params.reach_m:
-        return []
-    return _leg_points(pos, entry, params.max_slot_spacing - _SPACING_MARGIN_M)
-
-
-# ------------------------------------------------------------------ feasibility repair
-
-def _is_bad(agent, p, blacklist):
-    return (agent, slot_key(p)) in blacklist
-
-
-def _toward(p, target, step):
-    dx, dy = target[0] - p[0], target[1] - p[1]
-    d = math.hypot(dx, dy)
-    if d < _EPS:
-        return _pt(p[0] + step, p[1])
-    return _pt(p[0] + dx / d * step, p[1] + dy / d * step)
-
-
-def _sideways_candidates(a, b, p, step):
-    """p moved left/right of the a->b direction: left, right, 2x left, 2x right."""
-    dx, dy = b[0] - a[0], b[1] - a[1]
-    d = math.hypot(dx, dy) or 1.0
-    lx, ly = -dy / d, dx / d
-    return [_pt(p[0] + lx * k * step, p[1] + ly * k * step) for k in (1, -1, 2, -2)]
-
-
-def _fill_leg(agent, a, b, spacing, step, blacklist):
-    """Intermediate points a->b, each blacklisted one moved sideways if possible."""
-    out = []
-    for p in _leg_points(a, b, spacing):
-        if _is_bad(agent, p, blacklist):
-            for c in _sideways_candidates(a, b, p, step):
-                if not _is_bad(agent, c, blacklist):
-                    p = c
-                    break
-        out.append(p)
-    return out
-
-
-def _respace(agent, pos, transit, loop, params, blacklist):
-    """Re-insert intermediate points wherever a leg exceeds the spacing bound."""
-    spacing = params.max_slot_spacing - _SPACING_MARGIN_M
-    limit = params.max_slot_spacing
-    new_transit = []
-    prev = pos
-    for p in transit + [loop[0]]:          # legs pos -> transit... -> loop entry
-        if prev is not None and _dist(prev, p) > limit:
-            new_transit.extend(_fill_leg(agent, prev, p, spacing, params.nudge_step, blacklist))
-        new_transit.append(p)
-        prev = p
-    new_transit.pop()                      # that last point was the loop entry itself
-    new_loop = []
-    n = len(loop)
-    for i in range(n):
-        new_loop.append(loop[i])
-        nxt = loop[(i + 1) % n]
-        if n > 1 and _dist(loop[i], nxt) > limit:
-            new_loop.extend(_fill_leg(agent, loop[i], nxt, spacing, params.nudge_step, blacklist))
-    return new_transit, new_loop
-
-
-def _repair(agent, share, pos, transit, loop, params, blacklist):
-    """Step 2 on one variant. Returns (transit, loop) with no blacklisted point, or None."""
-    centre = [(share[0] + share[1]) / 2.0, (share[2] + share[3]) / 2.0]
-    for _ in range(params.max_nudges + 1):
-        transit = [p for p in transit if not _is_bad(agent, p, blacklist)]
-        loop = [_toward(p, centre, params.nudge_step) if _is_bad(agent, p, blacklist) else p
-                for p in loop]
-        transit, loop = _respace(agent, pos, transit, loop, params, blacklist)
-        if not any(_is_bad(agent, p, blacklist) for p in transit + loop):
-            return transit, loop
-    return None
-
-
-def plan_agent(agent, share, pos, blacklist, params):
-    """Steps 1-2 for one agent in one share. Returns an Assignment or None if no clean plan."""
-    cands = []
-    for name, loop in variants(share, pos, params):
-        transit = transit_points(pos, loop[0], params)
-        cands.append((name, transit, loop))
-        if not any(_is_bad(agent, p, blacklist) for p in transit + loop):
-            note = "" if len(cands) == 1 else "variant %s" % name   # first variant = default
-            return Assignment(list(share), transit + loop, len(transit), note)
-    for name, transit, loop in cands:
-        fixed = _repair(agent, share, pos, transit, loop, params, blacklist)
-        if fixed is not None:
-            t, lp = fixed
-            return Assignment(list(share), t + lp, len(t), "variant %s + nudge" % name)
-    return None
-
-
-def _degraded(agent, share, pos, blacklist, params):
-    """Step 4: drop every blacklisted point outright (spacing bound may break)."""
-    name, loop = variants(share, pos, params)[0]
-    transit = [p for p in transit_points(pos, loop[0], params) if not _is_bad(agent, p, blacklist)]
-    loop = [p for p in loop if not _is_bad(agent, p, blacklist)]
-    note = "degraded: blacklisted points removed, spacing not guaranteed"
-    if not loop:      # nothing left in the share: hold at the last known position if allowed
-        transit = []
-        loop = [_pt(*pos)] if pos is not None and not _is_bad(agent, pos, blacklist) else []
-        note = "degraded: no feasible slot in share, holding"
-    return Assignment(list(share), transit + loop, len(transit) if loop else 0, note)
-
-
-# ------------------------------------------------------------------ entry point
-
-def allocate(alive_ids, positions, blacklist=frozenset(), params=AllocParams()):
-    """{agent_id: Assignment} for the live agents. See module docstring.
-
-    alive_ids: iterable of agent ids. positions: {id: (x, y[, z])} last known (may miss ids).
-    blacklist: set of (agent_id, slot_key) pairs that must not be issued.
+    If one would be blacklisted, cut the leg into one more piece and try again: n and n + 1
+    pieces share no inner point, so the blacklisted point is gone.
     """
-    alive = sorted(set(alive_ids))
-    pos = {a: [float(positions[a][0]), float(positions[a][1])] for a in alive if a in positions}
-    order = order_agents(alive, pos)
-    strips = compute_strips(len(order), params.area, params.weights)
-    share_of = {a: strips[i] for i, a in enumerate(order)}
-    bl = set(blacklist)
-    plans = {a: plan_agent(a, share_of[a], pos.get(a), bl, params) for a in order}
+    pieces = max(1, math.ceil(math.dist(a, b) / LEG_M))
+    while True:
+        points = [_point(a[0] + (b[0] - a[0]) * k / pieces, a[1] + (b[1] - a[1]) * k / pieces)
+                  for k in range(1, pieces)]
+        if not any(slot_key(p) in bad_keys for p in points):
+            return points
+        pieces += 1
 
-    # step 3: swap with a neighbour (right first, then left)
-    for i, a in enumerate(order):
-        if plans[a] is not None:
+
+def _close(points, bad_keys):
+    """The loop through points with leg points inserted, including the leg back to the start."""
+    loop = []
+    for i, p in enumerate(points):
+        loop.append(p)
+        loop += _leg(p, points[(i + 1) % len(points)], bad_keys)
+    return loop
+
+
+def _loop(strip, west_first, northbound):
+    """Boustrophedon over the strip's lanes, closed back to its start.
+
+    With one lane it is an out-and-back, so the same points appear twice; nothing relies on
+    slots being unique.
+    """
+    ends = []
+    for x in strip.lane_xs if west_first else strip.lane_xs[::-1]:
+        ys = [strip.y_south, strip.y_north] if northbound else [strip.y_north, strip.y_south]
+        ends += [_point(x, ys[0]), _point(x, ys[1])]
+        northbound = not northbound
+    return _close(ends, set())
+
+
+def _plan(agent_id, xy, strip, blacklist):
+    """(slots, loop_from): transit from xy to the nearest lane end, then the loop."""
+    bad = {key for a, key in blacklist if a == agent_id}
+    loops = [_loop(strip, west, north) for west, north in VARIANTS]
+    loops.sort(key=lambda loop: math.dist(xy, loop[0]))   # stable sort: ties keep VARIANTS order
+    for loop in loops:   # (1) the first variant without a blacklisted point
+        transit = _leg(xy, loop[0], set())
+        if not any(slot_key(p) in bad for p in transit + loop):
+            return transit + loop, len(transit)
+    # (2) drop the blacklisted points from the nearest variant and re-space its legs
+    kept = [p for p in loops[0] if slot_key(p) not in bad]
+    if not kept:   # a short zone lane has 3 distinct points: hold until a pair expires
+        return [_point(xy[0], xy[1])], 0
+    loop = _close(kept, bad)
+    transit = _leg(xy, loop[0], bad)
+    return transit + loop, len(transit)
+
+
+def _even_split(order):
+    """Mission A: equal full-height strips, handed out west to east."""
+    edges = _edges(config.AREA[0], config.AREA[1], len(order))
+    return {a: _strip(x0, x1) for a, (x0, x1) in zip(order, edges)}
+
+
+def _side_counts(n_others, west_m, east_m):
+    """How many of the other agents go west and east of the zone strip (by width)."""
+    if west_m < SWATH_M / 2:
+        return 0, n_others
+    if east_m < SWATH_M / 2:
+        return n_others, 0
+    n_west = round(n_others * west_m / (west_m + east_m))
+    if n_others >= 2:
+        n_west = min(max(n_west, 1), n_others - 1)   # both sides are wide enough: one each
+    return n_west, n_others - n_west
+
+
+def _uncovered(share, sweep):
+    """The parts of `share` outside the camera's `sweep` rectangle."""
+    sx0, sx1, sy0, sy1 = share
+    wx0, wx1, wy0, wy1 = sweep
+    rects = [[sx0, wx0, sy0, sy1], [wx1, sx1, sy0, sy1], [wx0, wx1, sy0, wy0], [wx0, wx1, wy1, sy1]]
+    return [[round(v, 2) for v in r] for r in rects if r[1] - r[0] > 0.01 and r[3] - r[2] > 0.01]
+
+
+def _zone_split(order, xy, zone):
+    """Mission B: the agent nearest the zone flies one short lane through it; the others split
+    the rest west and east. Sides nobody gets are absorbed into the zone agent's share."""
+    x0, x1, y0, y1 = config.AREA
+    zx, zy = (zone[0] + zone[2]) / 2, (zone[1] + zone[3]) / 2
+    zone_agent = min(order, key=lambda a: (math.dist(xy[a], (zx, zy)), a))
+    half = SWATH_M / 2
+    lane_x = min(max(zx, x0 + half), x1 - half)          # lane footprint stays inside the area
+    y_south = max(y0 + ALONG_M / 2, zy - REACH_M)
+    y_north = min(y1 - ALONG_M / 2, zy + REACH_M)
+    others = [a for a in order if a != zone_agent]
+    n_west, n_east = _side_counts(len(others), lane_x - half - x0, x1 - lane_x - half)
+    share = [x0 if n_west == 0 else lane_x - half, x1 if n_east == 0 else lane_x + half, y0, y1]
+    sweep = [lane_x - half, lane_x + half, y_south - ALONG_M / 2, y_north + ALONG_M / 2]
+    strips = {zone_agent: _Strip(share, [lane_x], y_south, y_north, _uncovered(share, sweep))}
+    for a, (sx0, sx1) in zip(others[:n_west], _edges(x0, lane_x - half, n_west)):
+        strips[a] = _strip(sx0, sx1)
+    for a, (sx0, sx1) in zip(others[n_west:], _edges(lane_x + half, x1, n_east)):
+        strips[a] = _strip(sx0, sx1)
+    return strips
+
+
+def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
+             priority_zone: tuple = None) -> dict:
+    """{agent_id: Assignment} for agent_ids.
+
+    positions: {id: (x, y, ...)} for every id. blacklist: (agent_id, slot_key) pairs that must
+    not be issued. previous: the last result; an agent whose share is unchanged and whose old
+    plan has no blacklisted point keeps its old Assignment object (no churn).
+    priority_zone: (xmin, ymin, xmax, ymax) for Mission B, else None.
+    """
+    xy = {a: [positions[a][0], positions[a][1]] for a in agent_ids}
+    order = sorted(agent_ids, key=lambda a: (xy[a][0], a))   # west to east, ties by id
+    if priority_zone is None:
+        strips = _even_split(order)
+    else:
+        strips = _zone_split(order, xy, priority_zone)
+    result = {}
+    for a in sorted(strips):
+        old = (previous or {}).get(a)
+        if (old is not None and old.share == strips[a].share
+                and not any((a, slot_key(p)) in blacklist for p in old.slots)):
+            result[a] = old
             continue
-        for j in (i + 1, i - 1):
-            if not 0 <= j < len(order):
-                continue
-            b = order[j]
-            pa = plan_agent(a, share_of[b], pos.get(a), bl, params)
-            pb = plan_agent(b, share_of[a], pos.get(b), bl, params)
-            if pa is not None and pb is not None:
-                share_of[a], share_of[b] = share_of[b], share_of[a]
-                pa.note = ("swapped strips with %d; " % b) + pa.note
-                pb.note = ("swapped strips with %d; " % a) + pb.note
-                plans[a], plans[b] = pa, pb
-                break
-
-    for a in order:   # step 4
-        if plans[a] is None:
-            plans[a] = _degraded(a, share_of[a], pos.get(a), bl, params)
-    return {a: plans[a] for a in alive}
+        slots, loop_from = _plan(a, xy[a], strips[a], blacklist)
+        result[a] = Assignment(strips[a].share, slots, loop_from, strips[a].uncovered)
+    return result

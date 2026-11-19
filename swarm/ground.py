@@ -1,317 +1,294 @@
-"""Ground station: liveness tracking + the deterministic allocator. Sends assignments only.
+"""Ground station: tracks liveness, runs the allocator, sends assignments (never velocities).
 
-    python -m swarm.ground --n 3 --port-base 0 --log run_dir/ground.jsonl [--mission-s 180]
+    python -m swarm.ground --n 3 --port-base 0 --log run/ground.jsonl [--mission-s 180]
+                           [--priority-zone xmin,ymin,xmax,ymax]
 
-Talks only through RadioLink(0). Never sends velocities.
+Start: when all n agents report "ready" (or READY_DEADLINE_S after the first did), plan for the
+ready ones; they fly to their loops at once. When every assigned agent reports the current
+epoch at a slot >= loop_from (or ON_STATION_DEADLINE_S after the first plan), t0 = now + 1 s
+and START is sent: the mission clock starts with the swarm on station.
+Liveness, from STATE receive times: alive -> suspect (SUSPECT_S) -> lost (LOST_S). A status
+other than ready/cover/hold (e.g. "failsafe") counts as lost at once. A lost agent rejoins once
+it has been heard steadily for REJOIN_S. Re-plan on: lost, rejoin, accepted INFEASIBLE.
+Restart: see Ground.maybe_plan_first.
 
-Phases
-  wait   Collect STATE. When all n agents (ids 1..n) report status "ready", set
-         t0 = now + 1.0 and start. Restart case: if any agent already reports status "cover"
-         (or an epoch > 0), the ground was restarted mid-mission: it gathers STATE for
-         RESUME_GATHER_S, reuses t0 from the last "start" record in its own log file if there
-         is one (else t0 = now), and continues with epoch = 1 + the highest epoch seen in
-         agent STATEs or in its log.
-  run    START {t0} broadcast at 1 Hz for the whole mission. ASSIGN to each live agent at
-         ASSIGN_HZ (and immediately after every re-plan). Exits at t0 + mission_s.
-
-Liveness per agent, from the wall time of its last STATE:
-  alive -> suspect after SUSPECT_S silent -> lost after LOST_S silent; suspect -> alive when
-  heard. lost -> alive when heard = "rejoin". Agents never heard since a restart are "unknown".
-  The allocator's live set = agents that are alive or suspect.
-
-Re-plan triggers (each bumps the global epoch and logs a full "assign" record; an agent whose share
-is unchanged and whose plan has no blacklisted point keeps its previous plan verbatim):
-  "lost"       an agent went suspect -> lost
-  "rejoin"     a lost/unknown agent was heard again
-  "infeasible" INFEASIBLE for the CURRENT epoch. Reports for any other epoch are ignored, so
-               an agent repeating its report until the new epoch reaches it cannot trigger
-               more re-plans. The (agent, slot_key) pair goes on the blacklist until
-               now + BLACKLIST_COOLDOWN_S. Infeasible-triggered re-plans are at least
-               --replan-min-s apart; reports arriving inside that window are blacklisted
-               at once and folded into one deferred re-plan.
-  Positions used for allocation are the last STATE positions (stale by design).
-
-ground.jsonl: one JSON object per line. Every line has "event", "t_wall" (wall time) and
-"t_mission" (t_wall - t0, null before t0 is known). Events:
-  "config"     {n, port_base, mission_s, suspect_s, lost_s, cooldown_s, replan_min_s, params}
-  "start"      {t0, epoch_start, resumed: bool, alive: [ids]}
-  "liveness"   {agent, from, to}        states: unknown|alive|suspect|lost
-  "infeasible" {agent, epoch, slot, slot_key: [x, y], reason, pos, action}
-               action: "replan" (re-plan now) | "deferred" (re-plan after the min interval)
-               (duplicates for an already-blacklisted pair and old-epoch reports are not logged
-               individually; they are counted in the "end" record)
-  "blacklist"  {entries: [{agent, slot_key: [x, y], expires_t_wall}]}   on every change
-  "assign"     {epoch, trigger, trigger_detail, alive: [ids],
-                assignments: {"<id>": {share, slots, loop_from, note}},
-                changed: [ids]}     ids whose share or slot list differs from the previous
-                                    epoch (also ids that appeared or disappeared)
-  "end"        {epoch, ignored_old_epoch, ignored_duplicate, reason}
+ground.jsonl: one JSON object per line, each with "t_wall", "t_mission" (null before start) and
+"event", one of:
+  ready       {agent}
+  assign      {epoch, trigger, assignments: {id: {share, slots, loop_from}}, changed: [ids],
+               uncovered: [[xmin, xmax, ymin, ymax], ...] or null}
+  start       {t0, late: [ids not on station]}
+  liveness    {agent, from, to, status}       alive | suspect | lost; status = last reported
+  infeasible  {agent, epoch, slot_xy, accepted, why}
+  blacklist   {pairs: [{agent, slot_key, expires_t_wall}]}
+  end         {epoch}
 """
 import argparse
 import json
 import os
 import signal
-import sys
 import time
+from dataclasses import dataclass
 
 from swarm import config
-from swarm.allocator import AllocParams, allocate, slot_key
+from swarm.allocator import allocate, slot_key
 from swarm.net import RadioLink
 
-START_PERIOD_S = 1.0
-START_LEAD_S = 1.0          # t0 = now + this when everyone is ready
-RESUME_GATHER_S = 3.0       # restart: listen this long before re-planning
-LOOP_PERIOD_S = 0.02
-DEFAULT_REPLAN_MIN_S = 2.0
+READY_DEADLINE_S = 120.0       # plan without the agents not ready this long after the first
+ON_STATION_DEADLINE_S = 120.0  # start without the agents not on their loop this long after
+START_LEAD_S = 1.0             # t0 = now + this, so START reaches everyone before t = 0
+REJOIN_S = 3.0                 # a lost agent must be heard steadily this long to rejoin
+RESTART_LISTEN_S = 3.0         # a restarted ground listens this long before planning
+EPOCH_STRIDE = 1000            # a restarted ground jumps this far above any epoch it hears
+FLYING = ("ready", "cover", "hold")
+LOOP_S = 0.02
 
 
-class JsonlLog:
+class JsonLines:
+    """Appends one JSON object per line, stamped with the caller's `now`."""
+
     def __init__(self, path):
-        self.f = open(path, "a") if path else None
+        self.file = open(path, "a")
         self.t0 = None
 
-    def write(self, event, **rec):
-        now = time.time()
-        line = {"event": event, "t_wall": now,
-                "t_mission": (now - self.t0) if self.t0 is not None else None}
-        line.update(rec)
-        if self.f:
-            self.f.write(json.dumps(line) + "\n")
-            self.f.flush()
+    def write(self, now, event, **fields):
+        t_mission = None if self.t0 is None else round(now - self.t0, 3)
+        record = {"t_wall": now, "t_mission": t_mission, "event": event, **fields}
+        self.file.write(json.dumps(record) + "\n")
+        self.file.flush()
 
     def close(self):
-        if self.f:
-            self.f.close()
+        self.file.close()
 
 
-def read_previous_log(path):
-    """(t0 of the last 'start' record or None, highest epoch logged or 0)."""
-    t0, epoch = None, 0
-    if not path or not os.path.exists(path):
-        return t0, epoch
+def last_t0(path) -> float:
+    """t0 of the last "start" record in an existing ground log, or None."""
+    if not os.path.exists(path):
+        return None
+    t0 = None
     with open(path) as f:
         for line in f:
             try:
-                rec = json.loads(line)
-            except ValueError:
+                record = json.loads(line)
+            except ValueError:   # a killed ground can leave a half-written last line
                 continue
-            if rec.get("event") == "start":
-                t0 = rec.get("t0", t0)
-            if rec.get("event") == "assign":
-                epoch = max(epoch, int(rec.get("epoch", 0)))
-    return t0, epoch
+            if record["event"] == "start":
+                t0 = record["t0"]
+    return t0
 
 
-class AgentRec:
-    def __init__(self):
-        self.last_heard = None
-        self.pos = None
-        self.status = None
-        self.epoch = 0
-        self.liveness = "unknown"
+@dataclass
+class AgentRecord:
+    last_heard: float          # receive time of the last STATE
+    good_since: float          # heard without a gap >= SUSPECT_S, and FLYING, since then
+    xy: list = None
+    status: str = ""
+    epoch: int = 0
+    slot: int = -1
+    liveness: str = "lost"     # alive | suspect | lost; lost = not in the plan
 
 
 class Ground:
-    def __init__(self, n, link, log, params, mission_s, suspect_s, lost_s, cooldown_s,
-                 replan_min_s, log_path=None):
+    def __init__(self, n, link, log, mission_s=config.MISSION_S, priority_zone=None,
+                 previous_t0=None):
         self.n = n
         self.link = link
         self.log = log
-        self.params = params
         self.mission_s = mission_s
-        self.suspect_s = suspect_s
-        self.lost_s = lost_s
-        self.cooldown_s = cooldown_s
-        self.replan_min_s = replan_min_s
-        self.log_path = log_path
-        self.agents = {}                 # id -> AgentRec
-        self.phase = "wait"
-        self.resume_since = None
+        self.priority_zone = priority_zone
+        self.previous_t0 = previous_t0   # from the log of a ground that ran before this one
+        self.agents = {}                 # id -> AgentRecord
+        self.first_ready = None          # when the first agent reported "ready"
+        self.restart_at = None           # when a restarted ground will plan
+        self.planned_at = None           # when the first ASSIGN went out
         self.t0 = None
         self.epoch = 0
-        self.assignments = {}            # id -> Assignment (current epoch)
+        self.assignments = {}            # id -> Assignment of the current epoch
         self.blacklist = {}              # (agent, slot_key) -> expiry wall time
-        self.pending_infeasible = False
-        self.last_infeasible_replan = float("-inf")
-        self.next_start_send = 0.0
-        self.next_assign_send = 0.0
-        self.ignored_old_epoch = 0
-        self.ignored_duplicate = 0
+        self.next_assign = 0.0
+        self.next_start = 0.0
 
-    # ------------------------------------------------------------ message handling
-    def on_message(self, msg, now):
-        src = msg.get("src")
-        if not isinstance(src, int) or not 1 <= src <= self.n:
-            return
-        if msg.get("type") == "STATE":
-            self.on_state(src, msg, now)
-        elif msg.get("type") == "INFEASIBLE" and self.phase == "run":
-            self.on_infeasible(src, msg, now)
-
-    def on_state(self, src, msg, now):
-        rec = self.agents.setdefault(src, AgentRec())
-        rec.last_heard = now
-        rec.pos = msg.get("pos", rec.pos)
-        rec.status = msg.get("status", rec.status)
-        rec.epoch = int(msg.get("epoch", 0) or 0)
-        if self.phase == "run" and rec.liveness in ("lost", "unknown"):
-            self.set_liveness(src, "alive")
-            self.replan("rejoin", {"agent": src}, now)
-        elif self.phase == "run" and rec.liveness == "suspect":
-            self.set_liveness(src, "alive")
-
-    def on_infeasible(self, src, msg, now):
-        epoch = msg.get("epoch")
-        asg = self.assignments.get(src)
-        if epoch != self.epoch or asg is None:
-            self.ignored_old_epoch += 1
-            return
-        idx = msg.get("slot")
-        if not isinstance(idx, int) or not 0 <= idx < len(asg.slots):
-            return
-        key = slot_key(asg.slots[idx])
-        if (src, key) in self.blacklist:
-            self.ignored_duplicate += 1
-            return
-        self.blacklist[(src, key)] = now + self.cooldown_s
-        due = now - self.last_infeasible_replan >= self.replan_min_s
-        self.log.write("infeasible", agent=src, epoch=epoch, slot=idx, slot_key=list(key),
-                       reason=msg.get("reason"), pos=msg.get("pos"),
-                       action="replan" if due else "deferred")
-        self.log_blacklist()
-        self.pending_infeasible = True
-
-    # ------------------------------------------------------------ liveness
-    def set_liveness(self, agent, new):
-        rec = self.agents[agent]
-        if rec.liveness != new:
-            self.log.write("liveness", agent=agent, **{"from": rec.liveness, "to": new})
-            rec.liveness = new
-
-    def update_liveness(self, now):
-        for a in sorted(self.agents):
-            rec = self.agents[a]
-            if rec.liveness in ("unknown", "lost") or rec.last_heard is None:
-                continue
-            silent = now - rec.last_heard
-            if silent >= self.lost_s:
-                self.set_liveness(a, "lost")
-                self.replan("lost", {"agent": a}, now)
-            elif silent >= self.suspect_s and rec.liveness == "alive":
-                self.set_liveness(a, "suspect")
-
-    def live_ids(self):
-        return sorted(a for a, r in self.agents.items() if r.liveness in ("alive", "suspect"))
-
-    # ------------------------------------------------------------ blacklist
-    def log_blacklist(self):
-        entries = [{"agent": a, "slot_key": list(k), "expires_t_wall": exp}
-                   for (a, k), exp in sorted(self.blacklist.items())]
-        self.log.write("blacklist", entries=entries)
-
-    def expire_blacklist(self, now):
-        old = [pair for pair, exp in self.blacklist.items() if exp <= now]
-        for pair in old:
-            del self.blacklist[pair]
-        if old:
-            self.log_blacklist()
-
-    # ------------------------------------------------------------ planning
-    def replan(self, trigger, detail, now):
-        alive = self.live_ids()
-        positions = {a: self.agents[a].pos for a in alive if self.agents[a].pos}
-        new = allocate(alive, positions, set(self.blacklist), self.params) if alive else {}
-        old = self.assignments
-        # Stability: an agent whose share did not change and whose current plan has no blacklisted
-        # point keeps that plan verbatim. allocate() rebuilds the slot list from the agent's current
-        # position (a rotated copy of the same lanes), which the agent would follow identically but
-        # which would count as an assignment change (churn) for no reason.
-        for a in new:
-            if (a in old and old[a].share == new[a].share
-                    and not any((a, slot_key(p)) in self.blacklist for p in old[a].slots)):
-                new[a] = old[a]
-        self.epoch += 1
-        changed = sorted(a for a in set(old) | set(new)
-                         if a not in old or a not in new
-                         or old[a].share != new[a].share or old[a].slots != new[a].slots)
-        self.assignments = new
-        self.log.write("assign", epoch=self.epoch, trigger=trigger, trigger_detail=detail,
-                       alive=alive, changed=changed,
-                       assignments={str(a): dict(new[a].to_dict(), note=new[a].note)
-                                    for a in sorted(new)})
-        self.pending_infeasible = False
-        if trigger == "infeasible":
-            self.last_infeasible_replan = now
-        self.send_assignments()
-        self.next_assign_send = now + 1.0 / config.ASSIGN_HZ
-
-    def maybe_deferred_replan(self, now):
-        if self.pending_infeasible and now - self.last_infeasible_replan >= self.replan_min_s:
-            self.replan("infeasible", {"blacklist_size": len(self.blacklist)}, now)
-
-    def send_assignments(self):
-        alive = sorted(self.assignments)
-        for a in alive:
-            d = self.assignments[a].to_dict()
-            self.link.send(a, "ASSIGN", epoch=self.epoch, agent=a, alive=alive, **d)
-
-    # ------------------------------------------------------------ start / restart
-    def maybe_start(self, now):
-        ids = range(1, self.n + 1)
-        if any(r.status == "cover" or r.epoch > 0 for r in self.agents.values()):
-            if self.resume_since is None:
-                self.resume_since = now
-            if now - self.resume_since >= RESUME_GATHER_S:
-                self.start(now, resumed=True)
-        elif all(a in self.agents and self.agents[a].status == "ready" for a in ids):
-            self.start(now, resumed=False)
-
-    def start(self, now, resumed):
-        prev_t0, prev_epoch = read_previous_log(self.log_path) if resumed else (None, 0)
-        if resumed:
-            self.t0 = prev_t0 if prev_t0 is not None else now
-            self.epoch = max([prev_epoch] + [r.epoch for r in self.agents.values()])
-        else:
-            self.t0 = now + START_LEAD_S
-        self.log.t0 = self.t0
-        self.phase = "run"
-        for a in sorted(self.agents):
-            if now - self.agents[a].last_heard < self.lost_s:
-                self.set_liveness(a, "alive")
-        self.log.write("start", t0=self.t0, epoch_start=self.epoch + 1, resumed=resumed,
-                       alive=self.live_ids())
-        self.link.send("all", "START", t0=self.t0)
-        self.next_start_send = now + START_PERIOD_S
-        self.replan("restart" if resumed else "start", {}, now)
-
-    # ------------------------------------------------------------ main loop
-    def step(self, now):
+    # ---- one tick
+    def step(self, now) -> bool:
+        """Handle messages and timers. False once the mission is over."""
         for msg in self.link.recv_all():
-            self.on_message(msg, now)
-        if self.phase == "wait":
-            self.maybe_start(now)
+            if msg["type"] == "STATE":
+                self.on_state(msg, now)
+            elif msg["type"] == "INFEASIBLE":
+                self.on_infeasible(msg, now)
+        if self.planned_at is None:
+            self.maybe_plan_first(now)
             return True
         self.update_liveness(now)
         self.expire_blacklist(now)
-        self.maybe_deferred_replan(now)
-        if now >= self.next_start_send:
-            self.link.send("all", "START", t0=self.t0)
-            self.next_start_send = now + START_PERIOD_S
-        if now >= self.next_assign_send:
-            self.send_assignments()
-            self.next_assign_send = now + 1.0 / config.ASSIGN_HZ
-        return now < self.t0 + self.mission_s
+        if self.t0 is None:
+            self.maybe_start(now)
+        self.send_due(now)
+        return self.t0 is None or now < self.t0 + self.mission_s
 
     def run(self):
-        reason = "mission_end"
         try:
             while self.step(time.time()):
-                time.sleep(LOOP_PERIOD_S)
-        except SystemExit:
-            reason = "signal"
+                time.sleep(LOOP_S)
         finally:
-            self.log.write("end", epoch=self.epoch, ignored_old_epoch=self.ignored_old_epoch,
-                           ignored_duplicate=self.ignored_duplicate, reason=reason)
+            self.log.write(time.time(), "end", epoch=self.epoch)
+
+    # ---- messages
+    def on_state(self, msg, now):
+        a = msg["src"]
+        rec = self.agents.setdefault(a, AgentRecord(last_heard=now, good_since=now))
+        if now - rec.last_heard >= config.SUSPECT_S or msg["status"] not in FLYING:
+            rec.good_since = now
+        if msg["status"] == "ready" and rec.status != "ready":
+            self.log.write(now, "ready", agent=a)
+            if self.first_ready is None:
+                self.first_ready = now
+        rec.last_heard = now
+        rec.xy = msg["pos"][:2]
+        rec.status = msg["status"]
+        rec.epoch = msg["epoch"] or 0    # null or 0 before the agent's first ASSIGN
+        rec.slot = msg["slot"]
+
+    def on_infeasible(self, msg, now):
+        """Blacklist the slot and re-plan, whatever epoch the report names, as long as the point
+        is in the agent's current plan (an unrelated re-plan must not swallow the report)."""
+        a, xy = msg["src"], msg["slot_xy"]
+        key = slot_key(xy)
+        plan = self.assignments.get(a)
+        if plan is None or key not in [slot_key(p) for p in plan.slots]:
+            why = "not in the current plan"
+        elif (a, key) in self.blacklist:
+            why = "already blacklisted"   # the agent repeats its report until a new epoch
+        else:
+            why = "new"
+        self.log.write(now, "infeasible", agent=a, epoch=msg["epoch"], slot_xy=xy,
+                       accepted=why == "new", why=why)
+        if why == "new":
+            self.blacklist[(a, key)] = now + config.BLACKLIST_COOLDOWN_S
+            self.log_blacklist(now)
+            self.replan(now, "infeasible")
+
+    # ---- start
+    def maybe_plan_first(self, now):
+        """Plan once everyone is ready, or on the deadline.
+
+        Restart: agents that already report an epoch are flying a plan from a ground that died.
+        Listen RESTART_LISTEN_S, jump EPOCH_STRIDE above any epoch heard (so no agent ever sees
+        an epoch number twice), keep t0 from the old log, and plan for everyone flying.
+        """
+        epochs = [r.epoch for r in self.agents.values() if r.epoch > 0]
+        if epochs:
+            if self.restart_at is None:
+                self.restart_at = now + RESTART_LISTEN_S
+            if now >= self.restart_at:
+                self.epoch = max(epochs) + EPOCH_STRIDE
+                if self.previous_t0 is not None:
+                    self.set_t0(self.previous_t0)
+                flying = [a for a, r in self.agents.items()
+                          if r.status in FLYING and now - r.last_heard < config.SUSPECT_S]
+                self.plan_first(now, flying, "restart")
+            return
+        ready = [a for a, r in self.agents.items() if r.status == "ready"]
+        if len(ready) == self.n or (ready and now >= self.first_ready + READY_DEADLINE_S):
+            self.plan_first(now, ready, "start")
+
+    def plan_first(self, now, members, trigger):
+        for a in members:
+            self.agents[a].liveness = "alive"
+        self.planned_at = now
+        self.replan(now, trigger)
+
+    def maybe_start(self, now):
+        """Start the clock once every assigned agent flies its loop, or on the deadline."""
+        late = sorted(a for a in self.assignments if not self.on_station(a))
+        if late and now < self.planned_at + ON_STATION_DEADLINE_S:
+            return
+        self.set_t0(now + START_LEAD_S)
+        self.log.write(now, "start", t0=self.t0, late=late)
+
+    def on_station(self, a) -> bool:
+        rec = self.agents[a]
+        return rec.epoch == self.epoch and rec.slot >= self.assignments[a].loop_from
+
+    def set_t0(self, t0):
+        self.t0 = t0
+        self.log.t0 = t0
+        self.next_start = 0.0            # send START now
+
+    # ---- liveness
+    def update_liveness(self, now):
+        for a in sorted(self.agents):
+            rec = self.agents[a]
+            silent_s = now - rec.last_heard
+            if rec.status not in FLYING or silent_s >= config.LOST_S:
+                new = "lost"
+            elif rec.liveness == "lost" and not self.heard_steadily(rec, now):
+                new = "lost"
+            elif silent_s >= config.SUSPECT_S:
+                new = "suspect"
+            else:
+                new = "alive"
+            if new != rec.liveness:
+                self.log.write(now, "liveness", agent=a, status=rec.status,
+                               **{"from": rec.liveness, "to": new})
+                was_lost = rec.liveness == "lost"
+                rec.liveness = new
+                if new == "lost":
+                    self.replan(now, "lost")
+                elif was_lost:
+                    self.replan(now, "rejoin")
+
+    @staticmethod
+    def heard_steadily(rec, now) -> bool:
+        """Heard, flying and without a gap of SUSPECT_S for the last REJOIN_S: no flapping."""
+        return now - rec.last_heard < config.SUSPECT_S and now - rec.good_since >= REJOIN_S
+
+    # ---- blacklist
+    def expire_blacklist(self, now):
+        """Expiry only frees the pair for later plans; it does not trigger a re-plan."""
+        expired = [pair for pair, t in self.blacklist.items() if t <= now]
+        for pair in expired:
+            del self.blacklist[pair]
+        if expired:
+            self.log_blacklist(now)
+
+    def log_blacklist(self, now):
+        pairs = [{"agent": a, "slot_key": list(key), "expires_t_wall": t}
+                 for (a, key), t in sorted(self.blacklist.items())]
+        self.log.write(now, "blacklist", pairs=pairs)
+
+    # ---- planning and sending
+    def replan(self, now, trigger):
+        members = sorted(a for a, r in self.agents.items() if r.liveness != "lost")
+        new = {}
+        if members:
+            positions = {a: self.agents[a].xy for a in members}
+            new = allocate(members, positions, set(self.blacklist), self.assignments,
+                           self.priority_zone)
+        old = self.assignments
+        changed = sorted(a for a in set(old) | set(new) if old.get(a) != new.get(a))
+        uncovered = [rect for a in sorted(new) for rect in new[a].uncovered]
+        self.epoch += 1
+        self.assignments = new
+        self.log.write(now, "assign", epoch=self.epoch, trigger=trigger, changed=changed,
+                       assignments={str(a): new[a].to_dict() for a in sorted(new)},
+                       uncovered=uncovered or None)
+        self.next_assign = 0.0           # send the new plan now
+
+    def send_due(self, now):
+        """ASSIGN at ASSIGN_HZ, START once a second: repeated because the radio is lossy."""
+        if now >= self.next_assign:
+            for a in sorted(self.assignments):
+                self.link.send(a, "ASSIGN", epoch=self.epoch, **self.assignments[a].to_dict())
+            self.next_assign = now + 1.0 / config.ASSIGN_HZ
+        if self.t0 is not None and now >= self.next_start:
+            self.link.send("all", "START", t0=self.t0)
+            self.next_start = now + 1.0
+
+
+def parse_zone(text) -> tuple:
+    """'xmin,ymin,xmax,ymax' -> a tuple of 4 floats."""
+    return tuple(float(v) for v in text.split(","))
 
 
 def _exit_on_signal(signum, frame):
@@ -322,37 +299,22 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Ground station: liveness + allocator")
     ap.add_argument("--n", type=int, required=True)
     ap.add_argument("--port-base", type=int, default=0)
-    ap.add_argument("--log", default=None)
+    ap.add_argument("--log", required=True)
     ap.add_argument("--mission-s", type=float, default=config.MISSION_S)
-    # timing overrides (tests); defaults come from config
-    ap.add_argument("--suspect-s", type=float, default=config.SUSPECT_S)
-    ap.add_argument("--lost-s", type=float, default=config.LOST_S)
-    ap.add_argument("--cooldown-s", type=float, default=config.BLACKLIST_COOLDOWN_S)
-    ap.add_argument("--replan-min-s", type=float, default=DEFAULT_REPLAN_MIN_S)
-    # sensor footprint for lane spacing (owned by the sensor model)
-    ap.add_argument("--swath-across", type=float, default=AllocParams.swath_across)
-    ap.add_argument("--footprint-along", type=float, default=AllocParams.footprint_along)
+    ap.add_argument("--priority-zone", type=parse_zone, default=None,
+                    help="Mission B: xmin,ymin,xmax,ymax")
     args = ap.parse_args(argv)
-
-    params = AllocParams(swath_across=args.swath_across, footprint_along=args.footprint_along)
-    log = JsonlLog(args.log)
-    log.write("config", n=args.n, port_base=args.port_base, mission_s=args.mission_s,
-              suspect_s=args.suspect_s, lost_s=args.lost_s, cooldown_s=args.cooldown_s,
-              replan_min_s=args.replan_min_s,
-              params={"swath_across": params.swath_across,
-                      "footprint_along": params.footprint_along,
-                      "max_slot_spacing": params.max_slot_spacing})
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGINT, _exit_on_signal)
+    previous_t0 = last_t0(args.log)
+    log = JsonLines(args.log)
     link = RadioLink(config.GROUND_ID, args.port_base)
-    ground = Ground(args.n, link, log, params, args.mission_s, args.suspect_s, args.lost_s,
-                    args.cooldown_s, args.replan_min_s, log_path=args.log)
     try:
-        ground.run()
+        Ground(args.n, link, log, args.mission_s, args.priority_zone, previous_t0).run()
     finally:
         log.close()
         link.close()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
