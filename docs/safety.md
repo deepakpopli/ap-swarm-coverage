@@ -105,7 +105,8 @@ left side to left side instead of mirroring each other.
   Going from cruise to hold never needs a check: a cruising agent already treats everyone.
 - **Blocked**: the coverage controller reports "stuck" when its active slot is more than
   SLOT_REACH_M away but the vehicle's real distance to it has not shrunk by 2 m for 3 s
-  (`coverage.NoProgress`). The agent then goes to its hold altitude and flies on there; it
+  (`coverage.NoProgress`), not counting time the distance grows by more than 1 m/s: braking
+  out of a lane-end reversal takes about 6 s and must not count. The agent then goes to its hold altitude and flies on there; it
   returns to cruise only after a fresh 1 s clear. Real distance, not the command: the earlier test
   measured the commanded velocity along the nominal direction, and a filter that only cut the
   closing part let 1-4 m/s of "progress" through while the vehicle slid sideways, so it never

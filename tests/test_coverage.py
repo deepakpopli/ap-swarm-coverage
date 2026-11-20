@@ -165,3 +165,17 @@ def test_not_stuck_while_deaf_or_at_the_slot():
     run.xy = (0.0, 197.0)                                  # within SLOT_REACH_M: reached
     run.fly(0.05, move=False)
     assert run.cov.idx == 1 and not run.fly(2.0).stuck     # new slot: the watch restarts
+
+
+def test_reversal_at_cruise_is_not_stuck():
+    """At a lane end the next slot is behind: the vehicle brakes (the distance grows), then
+    comes back. Replayed on a 4 m/s^2 point mass: about 6 s without getting closer."""
+    run = Run((0.0, 0.0))
+    run.assign(1, [[0, -100], [0, -200]])
+    vy = 11.5
+    for _ in range(round(8 / TICK_S)):
+        out = run.cov.step(run.t, run.xy, False)
+        assert not out.stuck
+        vy = max(-11.5, vy - 4.0 * TICK_S)
+        run.xy = (0.0, run.xy[1] + vy * TICK_S)
+        run.t += TICK_S

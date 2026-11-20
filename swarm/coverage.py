@@ -12,9 +12,10 @@ because a slot we are kept away from is exactly what the ground has to hear abou
 A newer epoch with the same slot list keeps the active slot, its timer and its report.
 
 No progress ("stuck"): the agent wants to move (the active slot is more than SLOT_REACH_M away)
-but its real distance to the slot has not shrunk by PROGRESS_M for NO_PROGRESS_S. The safety
-filter answers by going to the hold altitude (docs/safety.md). Real distance, not the command:
-a command the filter cuts to a sideways slide looks like progress but is not.
+but its real distance to the slot has not shrunk by PROGRESS_M for NO_PROGRESS_S, not counting
+time spent braking away from it (NoProgress). The safety filter answers by going to the hold
+altitude (docs/safety.md). Real distance, not the command: a command the filter cuts to a
+sideways slide looks like progress but is not.
 """
 import math
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ A_SLOW_MS2 = 1.5            # deceleration into sharp corners, well below the me
 INFEASIBLE_RESEND_S = 1.0
 NO_PROGRESS_S = 3.0         # stuck: no PROGRESS_M closer to the active slot for this long
 PROGRESS_M = 2.0            # 0.7 m/s on average; cruise closes 34 m in NO_PROGRESS_S
+RECEDING_MS = 1.0           # moving away from the slot faster than this: still braking
 
 
 @dataclass
@@ -45,16 +47,23 @@ def _dist(a, b) -> float:
 
 class NoProgress:
     """Watches the real distance to a goal: True once it has not shrunk by PROGRESS_M for
-    NO_PROGRESS_S. reset() when the goal changes."""
+    NO_PROGRESS_S. While the distance grows faster than RECEDING_MS the vehicle is still
+    braking out of its last leg (a lane-end reversal takes about 6 s at cruise): the watch
+    restarts, else every reversal would count. reset() when the goal changes."""
 
     def __init__(self):
         self.closest: Optional[Tuple[float, float]] = None   # (distance, since when)
+        self.last: Optional[Tuple[float, float]] = None      # (distance, when) last tick
 
     def reset(self) -> None:
         self.closest = None
+        self.last = None
 
     def update(self, now: float, dist_m: float) -> bool:
-        if self.closest is None or dist_m < self.closest[0] - PROGRESS_M:
+        receding = (self.last is not None
+                    and dist_m - self.last[0] > RECEDING_MS * (now - self.last[1]))
+        self.last = (dist_m, now)
+        if self.closest is None or receding or dist_m < self.closest[0] - PROGRESS_M:
             self.closest = (dist_m, now)
         return now - self.closest[1] >= NO_PROGRESS_S
 
