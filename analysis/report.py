@@ -5,7 +5,8 @@ python -m analysis.report --out results/<set> --name "<label>" RUN_DIR...
 python -m analysis.report --compare results/a results/b ...
 
 --ref: no-loss runs with N-1 agents (the attainable coverage of the survivors).
---baseline: no-loss runs with N agents (only listed here; plotted as a band by analysis.plots).
+--baseline: no-loss runs with N agents. Their mean coverage is the fixed level that recovery and
+deficit are also measured against (besides each run's own P, which flatters a low start).
 Every cell is median [min, max] over the runs. Definitions: docs/metrics.md.
 """
 import argparse
@@ -49,9 +50,12 @@ METRICS = [   # (key = path in metrics.json, label, unit, digits)
     ("loss.after_over_attainable", "After / attainable with N-1", "ratio", 2),
     ("loss.recovery_s", "Recovery to 0.9 x P", "s", 1),
     ("loss.recovery_to_share_s", "Recovery to 0.9 x (N-1)/N x P (weaker reading)", "s", 1),
+    ("loss.vs_baseline.recovery_s", "Recovery to 0.9 x no-loss N baseline", "s", 1),
     ("loss.dip_pct", "Dip: lowest coverage after the loss", "%", 1),
     ("loss.dip_after_loss_s", "Dip: time after the loss", "s", 1),
-    ("loss.deficit_pct_s", "Coverage deficit after the loss", "%.s", 0),
+    ("loss.deficit_pct_s", "Coverage deficit after the loss, against P", "%.s", 0),
+    ("loss.vs_baseline.deficit_pct_s", "Coverage deficit after the loss, against the no-loss N "
+     "baseline", "%.s", 0),
     ("loss.milestones_s.lost_declared", "Loss -> declared lost", "s", 1),
     ("loss.milestones_s.assignment_received", "Loss -> new assignment held by every survivor",
      "s", 1),
@@ -94,7 +98,8 @@ LABELS = {key: (label, unit, digits) for key, label, unit, digits in METRICS}
 PHASE_TABLE_KEYS = {"loss.before_pct", "loss.before_min_pct", "loss.after_mean_pct",
                     "loss.after_min_pct", "coverage.end_of_run_pct", "coverage.end_of_run_min_pct",
                     "loss.share_pct", "attainable_pct", "loss.recovery_s",
-                    "loss.recovery_to_share_s", "unseen.before.worst_s", "unseen.after.worst_s",
+                    "loss.recovery_to_share_s", "loss.vs_baseline.recovery_s",
+                    "unseen.before.worst_s", "unseen.after.worst_s",
                     "revisit.before.worst_completed_s",
                     "revisit.after.worst_completed_s", "churn.before_per_agent_min",
                     "churn.after_per_agent_min"}
@@ -146,11 +151,21 @@ def load_metrics(run_dir):
     if not os.path.exists(path):
         metrics.analyse(run_dir)
     with open(path) as f:
-        return json.load(f)
+        m = json.load(f)
+    m["dir"] = run_dir
+    return m
 
 
 def summarise_set(runs, refs, baselines):
-    """{key: summary} for every key in METRICS, over the runs."""
+    """{key: summary} for every key in METRICS, over the runs. Needs coverage.csv beside each
+    run's metrics.json when baselines are given (m["dir"])."""
+    if baselines:
+        level = float(np.median([m["coverage"]["mean_pct"] for m in baselines]))
+        for m in runs:
+            if m["loss"] is not None:
+                ticks, coverage = metrics.read_coverage_csv(m["dir"])
+                m["loss"]["vs_baseline"] = metrics.against_level(ticks, coverage,
+                                                                 m["loss"]["loss_s"], level)
     attainable = summarise([m["coverage"]["mean_pct"] for m in refs])
     for m in runs:
         if m["loss"] is not None and attainable["n"]:
@@ -186,6 +201,8 @@ def phase_table(s):
              "open at the end counts as its age then. Steady gap: before = [0, L), after = "
              "[R, end] with R = lost declared, survivors only.", "",
              f"- Recovery to 0.9 x P: {recovered_text(s['loss.recovery_s'])}.",
+             f"- Recovery to 0.9 x the no-loss N baseline ({c('baseline_pct')} %): "
+             f"{recovered_text(s['loss.vs_baseline.recovery_s'])}.",
              f"- Recovery to 0.9 x (N-1)/N x P (weaker reading): "
              f"{recovered_text(s['loss.recovery_to_share_s'])}."]
     return head + rows + notes

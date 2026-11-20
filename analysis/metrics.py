@@ -207,6 +207,16 @@ def loss_block(run, ticks, coverage):
             "milestones_s": milestones}
 
 
+def against_level(ticks, coverage, loss_s, level_pct):
+    """Recovery and deficit after the loss against a fixed level: the no-loss N-agent baseline
+    (analysis/report.py). Against each run's own P a run that started lower looks better."""
+    from_loss = ticks >= loss_s
+    shortfall = np.maximum(0.0, level_pct - coverage[from_loss])
+    return {"level_pct": level_pct,
+            "recovery_s": recovery_time(ticks, coverage, loss_s, RECOVERED * level_pct),
+            "deficit_pct_s": float(np.sum(shortfall)) * TICK_S}
+
+
 # -------------------------------------------------------------------------- churn
 
 def count_changes(run, assigns, start_s, end_s):

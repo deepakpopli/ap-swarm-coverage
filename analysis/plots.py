@@ -98,8 +98,8 @@ def plot_coverage(runs, refs, baselines, out_dir):
 def plot_before_after(runs, refs, out_dir):
     """One line per run from before to after; the median in blue."""
     panels = [("Coverage, mean (%)", "loss.before_pct", "loss.after_mean_pct"),
-              ("Worst completed revisit gap (s)", "revisit.before.worst_completed_s",
-               "revisit.after.worst_completed_s"),
+              ("Worst revisit gap, longest unseen (s)", "unseen.before.worst_s",
+               "unseen.after.worst_s"),
               ("Assignment churn (/agent/min)", "churn.before_per_agent_min",
                "churn.after_per_agent_min")]
     fig, axes = plt.subplots(1, 3, figsize=(10, 3.8))
