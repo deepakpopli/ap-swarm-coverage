@@ -105,7 +105,8 @@ def main(runs_dir, out_dir):
                    + (f" --scenario {meta['scenario']}" if meta["scenario"] else "")
                    + (f" --zone {','.join(str(v) for v in meta['priority_zone'])}"
                       if meta["priority_zone"] else ""))
-        lines.append(f"| {name} | `{command}` | {EXPECTED[name]} | {measured(m, meta)} |")
+        lines.append(f"| {name} (commit {meta['git_commit'][:7]}) | `{command}` | "
+                     f"{EXPECTED[name]} | {measured(m, meta)} |")
     with open(os.path.join(out_dir, "summary.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print(os.path.join(out_dir, "summary.md"))
