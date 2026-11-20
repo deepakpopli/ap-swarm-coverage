@@ -7,6 +7,7 @@ import pytest
 from fakes import FakeRadio, SimClock
 from sim.fake_vehicle import FakeVehicle
 from swarm import config
+from swarm.coverage import NoProgress
 from swarm.safety import Neighbour, SafetyFilter, SafetyParams, clear_for_takeoff
 
 CRUISE = config.ALT_CRUISE_M
@@ -26,12 +27,14 @@ class Flyer:
         self.hold = hold
         self.link = radio.link(aid)
         self.waypoints = list(waypoints)
+        self.progress = NoProgress()   # as CoverageController does for its active slot
         self.log = []          # (t, pos, holding, flags) per tick
 
     def nominal(self):
         x, y, _ = self.vehicle.pos
         if len(self.waypoints) > 1 and math.dist((x, y), self.waypoints[0]) < 5.0:
             self.waypoints.pop(0)
+            self.progress.reset()
         gx, gy = self.waypoints[0]
         d = math.hypot(gx - x, gy - y)
         if d < 0.5:
@@ -49,7 +52,9 @@ class Flyer:
         if send_state:
             self.link.send("all", "STATE", pos=list(v.pos), vel=list(v.vel), t_pos=now,
                            status="cover")
-        cmd = self.filter.step(now, tuple(v.pos), tuple(v.vel), self.nominal(), self.hold)
+        far = math.dist(v.pos[:2], self.waypoints[0]) > config.SLOT_REACH_M
+        stuck = far and self.progress.update(now, math.dist(v.pos[:2], self.waypoints[0]))
+        cmd = self.filter.step(now, tuple(v.pos), tuple(v.vel), self.nominal(), self.hold, stuck)
         v.send_setpoint(cmd.vx, cmd.vy, cmd.z)
         self.log.append((now, tuple(v.pos), cmd.holding, cmd.flags))
         return cmd
@@ -238,3 +243,14 @@ def test_blocked_agent_passes_at_hold_altitude_and_returns(seed):
     assert max(pos[2] for _, pos, _, _ in log) > config.hold_alt(1) - 1.0
     assert flyers[0].at_goal()
     assert not log[-1][2] and abs(log[-1][1][2] - CRUISE) < 1.0   # back at cruise
+
+
+def test_stuck_sends_a_cruiser_to_its_hold_altitude_once():
+    f = SafetyFilter(1)
+    f.holding = False
+    f.heard(0.0)
+    cmd = f.step(0.0, (0.0, 0.0, CRUISE), (0.0, 0.0, 0.0), (5.0, 0.0), False, True)
+    assert cmd.holding and cmd.z == config.hold_alt(1) and "blocked" in cmd.flags
+    assert cmd.events == [{"event": "blocked"}]
+    cmd = f.step(0.05, (0.0, 0.0, CRUISE), (0.0, 0.0, 0.0), (5.0, 0.0), False, True)
+    assert cmd.events == [] and "blocked" in cmd.flags

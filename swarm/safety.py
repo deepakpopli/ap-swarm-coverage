@@ -6,8 +6,9 @@ received from each neighbour. Per neighbour, either
   - we stay out of its keep-out disc, which grows with the age of its last position sample, and
     we close on that disc no faster than we can still stop (else: full brake).
 Modes: cruise (at ALT_CRUISE_M), hold (at the agent's private hold altitude: before the
-mission, when coverage has nothing to fly, or after being blocked; it keeps flying its path up
-there and returns to cruise when clear), deaf (heard nobody for DEAF_STOP_S: stop, go to hold).
+mission, when coverage has nothing to fly, or blocked = coverage reports no real progress to
+its slot; it keeps flying its path up there and returns to cruise when clear), deaf (heard
+nobody for DEAF_STOP_S: stop, go to hold).
 Every agent applies the same rules; responsibility for each pair is shared half and half.
 
 The derivation of every number, the tie-break and the residual risks: docs/safety.md.
@@ -21,9 +22,6 @@ from swarm import config
 TAKEOFF_CLEAR_M = config.D_MIN_M + 1.0   # D_MIN plus the position error of both agents
 SIDESTEP_BELOW_MS = 1.0   # head-on: less tangential speed than this -> also step to the right
 FILTERED_MS = 0.1         # log "filtered" when the output differs from the nominal by more
-WANTS_TO_MOVE_MS = 1.0    # blocked: the controller asks for at least this ...
-NO_PROGRESS_MS = 0.5      # ... and the filter lets through less than this in that direction
-PROGRESS_TAU_S = 1.0      # (averaged over about this long)
 OBSTACLE_ID = config.GROUND_ID   # never a neighbour's id, so free for the test obstacle
 
 
@@ -52,7 +50,6 @@ class SafetyParams:
     t_gap_s: float = 1.0        # 5 STATEs lost in a row at 20 % loss: p = 3e-4
     z_track_m: float = 1.0      # measured altitude error <= 0.08 m cruising, 0.94 m after takeoff
     plan_ahead_s: float = 0.6   # design: plan as if the next 3 STATEs are lost
-    blocked_s: float = 3.0      # design: no progress this long while wanting to move = blocked
     clear_gap_m: float = 5.0    # design: return to cruise when every disc is this far ...
     clear_s: float = 1.0        # ... for this long
 
@@ -143,9 +140,6 @@ class SafetyFilter:
         self.holding = True                 # take-off ends at the hold altitude
         self.deaf = False
         self.last_heard: Optional[float] = None
-        self.stuck_since: Optional[float] = None
-        self.progress_ms = 0.0              # output speed toward the nominal goal, averaged
-        self.last_step: Optional[float] = None
         self.clear_since: Optional[float] = None
         self.obstacle: Optional[Neighbour] = None
 
@@ -169,8 +163,9 @@ class SafetyFilter:
 
     # ---- one control tick -------------------------------------------------------------------
     def step(self, now: float, pos, vel, v_nom: Tuple[float, float],
-             want_hold: bool) -> SafeCommand:
-        """pos, vel: own state from the autopilot. v_nom: what coverage asks for (m/s)."""
+             want_hold: bool, stuck: bool = False) -> SafeCommand:
+        """pos, vel: own state from the autopilot. v_nom: what coverage asks for (m/s).
+        stuck: coverage made no real progress to its slot lately; go to hold to pass."""
         if self.obstacle is not None:
             self.obstacle.t_pos = now
             self.nbrs[OBSTACLE_ID] = self.obstacle
@@ -191,7 +186,7 @@ class SafetyFilter:
         if self._must_brake(vel, discs):
             vx, vy = 0.0, 0.0
             flags.append("brake")
-        if self._blocked(now, v_nom, (vx, vy)):
+        if stuck:
             flags.append("blocked")
             if not self.holding:
                 self.holding = True
@@ -257,28 +252,6 @@ class SafetyFilter:
         """The vehicle, not just the command, must be able to stop before every disc."""
         return any(vel[0] * d.n[0] + vel[1] * d.n[1] > self.p.v_stop_ms(d.gap_m) / 2
                    for d in discs)
-
-    def _blocked(self, now: float, v_nom, v_out) -> bool:
-        """For blocked_s the filter has let through (almost) no speed where coverage wants to go.
-
-        Measured along the nominal direction: sliding sideways around a neighbour is no progress.
-        Averaged over PROGRESS_TAU_S: between two discs the output can chatter from tick to tick,
-        and a single tick with progress must not restart the timer.
-        """
-        wanted = math.hypot(*v_nom)
-        progress = 0.0
-        if wanted >= WANTS_TO_MOVE_MS:
-            progress = (v_out[0] * v_nom[0] + v_out[1] * v_nom[1]) / wanted
-        dt = 0.0 if self.last_step is None else now - self.last_step
-        self.last_step = now
-        self.progress_ms += (progress - self.progress_ms) * min(1.0, dt / PROGRESS_TAU_S)
-        stuck = wanted >= WANTS_TO_MOVE_MS and self.progress_ms < NO_PROGRESS_MS
-        if not stuck:
-            self.stuck_since = None
-            return False
-        if self.stuck_since is None:
-            self.stuck_since = now
-        return now - self.stuck_since >= self.p.blocked_s
 
     def _clear_for_cruise(self, now: float, pos) -> bool:
         """Every neighbour on our way down (or up) to cruise is clear_gap_m outside its disc."""

@@ -125,3 +125,43 @@ def test_timer_runs_while_the_filter_blocks_us():
     assert math.hypot(out.vx, out.vy) > 1.0 and not run.named("infeasible")
     run.fly(2, move=False)
     assert len(run.named("infeasible")) == 1
+
+
+# ---- stuck: no real progress to the active slot (the safety filter's "blocked")
+
+def test_stuck_after_no_progress_while_wanting_to_move():
+    run = Run()
+    run.assign(1, [[0, 200], [0, 300]])
+    assert not run.fly(2.9, move=False).stuck
+    assert run.fly(0.2, move=False).stuck
+
+
+def test_sliding_sideways_is_not_progress():
+    """The command keeps a large component toward the slot, but the vehicle only slides
+    sideways at 3 m/s: the old commanded-progress test never fired in this case."""
+    run = Run()
+    run.assign(1, [[0, 200], [0, 300]])
+    for _ in range(round(3.2 / TICK_S)):
+        out = run.cov.step(run.t, run.xy, False)
+        run.xy = (run.xy[0] + 3.0 * TICK_S, run.xy[1])
+        run.t += TICK_S
+    assert math.hypot(out.vx, out.vy) > 1.0 and out.stuck
+
+
+def test_slow_real_progress_is_not_stuck():
+    run = Run()
+    run.assign(1, [[0, 200], [0, 300]])
+    for _ in range(round(10 / TICK_S)):
+        out = run.cov.step(run.t, run.xy, False)
+        run.xy = (run.xy[0], run.xy[1] + 1.0 * TICK_S)     # 1 m/s toward the slot
+        run.t += TICK_S
+        assert not out.stuck
+
+
+def test_not_stuck_while_deaf_or_at_the_slot():
+    run = Run()
+    run.assign(1, [[0, 200], [0, 300]])
+    assert not run.fly(5, move=False, deaf=True).stuck
+    run.xy = (0.0, 197.0)                                  # within SLOT_REACH_M: reached
+    run.fly(0.05, move=False)
+    assert run.cov.idx == 1 and not run.fly(2.0).stuck     # new slot: the watch restarts
