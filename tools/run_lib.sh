@@ -8,9 +8,10 @@ SUMMARY=()
 
 say() { echo "[$(basename "$0") $(date +%H:%M:%S)] $*"; }
 
-outcome() {   # $1 = run directory
+outcome() {   # $1 = run directory; "running" after the runner ended means it crashed
+  [ -f "$1/meta.json" ] || { echo "no meta.json"; return; }
   python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["outcome"])' \
-    "$1/meta.json" 2> /dev/null || echo "no meta.json"
+    "$1/meta.json" | sed 's/^running$/crashed (see its output)/'
 }
 
 is_done() { [ "$(outcome "$1")" = ok ]; }
