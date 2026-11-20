@@ -1,170 +1,111 @@
 # Allocation
 
-Code: `swarm/allocator.py` (pure, deterministic), used by `swarm/ground.py`.
+Code: `swarm/allocator.py` (pure, deterministic), used by `swarm/ground.py`. The ground station
+runs it; agents only fly the slots they are sent. It outputs assignments (share, slots,
+loop_from), never velocities or times.
 
-## Rules
+## Lanes and lane groups
 
-1. **Shares.** The area is cut into equal full-height vertical strips, one per agent, handed out
-   west to east by the agents' current x (ties by id). Neighbours stay neighbours, so paths do
-   not cross.
-2. **Lanes.** North-south, `ceil(strip width / swath)` of them, evenly spread over the strip.
-   The swath is the camera footprint across track at the cruise altitude (85 m at 50 m). Lane
-   ends are inset by half the along-track footprint minus `SLOT_REACH_M` (24 - 5 = 19 m at
-   50 m): the agent counts a slot as reached up to 5 m before it and turns there, and the
-   camera must still reach the area's edge. (With a 24 m inset the outermost 2-3 m of the
-   area were never seen behind an out-and-back lane in a Gazebo run.)
-3. **Slots.** Transit points run from the agent to the nearest lane end. Then comes the
-   repeating loop (`loop_from` = its first index). Consecutive slots are at most
-   `SLOT_SPACING_M` = 80 m apart: 6.9 s at 11.5 m/s cruise, under 10 s from a standing start,
-   against the 15 s slot timeout. A single-lane strip is flown out and back, so its loop has every point
-   twice. Nothing relies on slots being unique.
-4. **Stability.** An agent whose share is unchanged and whose previous plan has no
-   blacklisted point keeps its previous assignment unchanged. Re-plans for one agent cause no
-   churn for the others.
-
-## Layout "lanes" (SWARM_LAYOUT=lanes; default "strips" = rules 1-4 above)
-
-* **Lanes never move.** `ceil(area width / swath)` lanes over the whole area (4 at 50 m,
-  x = 37.5, 112.5, 187.5, 262.5, 75 m apart). A membership change only changes who flies them.
-* **Tour or groups.** With N agents alive the allocator takes whichever has the shorter worst
-  revisit period: one closed tour over all lanes (period / N) with the agents evenly spaced in
-  time, or contiguous lane groups with one loop each (the longest loop). Periods are lengths at
-  cruise plus measured corner costs (`TURN90_S` 2.45 s, `TURN180_S` 3.65 s, WP_SPD 11.5, jerk
-  4). At 50 m: tour 153.9 s (with slack), so N = 3 -> tour (51.3 s); N = 2 -> groups 2+2
-  (68.4 s against 76.9 s). The tour's closing leg runs back along the south lane ends, so N
-  evenly spaced agents can meet head-on there: N = 2 and 4 would (`tour_clearance_m`), so the
-  tour is only used if they stay `TOUR_CLEAR_M` = 50 m apart (N = 3: 75 m, passing on adjacent
-  lanes), except with more agents than lanes (N >= 5: tour regardless; N = 5 comes to 48 m,
-  N >= 6 meets head-on: not handled).
-* **Groups go to agents** by the smallest total distance to the group's loop; each agent joins
-  its loop at the nearest slot, as in rule 3.
-* **Even spacing without commanding velocities.** A tour assignment carries a schedule:
-  `t_ref`, `due_s` (one due time per loop slot) and `period_s`. The coverage controller holds
-  at a slot when it reached it early: at its entry, and at corners only (it is slowing to 2 m/s
-  there anyway). It never tries to speed up. The schedule gives every corner
-  `TOUR_SLACK_S` = 0.5 s more than it costs, so an agent on time holds about 0.5 s per corner
-  and one that fell behind catches up 0.5 s per corner. Wall clocks are assumed synchronised
-  (the safety filter already compares sample times across agents).
-* **Joining.** New phases: rank r gets phase origin now + offset + r x period / N; the offset
-  (1 s steps) and the ranking minimise the time until the last agent is on schedule. Each agent
-  flies straight (slots <= 79 m apart) to the tour slot it can reach soonest before that slot is
-  due, and holds there. Same team as before: nobody changes; an agent whose tour point was
-  blacklisted re-enters its own tour (without that point) at its old phase.
-* **Active slots apart.** In both layouts no two agents' simultaneously active slots (transit
-  points and the slot each starts on) may be closer than D_MIN + 2 x SLOT_REACH = 18 m: the
-  swap run issued two transit slots 0.2 m apart and stalled for 15 s. Transit points that clash
-  are moved along their leg (`_clear_leg`). Crossing transits can still leave a smaller gap at
-  the crossing point; there the safety filter has to separate them.
-* `--swap-at` with this layout: on the tour each agent flies to the slot just ahead of the
-  next agent (by id) and takes over its phase (with lane groups: the groups go to the agents
-  in reverse order), so they must cross.
-
-## Layout "groups" (SWARM_LAYOUT=groups)
-
-The same fixed lanes as "lanes", but always contiguous lane groups with one loop per agent,
-for every N; never the tour. Assignments carry no `t_ref` / `due_s` / `period_s`, so no clock
-needs to agree between ground and agents.
-
-* **Cut.** The contiguous cut with the shortest longest loop; ties go to the first cut in
-  order, so at 50 m: N = 2 -> 2+2, N = 3 -> 1+1+2 west to east (the 2-lane group is always the
-  east pair, x = 187.5 and 262.5), N = 4 -> 1+1+1+1.
-* **Owners.** Groups go to agents by the smallest total distance from each agent to its
-  group's loop; ties: the first permutation of the ids in ascending order. Deterministic for
-  given positions; from the start line (x = 140, 150, 160) agent 3 gets the east pair.
-* **More agents than lanes** (N >= 5 at 50 m): one lane each, the rest get no slots and idle at
-  their private hold altitude until a loss frees a lane.
-* **On a loss** only ownership changes: the cut for N - 1 is made on the same lanes (for N = 3
-  -> 2 that is 2+2, the same as "lanes" does), and a survivor whose group is unchanged keeps
-  its plan. Lanes never move.
+1. **Lanes never move.** `ceil(area width / swath)` north-south lanes over the whole area,
+   evenly spread. The swath is the camera footprint across track at the cruise altitude: 85 m
+   at 50 m, so 4 lanes at x = 37.5, 112.5, 187.5, 262.5. Lane ends are inset by half the
+   along-track footprint minus `SLOT_REACH_M` (24 - 5 = 19 m): the agent turns 5 m before a
+   slot and the camera must still reach the area's edge.
+2. **Groups.** The live agents get contiguous lane groups, one closed loop (boustrophedon plus
+   the leg back) per agent. The cut is the one whose longest loop is shortest (loop time = length
+   at 11.5 m/s + measured corner costs `TURN90_S` 2.45 s, `TURN180_S` 3.65 s); ties go to the
+   first cut. At 50 m: N = 1: 4 lanes (149.9 s); N = 2: 2+2 (68.4 s); N = 3: 1+1+2 (52.9, 52.9,
+   68.4 s); N = 4: 1+1+1+1 (52.9 s, each lane out and back).
+3. **Owners.** Groups go to agents by the smallest total distance from each agent to its
+   group's loop; ties: the first permutation of the ids in ascending order. From the start line
+   agent 3 gets the east pair. An agent on its loop is nearest to its own group, so a re-plan
+   for any other reason keeps the owners.
+4. **More agents than lanes** (N = 5 at 50 m): one lane each; the agent left over (agent 3 from
+   the start line) gets no slots and holds at its private hold altitude, out of the lanes' way,
+   until a loss frees a lane. Splitting the loop work five ways was rejected: the pieces would be
+   flown back and forth and two agents would meet head-on at every shared end. The ground counts
+   a spare as on station.
+5. **Slots.** Transit points from the agent to the nearest lane end of its loop, then the loop
+   (`loop_from` = its first index). Consecutive slots are at most `SLOT_SPACING_M` = 80 m apart
+   (79 m: 6.9 s at cruise, under 10 s from a standing start, against the 15 s slot timeout).
+6. **Stability.** An agent whose share is unchanged and whose plan has no blacklisted point
+   keeps its previous assignment object unchanged: no churn.
+7. **On a loss** the cut for N - 1 is made on the same lanes (N = 3 -> 2: 2+2). Lanes never move,
+   so a survivor flies ground it already knows; a survivor whose group is unchanged keeps its plan.
+8. **Active slots apart.** No two agents' simultaneously active slots (transit points and the
+   slot each starts on) may be closer than D_MIN + 2 x SLOT_REACH = 18 m: a swap run once issued
+   two transit slots 0.2 m apart and stalled for 15 s. A new plan that clashes keeps its transit
+   leg but its points move along it, off every other agent's active slots (`_clear_leg`). This is
+   a planner courtesy, not a separation guarantee: transits can still cross between slots, and
+   separation is the safety filter's job.
 
 ## Infeasible slots
 
-The blacklist is a set of `(agent, slot_key)` pairs. `slot_key` is the slot rounded to whole
-metres. The allocator never issues a blacklisted pair. For an agent whose plan would contain
-one, it does this, in order:
+The blacklist is a set of `(agent, slot_key)` pairs (`slot_key` = the slot rounded to whole
+metres). The allocator never issues a blacklisted pair. For an agent whose plan would contain one:
 
 1. Try the other loop variants (other entry end, other first-lane direction), nearest entry
-   first, and take the first one that has no blacklisted point.
-2. Otherwise, drop the blacklisted points from the nearest variant and re-space its legs. A
-   leg whose new points would land on a blacklisted point is cut into one more piece. With
-   n and n + 1 pieces, no inner point is shared.
-3. If every point is blacklisted, the agent holds where it is until a pair expires. Only a
-   short Mission B lane, with 3 distinct points, can get there.
+   first, and take the first one without a blacklisted point.
+2. Otherwise drop the blacklisted points from the nearest variant and re-space its legs. A leg
+   whose new points would land on a blacklisted point is cut into one more piece (n and n + 1
+   pieces share no inner point).
+3. If every point is blacklisted (only a zone lane, 3 distinct points, can get there), the agent
+   holds where it is until a pair expires.
 
-**Why this cannot oscillate.**
-
-* The ground blacklists a pair for `BLACKLIST_COOLDOWN_S` = 60 s and never re-issues it in
-  that time.
-* Each INFEASIBLE report causes at most one re-plan. A repeat for a pair already on the
-  blacklist, or for a point no longer in the agent's plan, is logged and ignored. Expiry
-  does not trigger a re-plan.
-* Every other agent keeps its plan unchanged (rule 4).
-
-So a report changes one agent's plan once, to a plan without that point, and nothing feeds
-back.
+**Why this cannot oscillate.** The ground blacklists a pair for `BLACKLIST_COOLDOWN_S` = 60 s
+and never re-issues it in that time. Each INFEASIBLE report causes at most one re-plan; a repeat
+for a pair already blacklisted, or for a point no longer in the agent's plan, is logged and
+ignored; expiry does not re-plan. Every other agent keeps its plan (rule 6). So a report changes
+one agent's plan once, to a plan without that point, and nothing feeds back.
 
 ## Mission B: priority zone
 
 The zone (60 x 60 m) must be seen at least every `PRIORITY_REVISIT_S` = 30 s.
 
-* The agent nearest the zone gets a strip one swath wide, centred on the zone in x. The strip
-  is shifted to stay inside the area, and its lane is at the strip centre. That agent flies a
-  single out-and-back lane whose ends are each at most `REACH_M` north or south of the zone
-  centre.
-* A point on an out-and-back lane is revisited after 2 x (distance to the far end) / speed +
-  `TURN_S`. So `REACH_M = (30 - margin 2 - TURN_S 6) x 11.5 / 2 = 126.5 m`. `TURN_S` = 6 s:
-  at WP_SPD 11.5 and PSC_NE_JERK 4 an instant full-speed reversal loses 5.9-6.0 s
-  (`results/exp/step1/motion_bounds_*.json`), so the margin is now about 0; the controller's
-  slowed lane-end reversal loses about 3.6 s (speed_profile pattern). Not re-flown in Mission B.
-* The margin pays for points 30 m off the zone centre. The footprint's 24 m half-length leaves
-  6 m, which is 0.5 s each way. About 1 s is left for flying below cruise speed near the ends.
-* The other agents split the area west and east of the zone strip, in proportion to width.
-  With 3 agents, one goes west and one goes east. If a side is narrower than half a swath, or
-  nobody is left for it, it is added to the zone agent's share and stays uncovered.
-* When an agent is lost, the zone keeps its agent first, and the rest is re-split.
-
-The parts of the zone agent's share that its camera never sweeps are returned as
-`Assignment.uncovered` and logged in the `assign` record. Priority beats completeness.
-
-| Zone (xmin, ymin, xmax, ymax) | Lane ends (y) | Worst zone revisit | Uncovered |
-|---|---|---|---|
-| middle (120, 120, 180, 180) | 23.5 to 276.5 | 29.2 s | 4.5 m strips at the south and north edge: 765 m² (0.9 %) |
-| corner (0, 0, 60, 60) | 19 to 156.5 | 29.2 s | x 0 to 85, y 175.5 to 300: 10 583 m² (11.8 %) |
-| (20, 200, 80, 260) | 103.5 to 281 | 29.2 s | 7.5 m sliver on the west edge, plus x 7.5 to 92.5, y 0 to 84.5: 9 433 m² |
-
-Revisit is computed from the plan: 2 x (distance from where the point leaves the footprint to
-the far end) / 11.5 + 6 s, worst point of the zone. 50 m altitude, 3 agents. Uncovered parts
-count from where the agent turns, 5 m before a lane end.
+* **Owner.** One agent flies an out-and-back lane through the zone: the previous owner while it
+  lives, else the agent nearest the zone centre. Every other agent covers the whole area in the
+  normal lane groups, as if it were the whole fleet, so nothing is ever left unassigned.
+* **Zone lane x.** Half way between two area lanes (or a lane and the area edge), so it keeps
+  clear of the others' lanes; of those, the one whose footprint covers most of the zone. Middle
+  zone (120-180): x = 150, 37.5 m from the lanes at 112.5 and 187.5. Corner zone (0-60):
+  x = 18.75, 18.75 m from the lane at 37.5. Agents on neighbouring lanes still pass each other,
+  so the safety filter acts more than in Mission A.
+* **Lane ends** at most `REACH_M` north and south of the zone centre (clipped to the normal lane
+  ends). A point is revisited after 2 x (distance to the far end) / speed + `TURN_S`, so
+  `REACH_M = (30 - margin 2 - TURN_S 6) x 11.5 / 2 = 126.5 m`. `TURN_S` = 6 s bounds a full-speed
+  reversal (5.9-6.0 s measured); the controller's slowed lane-end turn costs about 3.6 s. The
+  margin pays for zone points up to 30 m off centre. Worst zone point from the plan: 29.0 s for
+  both zones.
+* **When the owner is lost**, the nearest survivor takes the zone lane first and the rest
+  re-split the area. With 3 agents that leaves one agent for all four lanes (a 150 s loop).
+  **Honest limit:** the 30 s cannot hold through the owner's loss: the zone waits for the
+  12 s loss declaration plus the new owner's flight to the lane. With one agent left it flies
+  the zone lane only.
 
 ## Test hook: swap
 
-`allocate(..., reverse=True)` hands the strips out east to west. Only the ground's `--swap-at`
-uses it (scenario "swap" of `run_mission.py`): one re-plan that makes every agent cross the
-others at cruise altitude, to stress the safety filter. Later re-plans use the normal order.
+`allocate(..., reverse=True)` hands the groups out in reverse order. Only the ground's
+`--swap-at` uses it (scenario "swap" of `run_mission.py`): one re-plan that makes the agents
+cross at cruise altitude, to stress the safety filter. Later re-plans use the normal order.
 
 ## Radio determinism (`sim/radio.py`)
 
-**What the seed fixes.** Whether one copy is dropped is a hash of `(seed, src, dst, seq)`.
-The decision does not depend on arrival order, timing, or other traffic. With the same seed,
-the k-th message from A to B is dropped in every run or in none.
-
-**What real time decides.**
-
-* Which message gets seq k (STATE or INFEASIBLE).
-* Which messages fall inside a blackout or mute window. Windows are judged by arrival time
-  at the radio.
-* Whether a receiver had registered when a broadcast arrived.
-* The exact delivery times: the delay is a timer, with about 1 ms of jitter.
-
-The per-pair loss rate matches `loss` statistically. The exact set of lost messages repeats
-only up to that timing.
+Whether one copy is dropped is a hash of `(seed, src, dst, seq)`, so with the same seed the
+k-th message from A to B is dropped in every run or in none. Real time still decides which
+message gets seq k, which messages fall inside a blackout or mute window, whether a receiver
+had registered when a broadcast arrived, and the exact delivery times (about 1 ms jitter). The
+per-pair loss rate matches `loss` statistically; the exact set of lost messages repeats only up
+to that timing.
 
 ## Ground restart
 
-A restarted ground hears agents that already report an epoch. It then:
+A restarted ground that hears agents already reporting an epoch listens for 3 s, continues 1000
+epochs above the highest epoch heard (an agent ignores epochs not newer than its own, so it never
+sees one number twice with different contents), reuses t0 from the old `ground.jsonl`, and plans
+for every agent it heard flying.
 
-1. Listens for 3 s.
-2. Continues 1000 epochs above the highest epoch heard. An agent ignores epochs not newer
-   than its own, so it can never see an epoch number twice with different contents.
-3. Reuses t0 from the old `ground.jsonl`.
-4. Plans for every agent it heard flying.
+## Single point of failure
+
+The allocator runs only on the ground. If the ground dies, agents keep flying their last
+assignment (they never need the ground to keep flying), but nobody re-plans: a loss after that
+leaves the dead agent's lanes unflown. Measured in scenario "groundloss" (`run_scenarios.sh`).

@@ -37,8 +37,10 @@ there). Only its end must lie in the phase.
 | No completed gap | % of cells with fewer than two sightings in the phase. |
 | Recovery | First tick t >= L from which coverage(t) >= 0.9 P until the end, minus L. The recovery must hold for at least 10 s before the end. 0 if coverage never fell below 0.9 P; none = "not recovered within the run". Runs that do not recover are counted ("k of n recovered"), and the median is taken over the recovered runs only. |
 | Recovery, weaker reading | The same against 0.9 x (N-1)/N x P. |
+| Recovery and deficit against the baseline | The same two, against B = median mean coverage of the no-loss N-agent runs (`--baseline`) instead of the run's own P. Against its own P a run that started lower recovers sooner and loses less on paper; against B it does not. Computed in `analysis/report.py` from each run's coverage.csv. |
 | Dip | Minimum of coverage(t) for t >= L, and when it happened. |
 | Deficit | Sum over 1 s ticks t >= L of max(0, P - coverage(t)), in %.s. Needs no threshold. |
+| (N-1)/N line | (N-1)/N x P, the task's bar, drawn on the coverage and before/after plots. At 50 m two survivors hold far above it, so passing it shows little. |
 | Recovery steps | Seconds from L to each of: declared lost (R); new epoch in the log of every survivor; first survivor at slot index >= its loop_from under the new epoch; recovered. |
 | Churn | Ground "assign" events: number of agents in "changed" that are still live, per live agent-minute. Assignments before t = 0 (the initial plan and any warm-up re-plan) are excluded. Counted over [0, L) and [L, end], or [0, end] without a loss. |
 | Extra changes | Changes in [L, end] minus those of the first "lost" re-plan. Expected 0. |

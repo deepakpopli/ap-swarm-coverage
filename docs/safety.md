@@ -103,11 +103,15 @@ left side to left side instead of mirroring each other.
   so the agent keeps flying its path up there. Return to cruise when every neighbour that is not
   separated from the path down (or up) to cruise has been >= 5 m outside its disc for 1 s.
   Going from cruise to hold never needs a check: a cruising agent already treats everyone.
-- **Blocked**: coverage asks for >= 1 m/s but for 3 s the filter lets through < 0.5 m/s in that
-  direction (stopped, braking, or sliding sideways), averaged over about 1 s: between two discs
-  the output can chatter from tick to tick, and a single tick with progress must not restart the
-  timer. The agent goes to hold and flies on there; it returns to cruise only after a fresh 1 s
-  clear (without that, a stale "clear" sent it back at once and it flapped every tick).
+- **Blocked**: the coverage controller reports "stuck" when its active slot is more than
+  SLOT_REACH_M away but the vehicle's real distance to it has not shrunk by 2 m for 3 s
+  (`coverage.NoProgress`). The agent then goes to its hold altitude and flies on there; it
+  returns to cruise only after a fresh 1 s clear. Real distance, not the command: the earlier test
+  measured the commanded velocity along the nominal direction, and a filter that only cut the
+  closing part let 1-4 m/s of "progress" through while the vehicle slid sideways, so it never
+  fired in three real stand-offs. Passing at the hold altitude only helps against neighbours
+  it is vertically separated from (see Altitudes); otherwise the 15 s slot timer reports the
+  slot.
 - **Deaf**: no message from anyone for DEAF_STOP_S = 3 s: zero horizontal velocity, go to the hold
   altitude. When messages return the agent is in hold and uses the normal return rule.
 - **Before take-off**: `clear_for_takeoff` requires every known neighbour >= 9 m away
