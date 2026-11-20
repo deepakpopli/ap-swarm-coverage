@@ -94,6 +94,16 @@ def test_start_when_all_ready_and_on_station(tmp_path):
     assert len(sim.events("ready")) == 3
 
 
+def test_spare_agent_does_not_delay_the_start(tmp_path):
+    """N = 5 at 50 m: agent 3 gets no slots, so it never reaches a loop slot."""
+    sim = Sim(tmp_path, n=5)
+    sim.agents[3].on_loop = False
+    sim.run(1.0)
+    assert sim.ground.assignments[3].slots == []
+    [start] = sim.events("start")
+    assert start["late"] == []
+
+
 def test_ready_deadline_then_late_agent_joins(tmp_path):
     sim = Sim(tmp_path)
     sim.agents[3].status = "takeoff"
@@ -208,7 +218,7 @@ def test_last_t0_reads_the_old_log(tmp_path):
     assert ground.last_t0(str(tmp_path / "missing.jsonl")) is None
 
 
-def test_swap_hook_reverses_the_strips_once(tmp_path):
+def test_swap_hook_reverses_the_groups_once(tmp_path):
     sim = Sim(tmp_path)
     sim.ground.swap_at = 5.0 - config.COVERAGE_WINDOW_S   # 5 s after START
     sim.run(2.0)

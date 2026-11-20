@@ -46,52 +46,21 @@ def test_determinism():
     assert a == b and list(a) == list(b)
 
 
-@pytest.mark.parametrize("n", [1, 2, 3, 4, 5, 6])
-def test_strips_tile_area(n):
-    assert_tiles_area([asg.share for asg in allocate(range(1, n + 1), starts(n), set()).values()])
-
-
-def test_strips_handed_out_west_to_east():
-    positions = {1: (280.0, 0.0), 2: (10.0, 0.0), 3: (150.0, 50.0), 4: (150.0, 0.0)}
-    result = allocate([1, 2, 3, 4], positions, set())
-    assert sorted(result, key=lambda a: result[a].share[0]) == [2, 3, 4, 1]   # tie: by id
-
-
-@pytest.mark.parametrize("n", [1, 2, 3, 4, 5])
-@pytest.mark.parametrize("where", ["start", "far corner"])
-def test_spacing_bound_and_loop_closure(n, where):
-    positions = starts(n) if where == "start" else {a: (299.0, 299.0) for a in range(1, n + 1)}
-    for a, asg in allocate(range(1, n + 1), positions, set()).items():
-        for p, q in legs(asg, positions[a]):            # includes the closing leg of the loop
-            assert math.dist(p, q) <= config.SLOT_SPACING_M
-        share = asg.share
-        for x, y in asg.slots[asg.loop_from:]:
-            assert share[0] <= x <= share[1] and share[2] <= y <= share[3]
-
-
 @pytest.mark.parametrize("alt_m, lanes, y_ends", [
-    (50, [125.0, 175.0], (19.0, 281.0)),     # 85 m swath: a 100 m strip needs 2 lanes
-    (60, [150.0], (23.5, 276.5)),            # 102 m swath: 1 lane
+    (50, [37.5, 112.5, 187.5, 262.5], (19.0, 281.0)),   # 85 m swath: 4 lanes
+    (60, [50.0, 150.0, 250.0], (23.5, 276.5)),          # 102 m swath: 3 lanes
 ])
 def test_lanes_from_swath(at_alt, alt_m, lanes, y_ends):
     at_alt(alt_m)
+    assert allocator.area_lanes() == lanes
     asg = allocate([1, 2, 3], starts(3), set())[2]
     loop = asg.slots[asg.loop_from:]
-    assert sorted({x for x, _ in loop}) == lanes
     assert (min(y for _, y in loop), max(y for _, y in loop)) == y_ends
 
 
-def test_three_to_two():
-    result = allocate([1, 3], starts(3), set())
-    assert result[1].share == [0.0, 150.0, 0.0, 300.0]
-    assert result[3].share == [150.0, 300.0, 0.0, 300.0]
-
-
-@pytest.mark.parametrize("n, width_m", [(4, 75.0), (5, 60.0)])
-def test_four_and_five_agents_fly_one_lane_out_and_back(at_alt, n, width_m):
+def test_four_agents_fly_one_lane_out_and_back(at_alt):
     at_alt(50)
-    for asg in allocate(range(1, n + 1), starts(n), set()).values():
-        assert asg.share[1] - asg.share[0] == pytest.approx(width_m)
+    for asg in allocate(range(1, 5), starts(4), set()).values():
         loop = asg.slots[asg.loop_from:]
         assert len({x for x, _ in loop}) == 1
         assert len({tuple(p) for p in loop}) < len(loop)   # the way back repeats the points
@@ -108,11 +77,11 @@ def test_previous_plan_kept_for_unaffected_agents():
 
 def test_previous_not_kept_when_share_changes():
     base = allocate([1, 2, 3], starts(3), set())
-    result = allocate([1, 3], starts(3), set(), previous=base)
-    assert result[1] is not base[1] and result[3] is not base[3]
+    result = allocate([1, 2], starts(3), set(), previous=base)
+    assert result[1] is not base[1] and result[2] is not base[2]
 
 
-@pytest.mark.parametrize("zone", [None, CORNER_ZONE])
+@pytest.mark.parametrize("zone", [None, MIDDLE_ZONE, CORNER_ZONE])
 def test_blacklisted_pair_never_issued(zone):
     positions = starts(3)
     base = allocate([1, 2, 3], positions, set(), priority_zone=zone)
@@ -127,11 +96,11 @@ def test_blacklisted_pair_never_issued(zone):
                 assert result[other] == base[other]
 
 
-def test_whole_plan_blacklisted_means_hold():
+def test_whole_zone_lane_blacklisted_means_hold():
     positions = starts(3)
-    base = allocate([1, 2, 3], positions, set())
+    base = allocate([1, 2, 3], positions, set(), priority_zone=MIDDLE_ZONE)
     blacklist = {(2, slot_key(p)) for p in base[2].slots}
-    asg = allocate([1, 2, 3], positions, blacklist)[2]
+    asg = allocate([1, 2, 3], positions, blacklist, priority_zone=MIDDLE_ZONE)[2]
     assert asg.slots == [list(positions[2])] and asg.loop_from == 0
 
 
@@ -152,37 +121,31 @@ def lane_of(asg):
     return xs.pop(), min(y for _, y in loop), max(y for _, y in loop)
 
 
-@pytest.mark.parametrize("zone, zone_agent, uncovered", [
-    (MIDDLE_ZONE, 2, [[107.5, 192.5, 0.0, 4.5], [107.5, 192.5, 295.5, 300.0]]),
-    (CORNER_ZONE, 1, [[0.0, 85.0, 175.5, 300.0]]),
-])
-def test_priority_zone(at_alt, zone, zone_agent, uncovered):
+@pytest.mark.parametrize("zone, owner, lane_x", [(MIDDLE_ZONE, 2, 150.0),
+                                                   (CORNER_ZONE, 1, 18.75)])
+def test_priority_zone(at_alt, zone, owner, lane_x):
+    """The owner's lane covers the zone within 30 s, half way between two area lanes; the
+    others fly the whole area's lanes in groups, as if they were the whole fleet."""
     at_alt(50)
     result = allocate([1, 2, 3], starts(3), set(), priority_zone=zone)
-    assert_tiles_area([asg.share for asg in result.values()])
-    asg = result[zone_agent]
-    lane_x, y_south, y_north = lane_of(asg)
+    asg = result[owner]
+    x, y_south, y_north = lane_of(asg)
     half_swath, half_along = allocator.SWATH_M / 2, allocator.ALONG_M / 2
-    assert lane_x - half_swath <= zone[0] and zone[2] <= lane_x + half_swath
+    assert x == lane_x
+    assert x - half_swath <= zone[0] and zone[2] <= x + half_swath
     assert y_south - half_along <= zone[1] and zone[3] <= y_north + half_along
     for y in range(int(zone[1]), int(zone[3]) + 1):
         assert revisit_s(asg, y) <= config.PRIORITY_REVISIT_S
-    assert asg.uncovered == uncovered
-    for a in {1, 2, 3} - {zone_agent}:
-        assert result[a].uncovered == []
+    others = allocate([a for a in (1, 2, 3) if a != owner], starts(3), set())
+    for a in others:
+        assert result[a].share == others[a].share
 
 
-def test_priority_zone_sides():
-    middle = allocate([1, 2, 3], starts(3), set(), priority_zone=MIDDLE_ZONE)
-    assert middle[1].share[1] == middle[2].share[0] and middle[2].share[1] == middle[3].share[0]
-    corner = allocate([1, 2, 3], starts(3), set(), priority_zone=CORNER_ZONE)
-    assert corner[1].share[0] == 0.0 and corner[2].share[0] == corner[1].share[1]
-
-
-def test_priority_zone_survives_agent_loss():
+def test_zone_owner_kept_and_replaced_on_loss():
     before = allocate([1, 2, 3], starts(3), set(), priority_zone=MIDDLE_ZONE)
     after = allocate([2, 3], starts(3), set(), previous=before, priority_zone=MIDDLE_ZONE)
-    assert lane_of(after[2]) == lane_of(before[2])       # the zone agent keeps its lane
-    assert_tiles_area([asg.share for asg in after.values()])
-    assert after[3].share == [192.5, 300.0, 0.0, 300.0]
-    assert after[2].uncovered[0] == [0.0, 107.5, 0.0, 300.0]  # one agent cannot fly both sides
+    assert after[2] is before[2]                        # the owner keeps its lane
+    assert len(after[3].slots) > len(before[3].slots)   # the other flies all four lanes
+    near_zone = {1: (150.0, 100.0), 3: (250.0, 0.0)}
+    lost = allocate([1, 3], near_zone, set(), previous=before, priority_zone=MIDDLE_ZONE)
+    assert lane_of(lost[1]) == lane_of(before[2])       # the nearest survivor takes the zone
