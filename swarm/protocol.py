@@ -17,7 +17,8 @@ Messages
                 reported infeasible slot), "failsafe"
                 (the autopilot left GUIDED mode; the agent no longer controls the vehicle).
     START       ground -> all, repeated: {"t0": wall time of mission t = 0}
-    ASSIGN      ground -> one agent, repeated at ASSIGN_HZ:
+    ASSIGN      ground -> one agent, repeated at ASSIGN_HZ (also to a lost agent, with no
+                slots: it holds; see Ground.send_due):
                 {"epoch": int,            # increases on every re-plan
                  "share": [xmin, xmax, ymin, ymax],
                  "slots": [[x, y], ...],  # ordered goal slots

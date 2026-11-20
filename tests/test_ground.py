@@ -138,6 +138,18 @@ def test_lost_then_replan(tmp_path):
     assert replan["trigger"] == "lost" and sorted(replan["assignments"]) == ["1", "3"]
 
 
+def test_lost_agent_is_told_it_has_no_plan(tmp_path):
+    """A lost agent that still hears (dead transmitter) must stop flying its old lanes."""
+    sim = Sim(tmp_path)
+    sim.run(2.0)
+    sim.agents[2].talking = False
+    sim.run(config.LOST_S + 1.0)
+    sim.ground.step(sim.now + 1.0)
+    assigns = {dst: body for dst, mtype, body in sim.link.sent if mtype == "ASSIGN"}
+    assert assigns[2]["slots"] == [] and assigns[2]["epoch"] == sim.ground.epoch
+    assert assigns[1]["slots"] and assigns[3]["slots"]
+
+
 def test_rejoin_needs_steady_contact(tmp_path):
     sim = Sim(tmp_path)
     sim.run(2.0)

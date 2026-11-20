@@ -40,6 +40,7 @@ REJOIN_S = 3.0                 # a lost agent must be heard steadily this long t
 RESTART_LISTEN_S = 3.0         # a restarted ground listens this long before planning
 EPOCH_STRIDE = 1000            # a restarted ground jumps this far above any epoch it hears
 FLYING = ("ready", "cover", "hold")
+NO_PLAN = {"share": [], "slots": [], "loop_from": 0}   # ASSIGN body for an agent not in the plan
 LOOP_S = 0.02
 
 
@@ -302,10 +303,14 @@ class Ground:
         self.next_assign = 0.0           # send the new plan now
 
     def send_due(self, now):
-        """ASSIGN at ASSIGN_HZ, START once a second: repeated because the radio is lossy."""
+        """ASSIGN at ASSIGN_HZ, START once a second: repeated because the radio is lossy.
+        An agent outside the plan (lost) gets an empty ASSIGN: if it can still hear (a dead
+        transmitter, scenario "mute") it must stop flying lanes that are now someone else's,
+        since the others forget it after LOST_S; with no slots it holds at its hold altitude."""
         if now >= self.next_assign:
-            for a in sorted(self.assignments):
-                self.link.send(a, "ASSIGN", epoch=self.epoch, **self.assignments[a].to_dict())
+            for a in sorted(self.agents):
+                body = self.assignments[a].to_dict() if a in self.assignments else NO_PLAN
+                self.link.send(a, "ASSIGN", epoch=self.epoch, **body)
             self.next_assign = now + 1.0 / config.ASSIGN_HZ
         if self.t0 is not None and now >= self.next_start:
             self.link.send("all", "START", t0=self.t0)

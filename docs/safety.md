@@ -134,9 +134,14 @@ stops it. The filter never reports infeasibility itself: if it keeps us from a s
 
 ## Residual risks
 
-- **One-way radio failure**: a neighbour that still hears others but whose transmitter is dead
-  never goes deaf and keeps flying; its disc grows to 80.73 m, then it is forgotten after
-  LOST_S = 12 s and becomes invisible.
+- **One-way radio failure**: a neighbour whose transmitter is dead but which still hears others
+  never goes deaf. Its disc grows to 88.49 m, then it is forgotten after LOST_S = 12 s and becomes
+  invisible. The ground declares it lost at the same time and re-plans its lanes to others. In
+  the first "mute" run it kept flying its old lane; the agent that took the lane flew head-on into
+  it and the muted agent's filter alone could not keep 8 m (7.52 m, 0.45 s below 8 m). Since then
+  the ground sends every lost agent an empty assignment, so a muted agent that still hears stops
+  and holds at its hold altitude. It is still invisible to the others, and during the climb (the
+  ASSIGN repeats at 1 Hz over a lossy radio) only its own filter protects it.
 - **Forgotten neighbours**: after LOST_S nothing is known. A silent agent hovering at its hold
   altitude is safe from cruisers and holders, but an agent returning from a higher hold altitude
   to cruise passes through the hold altitudes in between (e.g. id 3: 70 -> 50 passes 60).
