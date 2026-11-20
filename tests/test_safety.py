@@ -7,7 +7,6 @@ import pytest
 from fakes import FakeRadio, SimClock
 from sim.fake_vehicle import FakeVehicle
 from swarm import config
-from swarm.coverage import NoProgress
 from swarm.safety import Neighbour, SafetyFilter, SafetyParams, clear_for_takeoff
 
 CRUISE = config.ALT_CRUISE_M
@@ -27,14 +26,12 @@ class Flyer:
         self.hold = hold
         self.link = radio.link(aid)
         self.waypoints = list(waypoints)
-        self.progress = NoProgress()   # as CoverageController does for its active slot
         self.log = []          # (t, pos, holding, flags) per tick
 
     def nominal(self):
         x, y, _ = self.vehicle.pos
         if len(self.waypoints) > 1 and math.dist((x, y), self.waypoints[0]) < 5.0:
             self.waypoints.pop(0)
-            self.progress.reset()
         gx, gy = self.waypoints[0]
         d = math.hypot(gx - x, gy - y)
         if d < 0.5:
@@ -52,9 +49,7 @@ class Flyer:
         if send_state:
             self.link.send("all", "STATE", pos=list(v.pos), vel=list(v.vel), t_pos=now,
                            status="cover")
-        far = math.dist(v.pos[:2], self.waypoints[0]) > config.SLOT_REACH_M
-        stuck = far and self.progress.update(now, math.dist(v.pos[:2], self.waypoints[0]))
-        cmd = self.filter.step(now, tuple(v.pos), tuple(v.vel), self.nominal(), self.hold, stuck)
+        cmd = self.filter.step(now, tuple(v.pos), tuple(v.vel), self.nominal(), self.hold)
         v.send_setpoint(cmd.vx, cmd.vy, cmd.z)
         self.log.append((now, tuple(v.pos), cmd.holding, cmd.flags))
         return cmd
@@ -229,28 +224,3 @@ def test_cruiser_passes_under_a_forgotten_deaf_agent(seed):
     assert d_min >= config.D_MIN_M
     assert closest_xy < 2.0                                # it really flew through x, y
     assert cruiser.at_goal()
-
-
-@pytest.mark.parametrize("seed", SEEDS)
-def test_blocked_agent_passes_at_hold_altitude_and_returns(seed):
-    """Agent 1 must pass between two hovering agents 18 m apart: blocked, over them, back down."""
-    flyers, d_min = fly([(1, (-150.0, 0.0, CRUISE), [(0.0, 0.0), (150.0, 0.0)]),
-                         (2, (0.0, 9.0, CRUISE), [(0.0, 9.0)]),
-                         (4, (0.0, -9.0, CRUISE), [(0.0, -9.0)])], 100.0, seed)
-    log = flyers[0].log
-    assert d_min >= config.D_MIN_M
-    assert any("blocked" in flags for _, _, _, flags in log)
-    assert max(pos[2] for _, pos, _, _ in log) > config.hold_alt(1) - 1.0
-    assert flyers[0].at_goal()
-    assert not log[-1][2] and abs(log[-1][1][2] - CRUISE) < 1.0   # back at cruise
-
-
-def test_stuck_sends_a_cruiser_to_its_hold_altitude_once():
-    f = SafetyFilter(1)
-    f.holding = False
-    f.heard(0.0)
-    cmd = f.step(0.0, (0.0, 0.0, CRUISE), (0.0, 0.0, 0.0), (5.0, 0.0), False, True)
-    assert cmd.holding and cmd.z == config.hold_alt(1) and "blocked" in cmd.flags
-    assert cmd.events == [{"event": "blocked"}]
-    cmd = f.step(0.05, (0.0, 0.0, CRUISE), (0.0, 0.0, 0.0), (5.0, 0.0), False, True)
-    assert cmd.events == [] and "blocked" in cmd.flags

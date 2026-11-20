@@ -239,7 +239,7 @@ class SafetyTest(unittest.TestCase):
         log = agent_log(track(0.0, 10.0, 0.0, 0.0), flags="filtered|deaf")
         rows = np.ones(len(log["t"]), dtype=bool)
         self.assertAlmostEqual(metrics.flag_seconds(log, rows, "deaf"), 9.95)
-        self.assertEqual(metrics.flag_seconds(log, rows, "blocked"), 0.0)
+        self.assertEqual(metrics.flag_seconds(log, rows, "brake"), 0.0)
 
 
 class MissionTest(unittest.TestCase):

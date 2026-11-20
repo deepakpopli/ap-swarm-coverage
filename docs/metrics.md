@@ -46,7 +46,7 @@ there). Only its end must lie in the phase.
 | Extra changes | Changes in [L, end] minus those of the first "lost" re-plan. Expected 0. |
 | Epoch cross-check | Per agent: epoch changes in its own log vs ground re-plans while it was live. A mismatch is listed. Two re-plans within one lost resend would also cause one. |
 | Separation | Minimum true 3D distance between live agents, with positions interpolated on a 20 Hz grid. Reported over the whole log (this includes the 10 m start line and the warm-up) and from t = 10 s. Also: seconds below 8 m, over the whole log. |
-| Flag times | Per agent, seconds with "blocked", "brake" or "deaf" in [0, end]. A flagged row counts until the next row. |
+| Flag times | Per agent, seconds with "brake" or "deaf" in [0, end]. A flagged row counts until the next row. |
 | Infeasible | Number of ground "infeasible" events, accepted and ignored. |
 | Control | From t_wall spacing of log rows (one row per setpoint): slowest agent's mean rate, worst p99 and max period, max ground speed. |
 | Radio | The radio's totals. Loss rate = dropped_loss / (sent - dropped_window). |

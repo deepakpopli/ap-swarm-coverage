@@ -39,7 +39,7 @@ def hold_alt(agent_id):
     """Private hold altitude of an agent: cruise +10, -10, +20, -20, ... m for ids 1, 2, 3, 4, ...
 
     No hold altitude equals the cruise altitude, and no two agents share one. An agent that
-    holds (deaf, blocked, before the mission starts) is therefore vertically separated from
+    holds (deaf, nothing to fly, before the mission starts) is therefore vertically separated from
     every cruising agent and from every other holding agent.
     """
     step = (agent_id + 1) // 2

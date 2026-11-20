@@ -305,7 +305,7 @@ def safety_block(run):
     for agent_id, log in run.agents.items():
         rows = mission_rows(run, agent_id)
         per_agent[str(agent_id)] = {flag + "_s": flag_seconds(log, rows, flag)
-                                    for flag in ("blocked", "brake", "deaf")}
+                                    for flag in ("brake", "deaf")}
     infeasible = run.events("infeasible")
     accepted = sum(1 for e in infeasible if e["accepted"])
     out = {"min_separation_m": float(np.nanmin(closest)),
@@ -314,7 +314,7 @@ def safety_block(run):
            "infeasible_accepted": accepted,
            "infeasible_ignored": len(infeasible) - accepted,
            "per_agent": per_agent}
-    for flag in ("blocked", "brake", "deaf"):
+    for flag in ("brake", "deaf"):
         out[flag + "_s"] = sum(agent[flag + "_s"] for agent in per_agent.values())
     return out
 

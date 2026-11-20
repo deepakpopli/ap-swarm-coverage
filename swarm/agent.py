@@ -9,7 +9,7 @@ Status, broadcast in STATE:
   ready     at the hold altitude, no assignment yet
   cover     flying the assignment, from the first ASSIGN on (START only sets t0 for the logs;
             t_mission is logged from then on, negative during the warm-up)
-  hold      the filter keeps us at the hold altitude (deaf, blocked, or nothing to fly)
+  hold      the filter keeps us at the hold altitude (deaf, or nothing to fly)
   failsafe  the autopilot left GUIDED for > GUIDED_LOST_S: no more setpoints, STATE goes on
 If the own autopilot link dies the agent sends nothing more and exits after LINK_DEAD_S, so
 neighbours never get a stale position with a fresh time stamp.
@@ -187,8 +187,7 @@ class Agent:
     def _control(self, now: float, st):
         """Coverage -> safety filter -> setpoint. Returns (nominal, safe command) for the log."""
         nominal = self.coverage.step(now, st.pos, self.safety.is_deaf(now))
-        cmd = self.safety.step(now, st.pos, st.vel, (nominal.vx, nominal.vy), nominal.idle,
-                               nominal.stuck)
+        cmd = self.safety.step(now, st.pos, st.vel, (nominal.vx, nominal.vy), nominal.idle)
         self.vehicle.send_setpoint(cmd.vx, cmd.vy, cmd.z)
         for event in nominal.events + cmd.events:
             self.events.write(now, **event)

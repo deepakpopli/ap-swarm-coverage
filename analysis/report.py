@@ -75,7 +75,6 @@ METRICS = [   # (key = path in metrics.json, label, unit, digits)
     ("safety.min_separation_m", "Min 3D separation, whole flight", "m", 1),
     ("safety.min_separation_from_10s_m", "Min 3D separation, from t = 10 s", "m", 1),
     ("safety.below_d_min_s", "Time below 8 m", "s", 1),
-    ("safety.blocked_s", "Time blocked, all agents", "s", 1),
     ("safety.brake_s", "Time braking, all agents", "s", 1),
     ("safety.deaf_s", "Time deaf, all agents", "s", 1),
     ("safety.infeasible_accepted", "Infeasible reports accepted", "count", 0),

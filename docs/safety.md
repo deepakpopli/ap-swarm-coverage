@@ -97,22 +97,22 @@ Head-on (less than 1 m/s of tangential speed left after the cut), the removed sp
 the agent's right of the line to the neighbour. Both agents of a head-on pair step right and pass
 left side to left side instead of mirroring each other.
 
-## Hold, blocked, deaf
+## Hold, deaf
 
-- **Hold**: z target = own hold altitude; the horizontal command still goes through the filter,
-  so the agent keeps flying its path up there. Return to cruise when every neighbour that is not
+- **Hold**: z target = own hold altitude (before the mission, with nothing to fly, after a
+  reported infeasible slot, or deaf); the horizontal command still goes through the filter. Return to cruise when every neighbour that is not
   separated from the path down (or up) to cruise has been >= 5 m outside its disc for 1 s.
   Going from cruise to hold never needs a check: a cruising agent already treats everyone.
-- **Blocked**: the coverage controller reports "stuck" when its active slot is more than
-  SLOT_REACH_M away but the vehicle's real distance to it has not shrunk by 2 m for 3 s
-  (`coverage.NoProgress`), not counting time the distance grows by more than 1 m/s: braking
-  out of a lane-end reversal takes about 6 s and must not count. The agent then goes to its hold altitude and flies on there; it
-  returns to cruise only after a fresh 1 s clear. Real distance, not the command: the earlier test
-  measured the commanded velocity along the nominal direction, and a filter that only cut the
-  closing part let 1-4 m/s of "progress" through while the vehicle slid sideways, so it never
-  fired in three real stand-offs. Passing at the hold altitude only helps against neighbours
-  it is vertically separated from (see Altitudes); otherwise the 15 s slot timer reports the
-  slot.
+- **No "blocked" state.** A stand-off (two agents, or an agent and an obstacle, holding each other
+  off) is reported by the coverage controller's 15 s slot timer, and the allocator re-plans. A
+  "blocked" response (go to the hold altitude and pass) was tried twice and removed. The first
+  test measured commanded progress and never fired in three real stand-offs (the filter let 1-4
+  m/s of sideways slide through as "progress"). The second measured the real distance to the
+  slot (no 2 m closer in 3 s, braking out of a reversal excluded). On Gazebo it fired 11.7 s into
+  the slot at an obstacle of unknown height (the hold altitude cannot pass that) and 8.3 s in at a
+  dead agent's growing disc, where the descent to the hold altitude (about 1.3 m/s) had not ended
+  when the disc was forgotten (LOST_S). It never ended a stand-off before the slot timer or
+  LOST_S did.
 - **Deaf**: no message from anyone for DEAF_STOP_S = 3 s: zero horizontal velocity, go to the hold
   altitude. When messages return the agent is in hold and uses the normal return rule.
 - **Before take-off**: `clear_for_takeoff` requires every known neighbour >= 9 m away

@@ -38,7 +38,7 @@ EXPECTED = {
     "obstacle": "an unknown obstacle on a loop slot: one INFEASIBLE accepted after 15 s, one "
                 "re-plan of that agent only, no re-issue within the 60 s blacklist",
     "swap": "groups handed out in reverse at 30 s: agents cross; >= 8 m always; a stand-off "
-            "is resolved by the blocked path (hold altitude) or the 15 s slot timer",
+            "is reported by the 15 s slot timer",
     "A_n5": "N = 5: four agents on one lane each, the spare holds at its hold altitude and "
             "takes the lane of the lost agent",
     "A_n4": "N = 4: one lane each; after the loss 1+1+2",
@@ -61,7 +61,7 @@ def measured(m, meta):
              f"rate {fmt(m['control']['min_rate_hz'])} Hz",
              f"re-plans: {replans or 'none'}; infeasible {safety['infeasible_accepted']} "
              f"accepted / {safety['infeasible_ignored']} ignored",
-             f"blocked {fmt(safety['blocked_s'])} s, brake {fmt(safety['brake_s'])} s, "
+             f"brake {fmt(safety['brake_s'])} s, "
              f"deaf {fmt(safety['deaf_s'])} s",
              f"coverage mean {fmt(m['coverage']['mean_pct'])} %, longest unseen "
              f"{fmt(m['unseen']['whole']['worst_s'])} s"]

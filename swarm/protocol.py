@@ -13,7 +13,7 @@ Messages
                 {"pos": [x, y, z], "vel": [vx, vy, vz],
                  "t_pos": wall time the position was sampled,
                  "epoch": int, "slot": int, "status": str}
-                status: "takeoff", "ready", "cover", "hold" (deaf, blocked, or holding after a
+                status: "takeoff", "ready", "cover", "hold" (deaf, or holding after a
                 reported infeasible slot), "failsafe"
                 (the autopilot left GUIDED mode; the agent no longer controls the vehicle).
     START       ground -> all, repeated: {"t0": wall time of mission t = 0}
@@ -41,7 +41,7 @@ AGENT_CSV_COLUMNS = [
     "nom_vx", "nom_vy",               # what the coverage controller asked for
     "cmd_vx", "cmd_vy", "cmd_z",      # what the safety filter let through
     "nbr_dist", "nbr_age",            # nearest neighbour as believed from its last message
-    "flags",                          # "|"-joined: filtered, brake, blocked, deaf
+    "flags",                          # "|"-joined: filtered, brake, deaf
 ]
 
 

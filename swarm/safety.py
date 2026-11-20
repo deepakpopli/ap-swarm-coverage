@@ -6,9 +6,9 @@ received from each neighbour. Per neighbour, either
   - we stay out of its keep-out disc, which grows with the age of its last position sample, and
     we close on that disc no faster than we can still stop (else: full brake).
 Modes: cruise (at ALT_CRUISE_M), hold (at the agent's private hold altitude: before the
-mission, when coverage has nothing to fly, or blocked = coverage reports no real progress to
-its slot; it keeps flying its path up there and returns to cruise when clear), deaf (heard
-nobody for DEAF_STOP_S: stop, go to hold).
+mission, or when coverage has nothing to fly; it returns to cruise when clear), deaf (heard
+nobody for DEAF_STOP_S: stop, go to hold). A stand-off is not detected here: coverage's 15 s
+slot timer reports it upward.
 Every agent applies the same rules; responsibility for each pair is shared half and half.
 
 The derivation of every number, the tie-break and the residual risks: docs/safety.md.
@@ -102,7 +102,7 @@ class SafeCommand:
     vy: float
     z: float
     holding: bool
-    flags: List[str] = field(default_factory=list)   # filtered, brake, blocked, deaf
+    flags: List[str] = field(default_factory=list)   # filtered, brake, deaf
     events: List[dict] = field(default_factory=list)
     nbr_dist: Optional[float] = None   # 3D distance to the nearest neighbour as last reported
     nbr_age: Optional[float] = None
@@ -163,9 +163,8 @@ class SafetyFilter:
 
     # ---- one control tick -------------------------------------------------------------------
     def step(self, now: float, pos, vel, v_nom: Tuple[float, float],
-             want_hold: bool, stuck: bool = False) -> SafeCommand:
-        """pos, vel: own state from the autopilot. v_nom: what coverage asks for (m/s).
-        stuck: coverage made no real progress to its slot lately; go to hold to pass."""
+             want_hold: bool) -> SafeCommand:
+        """pos, vel: own state from the autopilot. v_nom: what coverage asks for (m/s)."""
         if self.obstacle is not None:
             self.obstacle.t_pos = now
             self.nbrs[OBSTACLE_ID] = self.obstacle
@@ -186,12 +185,6 @@ class SafetyFilter:
         if self._must_brake(vel, discs):
             vx, vy = 0.0, 0.0
             flags.append("brake")
-        if stuck:
-            flags.append("blocked")
-            if not self.holding:
-                self.holding = True
-                self.clear_since = None          # back to cruise only after clear_s anew
-                events.append({"event": "blocked"})
         return self._output(vx, vy, flags, events, now, pos)
 
     def _update_deaf(self, now: float, events: List[dict]) -> bool:
