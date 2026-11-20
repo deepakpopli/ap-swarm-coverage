@@ -174,6 +174,8 @@ class MavVehicle:
         self.last_rx_s = time.time()
         kind = msg.get_type()
         if kind == "GLOBAL_POSITION_INT":
+            if msg.lat == 0 and msg.lon == 0:   # no position yet (SITL before its GPS fix):
+                return                          # it would be 13 500 km away, the same for all
             x, y = config.lla_to_enu(msg.lat * 1e-7, msg.lon * 1e-7)
             self.pos = (x, y, msg.relative_alt * 1e-3)
             self.vel = (msg.vy * 0.01, msg.vx * 0.01, -msg.vz * 0.01)   # NED cm/s -> ENU m/s
