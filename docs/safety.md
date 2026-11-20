@@ -141,8 +141,8 @@ stops it. The filter never reports infeasibility itself: if it keeps us from a s
   it and the muted agent's filter alone could not keep 8 m (7.52 m, 0.45 s below 8 m). Since then
   the ground sends every lost agent an empty assignment, so a muted agent that still hears stops
   and holds at its hold altitude. It is still invisible to the others, and during the climb (the
-  ASSIGN repeats at 1 Hz over a lossy radio) only its own filter protects it. Re-flown: it held at
-  60 m from 0.4 s after being dropped, and the agent that took its lane passed straight under it
+  ASSIGN repeats at 1 Hz over a lossy radio) only its own filter protects it. Re-flown: it was in hold
+  within 1 s of being dropped and climbed to 60 m, and the agent that took its lane passed straight under it
   at 50 m: 10.0 m apart, separated by altitude only.
 - **Forgotten neighbours**: after LOST_S nothing is known. A silent agent hovering at its hold
   altitude is safe from cruisers and holders, but an agent returning from a higher hold altitude
