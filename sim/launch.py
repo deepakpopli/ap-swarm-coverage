@@ -147,15 +147,21 @@ class Fleet:
         return True
 
     def real_time_factor(self) -> Optional[float]:
-        """Gazebo's current real-time factor (takes ~1 s); None for sitl."""
+        """Gazebo's current real-time factor (takes ~1 s); None for sitl or if gz did not
+        answer (it timed out twice in 34 runs; a probe must not end the run)."""
         if self.backend == "sitl":
             return None
-        stats = self._gz(["topic", "-e", "-n", "1", "-t", "/world/swarm/stats"])
-        return float(re.search(r"real_time_factor: ([\d.e-]+)", stats).group(1))
+        found = re.search(r"real_time_factor: ([\d.e-]+)",
+                          self._gz(["topic", "-e", "-n", "1", "-t", "/world/swarm/stats"]))
+        return float(found.group(1)) if found else None
 
     def _gz(self, args: list) -> str:
-        result = subprocess.run(["gz"] + args, env=self.env, capture_output=True, text=True,
-                                timeout=10)
+        """stdout of a gz command, '' if it does not answer within 10 s."""
+        try:
+            result = subprocess.run(["gz"] + args, env=self.env, capture_output=True,
+                                    text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            return ""
         return result.stdout
 
     def stop(self) -> None:
