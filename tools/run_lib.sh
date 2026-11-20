@@ -38,7 +38,7 @@ run_one() {   # $1 = runs directory, $2 = run name, then run_mission.py options
   local runs=$1 name=$2 dir="$1/$2" attempt failed=()
   shift 2
   if is_done "$dir" && [ "$FORCE" != 1 ]; then
-    failed=("$runs"/failed/"$name"_*_attempt*)
+    failed=("$runs"/failed/"$name"_[0-9]*_attempt*)
     [ -e "${failed[0]}" ] || failed=()
     SUMMARY+=("$name: done before, skipped (${#failed[@]} failed attempts in $runs/failed/)")
     return
