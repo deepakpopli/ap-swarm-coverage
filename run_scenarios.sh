@@ -21,13 +21,16 @@ RUNS=runs/scenarios
 RESULTS=results/scenarios
 CORNER=0,0,60,60
 
+for scenario in swap obstacle; do
+  run_one $RUNS $scenario --mission A --scenario $scenario --n 3 --seed 1
+done
 run_one $RUNS B_middle --mission B --n 3 --seed 1
 run_one $RUNS B_middle_owner --mission B --n 3 --seed 8
 run_one $RUNS B_corner --mission B --n 3 --seed 3 --zone $CORNER
 run_one $RUNS B_corner_owner --mission B --n 3 --seed 1 --zone $CORNER
 for s in 1 2 3; do run_one $RUNS "C_s$s" --mission C --n 3 --seed "$s"; done
 run_one $RUNS blackout13 --mission C --scenario blackout13 --n 3 --seed 1
-for scenario in mute agentdeath groundrestart groundloss radiooutage obstacle swap; do
+for scenario in mute agentdeath groundrestart groundloss radiooutage; do
   run_one $RUNS $scenario --mission A --scenario $scenario --n 3 --seed 1
 done
 run_one $RUNS A_n5 --mission A --n 5 --seed 3
