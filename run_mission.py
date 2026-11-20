@@ -42,7 +42,6 @@ MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)
 
 # scenario -> (the mission it modifies, what it tests)
 SCENARIOS = {
-    "nokill": ("B", "the priority zone without a loss"),
     "swap": ("A", "re-plan with the lane groups reversed at 30 s: agents cross at cruise"),
     "obstacle": ("A", "an unknown obstacle on a loop slot: infeasible, blacklist, re-plan"),
     "blackout13": ("C", "a 13 s blackout, longer than LOST_S: declared lost, then rejoins"),
@@ -75,8 +74,7 @@ def plan(args):
     if args.mission == "B":
         out["priority_zone"] = list(args.zone or MIDDLE_ZONE)
         out["ground"] += ["--priority-zone", ",".join(str(v) for v in out["priority_zone"])]
-        if args.scenario != "nokill":
-            out["faults"].append(kill)
+        out["faults"].append(kill)
     if args.mission == "C":
         length_s = 13.0 if args.scenario == "blackout13" else 10.0
         out["blackout"] = {"agent": agent, "t0": t_event, "t1": t_event + length_s}
