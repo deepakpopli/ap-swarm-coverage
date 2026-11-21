@@ -1,0 +1,55 @@
+# Decisions
+
+What I picked, why, and what it costs me. Newest at the bottom.
+
+## Dead or just silent?
+
+My first idea was a 1 Hz heartbeat with a 3 s timeout. Did the maths and it falls apart.
+
+Loss is 20 % per message and each loss is independent, so k lost in a row is 0.2^k. At 1 Hz a
+3 s timeout trips after 2 or 3 lost heartbeats, that is 4 % or 0.8 % per heartbeat. A 3 minute
+mission has about 180 heartbeats per drone, so a perfectly healthy drone gets called dead
+1 to 7 times per mission. And Mission C is a 10 s blackout, so anything under 10 s kills a
+drone that is only quiet.
+
+The 200 ms delay is not the problem. It shifts every message by the same amount, the gaps stay
+the same.
+
+So: state goes out at 5 Hz and doubles as the heartbeat, with two levels.
+
+- suspect after 2 s (10 losses in a row, about 1 in 10 million): the safety filter stops
+  trusting its position and keeps further away
+- lost after 12 s (about 60 in a row, never happens by chance): the allocator gives its lanes
+  away
+
+The cost is that after a real death the others start on its lanes 12 s late. Over the radio a
+dead drone and a quiet one look exactly the same, so waiting longer than the longest silence
+is the only safe rule if the radio is all you have.
+
+## A second way to tell: look at it
+
+The radio can't tell dead from quiet, a camera can. When a neighbour goes suspect, a drone in
+range turns its gimbal to where the neighbour should be (last position + velocity x age) and
+checks the image with OpenCV. Not there: call it lost early instead of waiting 12 s. There:
+it's only quiet, leave its lanes alone.
+
+It has to come from pixels, not from Gazebo's true positions, otherwise it's just reading the
+other drone's state a different way. Being tried now, numbers to follow.
+
+## mavlink for everything
+
+pymavlink, no ROS. With 20 % loss I want small messages sent often, not big ones sent rarely.
+More messages per second means shorter silences, and a SiK telemetry radio only gives about
+64 kbit/s.
+
+| | JSON (first version) | mavlink 2 |
+|---|---|---|
+| one state message | 185 bytes | 37 bytes (GLOBAL_POSITION_INT) |
+| 3 drones at 5 Hz | about 22 kbit/s | about 4.4 kbit/s |
+
+mavlink doesn't make the radio lose less. It makes each message cheap, so I can afford 5 Hz,
+and every packet has a CRC so a corrupted one is dropped instead of misread.
+
+GLOBAL_POSITION_INT on its own is not enough. No plan epoch, no active slot, no status, and
+its clock is time since boot, which the other drones can't use. So state, assignments,
+infeasible reports and start are a small dialect in `swarm/swarm.xml`, generated with mavgen.
