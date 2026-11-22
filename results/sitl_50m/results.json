@@ -1,0 +1,404 @@
+{
+ "name": "sitl_50m",
+ "runs": [
+  "seed_1",
+  "seed_2",
+  "seed_3",
+  "seed_4",
+  "seed_5"
+ ],
+ "summary": {
+  "unseen.whole.worst_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 104.02100014686584,
+   "min": 90.44999980926514,
+   "max": 105.61800003051758
+  },
+  "unseen.before.worst_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 66.20000004768372,
+   "min": 66.20000004768372,
+   "max": 66.29999995231628
+  },
+  "unseen.after.worst_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 104.02100014686584,
+   "min": 90.44999980926514,
+   "max": 105.61800003051758
+  },
+  "unseen.whole.cells_over_60s_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 75.05333333333334,
+   "min": 61.431111111111115,
+   "max": 77.21333333333334
+  },
+  "unseen.whole.cells_over_90s_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 5.1288888888888895,
+   "min": 0.02666666666666667,
+   "max": 32.12
+  },
+  "unseen.after.cells_over_60s_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 74.95111111111112,
+   "min": 61.413333333333334,
+   "max": 77.10666666666667
+  },
+  "unseen.after.cells_over_90s_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 5.1288888888888895,
+   "min": 0.02666666666666667,
+   "max": 32.12
+  },
+  "coverage.mean_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 94.87339472068754,
+   "min": 91.71454880294658,
+   "max": 96.29807243707798
+  },
+  "loss.before_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 97.77525925925924,
+   "min": 97.54496296296296,
+   "max": 97.93103703703704
+  },
+  "loss.before_min_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 96.04444444444444,
+   "min": 95.98666666666666,
+   "max": 96.07111111111111
+  },
+  "loss.after_mean_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 94.2319496855346,
+   "min": 91.30205450733752,
+   "max": 95.8952380952381
+  },
+  "loss.after_min_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 85.66666666666667,
+   "min": 79.19555555555556,
+   "max": 93.16888888888889
+  },
+  "coverage.end_of_run_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 95.75254480286739,
+   "min": 95.22982078853047,
+   "max": 95.8900358422939
+  },
+  "coverage.end_of_run_min_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 93.0311111111111,
+   "min": 92.13777777777777,
+   "max": 93.16888888888889
+  },
+  "loss.share_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 65.18350617283949,
+   "min": 65.02997530864197,
+   "max": 65.28735802469136
+  },
+  "attainable_pct": {
+   "n": 1,
+   "n_none": 0,
+   "median": 95.42877839165132,
+   "min": 95.42877839165132,
+   "max": 95.42877839165132
+  },
+  "baseline_pct": {
+   "n": 1,
+   "n_none": 0,
+   "median": 97.74806629834254,
+   "min": 97.74806629834254,
+   "max": 97.74806629834254
+  },
+  "loss.after_over_share": {
+   "n": 5,
+   "n_none": 0,
+   "median": 1.4456410097927344,
+   "min": 1.400231144761012,
+   "max": 1.4725391221150774
+  },
+  "loss.after_over_attainable": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.9874584090220165,
+   "min": 0.9567559812263631,
+   "max": 1.0048880401850306
+  },
+  "loss.recovery_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 62.91293740272522,
+   "min": 0.0,
+   "max": 77.760573387146
+  },
+  "loss.recovery_to_share_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "loss.vs_baseline.recovery_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 62.91293740272522,
+   "min": 0.0,
+   "max": 77.760573387146
+  },
+  "loss.dip_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 79.19555555555556,
+   "min": 75.52,
+   "max": 92.13777777777777
+  },
+  "loss.dip_after_loss_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 54.91293740272522,
+   "min": 26.264273166656494,
+   "max": 113.80637311935425
+  },
+  "loss.deficit_pct_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 531.2102222222208,
+   "min": 254.06948148148098,
+   "max": 1110.9018518518524
+  },
+  "loss.vs_baseline.deficit_pct_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 528.6860994475134,
+   "min": 269.2530386740327,
+   "max": 1093.5212983425408
+  },
+  "loss.milestones_s.lost_declared": {
+   "n": 5,
+   "n_none": 0,
+   "median": 12.105937402725218,
+   "min": 12.039176635742194,
+   "max": 12.21137311935425
+  },
+  "loss.milestones_s.assignment_received": {
+   "n": 5,
+   "n_none": 0,
+   "median": 12.416457653045654,
+   "min": 12.279650211334229,
+   "max": 14.459416627883911
+  },
+  "loss.milestones_s.on_new_loop": {
+   "n": 5,
+   "n_none": 0,
+   "median": 12.342463731765747,
+   "min": 12.279650211334229,
+   "max": 12.45241665840149
+  },
+  "revisit.before.worst_completed_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 63.65999984741211,
+   "min": 60.60000014305115,
+   "max": 65.34999990463257
+  },
+  "revisit.after.worst_completed_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 66.04999995231628,
+   "min": 65.95000004768372,
+   "max": 66.19900012016296
+  },
+  "revisit.before.worst_open_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 63.78254222869873,
+   "min": 60.847583532333374,
+   "max": 64.41434979438782
+  },
+  "revisit.after.worst_open_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 64.4539566040039,
+   "min": 64.25352644920349,
+   "max": 64.50972032546997
+  },
+  "revisit.before.no_completed_gap_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "revisit.after.no_completed_gap_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "churn.before_per_agent_min": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "churn.after_per_agent_min": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.3287157061473266,
+   "min": 0.2590531003771348,
+   "max": 0.5926852175218477
+  },
+  "churn.whole_per_agent_min": {
+   "n": 0,
+   "n_none": 5
+  },
+  "churn.extra_changes_after_loss": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "safety.min_separation_m": {
+   "n": 5,
+   "n_none": 0,
+   "median": 9.98999999999998,
+   "min": 9.980230302831012,
+   "max": 9.98999999999998
+  },
+  "safety.min_separation_from_10s_m": {
+   "n": 5,
+   "n_none": 0,
+   "median": 74.89172358580655,
+   "min": 74.8682505873617,
+   "max": 75.01006006718107
+  },
+  "safety.below_d_min_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "safety.brake_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 1.9500000476837158
+  },
+  "safety.deaf_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "safety.infeasible_accepted": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "safety.infeasible_ignored": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.0,
+   "min": 0.0,
+   "max": 0.0
+  },
+  "control.min_rate_hz": {
+   "n": 5,
+   "n_none": 0,
+   "median": 19.999999978484503,
+   "min": 19.997024240993515,
+   "max": 20.0
+  },
+  "control.max_p99_period_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.051000118255615234,
+   "min": 0.05099987983703613,
+   "max": 0.05900001525878906
+  },
+  "control.max_period_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.05200004577636719,
+   "min": 0.051000118255615234,
+   "max": 0.10199999809265137
+  },
+  "control.max_ground_speed_ms": {
+   "n": 5,
+   "n_none": 0,
+   "median": 11.660107203623816,
+   "min": 11.650068669325517,
+   "max": 11.660154372906046
+  },
+  "radio.loss_pct": {
+   "n": 5,
+   "n_none": 0,
+   "median": 20.002936210819936,
+   "min": 19.470644147108285,
+   "max": 20.072914432768602
+  },
+  "radio.delay_mean_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.20023721447381768,
+   "min": 0.20016507199600755,
+   "max": 0.20031048436028717
+  },
+  "radio.delay_max_s": {
+   "n": 5,
+   "n_none": 0,
+   "median": 0.20198678970336914,
+   "min": 0.20137333869934082,
+   "max": 0.2219676971435547
+  },
+  "mission_b.longest_unseen_s": {
+   "n": 0,
+   "n_none": 5
+  },
+  "mission_b.whole_zone_fresh_pct": {
+   "n": 0,
+   "n_none": 5
+  },
+  "mission_c.declared_lost": {
+   "n": 0,
+   "n_none": 5
+  },
+  "mission_c.replans_from_blackout": {
+   "n": 0,
+   "n_none": 5
+  },
+  "mission_c.deaf_s": {
+   "n": 0,
+   "n_none": 5
+  },
+  "mission_c.back_in_cover_after_s": {
+   "n": 0,
+   "n_none": 5
+  }
+ }
+}
