@@ -36,7 +36,7 @@ plt.rcParams.update({
 
 def load(run_dir):
     ticks, coverage = metrics.read_coverage_csv(run_dir)
-    return {"m": report.load_metrics(run_dir), "t": ticks, "cov": coverage}
+    return {"m": report.add_extras(report.load_metrics(run_dir)), "t": ticks, "cov": coverage}
 
 
 def median_of(runs, key):
@@ -51,73 +51,92 @@ def save(fig, out_dir, name):
     plt.close(fig)
 
 
-def reference_line(ax, y, color, style, text):
-    ax.axhline(y, color=color, lw=1.2, ls=style)
-    ax.text(ax.get_xlim()[1], y, " " + text, color=color, fontsize=8, va="center")
-
-
 # ------------------------------------------------------------------- set figures
 
 def plot_coverage(runs, refs, baselines, out_dir):
-    """Coverage in absolute %, aligned on the loss, with the levels it is judged against."""
-    fig, ax = plt.subplots(figsize=(8.5, 4.4))
+    """Coverage in absolute %, aligned on the loss, with the levels it is judged against.
+    Reference lines are named in a legend below the axes, so no label sits on the curves."""
+    fig, ax = plt.subplots(figsize=(8.5, 5.0))
     since_loss = np.arange(-60.0, min(r["m"]["end_s"] - r["m"]["loss"]["loss_s"] for r in runs))
     aligned = []
-    for r in runs:
+    for k, r in enumerate(runs):
         loss_s = r["m"]["loss"]["loss_s"]
         y = np.interp(since_loss + loss_s, r["t"], r["cov"], left=np.nan)
-        ax.plot(since_loss, y, color=RUN_GREY, lw=0.9)
+        ax.plot(since_loss, y, color=RUN_GREY, lw=0.9, label="one run" if k == 0 else None)
         aligned.append(y)
-    ax.plot(since_loss, np.nanmedian(aligned, axis=0), color=ACCENT, lw=2.5)
-    ax.set_xlim(since_loss[0], since_loss[-1])
+    ax.plot(since_loss, np.nanmedian(aligned, axis=0), color=ACCENT, lw=2.5, label="median")
     if baselines:
-        levels = [b["m"]["coverage"]["mean_pct"] for b in baselines]
-        ax.axhspan(min(levels), max(levels), color=ACCENT, alpha=0.12, lw=0)
-        ax.text(since_loss[0] + 1, max(levels) + 1, "no-loss runs with N agents", color=INK_2,
-                fontsize=8)
+        ax.axhline(median_of(baselines, "coverage.mean_pct"), color=AGENT_COLORS[2], lw=1.2,
+                   ls="-.", label=f"no-loss N baseline ({len(baselines)} run"
+                                  f"{'s' if len(baselines) > 1 else ''})")
     before = median_of(runs, "loss.before_pct")
-    reference_line(ax, before, INK, "-", "P (before)")
-    reference_line(ax, 0.9 * before, INK_2, ":", "0.9 P")
+    ax.axhline(before, color=INK, lw=1.2, label="P (before), median")
+    ax.axhline(0.9 * before, color=INK_2, lw=1.2, ls=":", label="0.9 P")
     if refs:
-        reference_line(ax, median_of(refs, "coverage.mean_pct"), ACCENT, "--",
-                       "attainable N-1")
-    reference_line(ax, median_of(runs, "loss.share_pct"), ACCENT_2, "--", "(N-1)/N x P")
+        ax.axhline(median_of(refs, "coverage.mean_pct"), color=ACCENT, lw=1.2, ls="--",
+                   label=f"attainable with N-1 ({len(refs)} no-loss run"
+                         f"{'s' if len(refs) > 1 else ''})")
+    ax.axhline(median_of(runs, "loss.share_pct"), color=ACCENT_2, lw=1.2, ls="--",
+               label="(N-1)/N x P")
     ax.axvline(0.0, color=CRITICAL, lw=1.2)
-    ax.text(1, 2, "agent lost", color=CRITICAL, fontsize=8)
+    ax.text(1, 56.5, "agent lost", color=CRITICAL, fontsize=8)
     declared = median_of(runs, "loss.milestones_s.lost_declared")
     if declared is not None:
         ax.axvline(declared, color=INK_2, lw=1, ls="--")
-        ax.text(declared + 1, 9, "declared lost\n(median)", color=INK_2, fontsize=8)
-    ax.set_ylim(0, 105)
+        ax.text(declared + 1, 56.5, "declared lost (median)", color=INK_2, fontsize=8)
+    ax.set_xlim(since_loss[0], since_loss[-1])
+    ax.set_ylim(55, 102)
     ax.set_xlabel("time since the loss (s)")
     ax.set_ylabel("area seen in the last 60 s (%)")
-    ax.set_title(f"Coverage around the loss: {len(runs)} runs (grey), median (blue)")
+    ax.set_title(f"Coverage around the loss: {len(runs)} runs")
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=4)
     save(fig, out_dir, "coverage_vs_time.png")
 
 
+COVERAGE_STAGES = [("before\n[L-60, L)", "loss.before_pct"), ("dip\n(min from L)", "loss.dip_pct"),
+                   ("from\nL+60 s", "loss.after_mean_pct"),
+                   ("after\nrecovery", "extra.after_recovery_mean_pct")]
+
+
+def plot_coverage_stages(ax, runs, refs):
+    """Coverage before, at the dip, from L + 60 s and after recovery, one line per run."""
+    xs = np.arange(len(COVERAGE_STAGES))
+    keys = [key for _, key in COVERAGE_STAGES]
+    for r in runs:
+        ax.plot(xs, [report.lookup(r["m"], key) for key in keys], color=RUN_GREY, lw=1,
+                marker="o", ms=4)
+    ax.plot(xs, [median_of(runs, key) for key in keys], color=ACCENT, lw=2.5, marker="o", ms=7)
+    ax.axhline(0.9 * median_of(runs, "loss.before_pct"), color=INK_2, lw=1, ls=":")
+    ax.text(xs[-1] + 0.15, 0.9 * median_of(runs, "loss.before_pct"), "0.9 P", fontsize=8,
+            color=INK_2, va="bottom")
+    if refs:
+        attainable = median_of(refs, "coverage.mean_pct")
+        ax.axhline(attainable, color=ACCENT, lw=1, ls="--")
+        ax.text(xs[-1] + 0.15, attainable, "N-1 ref", fontsize=8, color=ACCENT, va="bottom")
+    ax.set_xticks(xs, [label for label, _ in COVERAGE_STAGES], fontsize=8)
+    ax.set_xlim(-0.3, xs[-1] + 0.9)
+    ax.set_ylim(60, 100)   # (N-1)/N x P (about 65 %) is below every run: see results.md
+    ax.set_title("Coverage (%)", fontsize=10)
+
+
 def plot_before_after(runs, refs, out_dir):
-    """One line per run from before to after; the median in blue."""
-    panels = [("Coverage, mean (%)", "loss.before_pct", "loss.after_mean_pct"),
-              ("Worst revisit gap, longest unseen (s)", "unseen.before.worst_s",
+    """Coverage through the loss, then longest unseen and churn before vs after."""
+    panels = [("Worst revisit gap, longest unseen (s)", "unseen.before.worst_s",
                "unseen.after.worst_s"),
               ("Assignment churn (/agent/min)", "churn.before_per_agent_min",
                "churn.after_per_agent_min")]
-    fig, axes = plt.subplots(1, 3, figsize=(10, 3.8))
-    for ax, (title, before_key, after_key) in zip(axes, panels):
+    fig, axes = plt.subplots(1, 3, figsize=(11, 3.9), gridspec_kw={"width_ratios": [1.6, 1, 1]})
+    plot_coverage_stages(axes[0], runs, refs)
+    for ax, (title, before_key, after_key) in zip(axes[1:], panels):
         for r in runs:
             pair = [report.lookup(r["m"], before_key), report.lookup(r["m"], after_key)]
             ax.plot([0, 1], pair, color=RUN_GREY, lw=1, marker="o", ms=5)
         medians = [median_of(runs, before_key), median_of(runs, after_key)]
         ax.plot([0, 1], medians, color=ACCENT, lw=2.5, marker="o", ms=8)
-        ax.set_xticks([0, 1], ["before", "after"])
-        ax.set_xlim(-0.3, 1.6)
+        ax.set_xticks([0, 1], ["before\n[0, L)", "from L\n[L, end]"], fontsize=8)
+        ax.set_xlim(-0.3, 1.3)
         ax.set_title(title, fontsize=10)
         ax.set_ylim(bottom=0)
-    coverage_ax = axes[0]
-    reference_line(coverage_ax, median_of(runs, "loss.share_pct"), ACCENT_2, "--", "(N-1)/N P")
-    if refs:
-        reference_line(coverage_ax, median_of(refs, "coverage.mean_pct"), ACCENT, "--",
-                       "N-1")
     fig.suptitle("Before the loss vs after it (grey: runs, blue: median)", x=0.01, ha="left",
                  fontweight="bold", fontsize=11)
     save(fig, out_dir, "before_after.png")
@@ -132,7 +151,7 @@ def plot_recovery_steps(runs, out_dir):
     steps = [("lost_declared", "declared lost", "o"),
              ("assignment_received", "every survivor has the new assignment", "s"),
              ("on_new_loop", "first survivor on its new loop", "^"),
-             ("recovered", "coverage back to 0.9 P", "D")]
+             ("recovered", "coverage back to 0.9 P (0 = never fell below)", "D")]
     fig, ax = plt.subplots(figsize=(8.5, 0.5 * len(runs) + 1.8))
     for row, r in enumerate(runs):
         milestones = r["m"]["loss"]["milestones_s"] or {}
@@ -231,7 +250,8 @@ def plot_assignments(run, out_dir):
 
 
 def plot_separation(run, out_dir):
-    """True 3D distance of every pair; zoomed to 0-40 m so the 8 m limit is readable."""
+    """3D distance of every pair (EKF positions) from t = 10 s, on an axis from 0 that holds
+    the real distances (tens of metres) and the 8 m limit."""
     times, pairs = metrics.separation_series(run)
     fig, ax = plt.subplots(figsize=(8.5, 3.8))
     for color, ((a, b), distance) in zip(AGENT_COLORS, pairs.items()):
@@ -241,15 +261,20 @@ def plot_separation(run, out_dir):
         filtered &= metrics.mission_rows(run, agent_id)
         ax.plot(log["t"][filtered], np.full(filtered.sum(), 1.0), "|", color=INK, ms=8)
     ax.axhline(config.D_MIN_M, color=CRITICAL, lw=1.5)
-    ax.text(times[0], config.D_MIN_M + 0.5, "8 m minimum", color=CRITICAL, fontsize=8)
+    ax.text(metrics.SAFETY_FROM_S + 1, config.D_MIN_M + 1.5, "8 m minimum", color=CRITICAL,
+            fontsize=8)
     closest = np.fmin.reduce(np.array(list(pairs.values())), axis=0)
-    ax.set_ylim(0, 40)
-    ax.set_xlabel("mission time (s; negative = before the start)")
+    shown = times >= metrics.SAFETY_FROM_S   # the 10 m start line before is shown in results.md
+    highest = np.nanmax(np.array([d[shown] for d in pairs.values()]))
+    ax.set_xlim(metrics.SAFETY_FROM_S, run.end_s)
+    ax.set_ylim(0, 10 * np.ceil(highest / 10) + 10)
+    ax.set_xlabel("mission time (s), from t = 10 s")
     ax.set_ylabel("distance (m)")
-    ax.set_title(f"Run {run.name}: closest pair {np.nanmin(closest):.1f} m "
-                 f"(from t = 10 s: {np.nanmin(closest[times > metrics.SAFETY_FROM_S]):.1f} m); "
-                 "ticks at 1 m: safety filter active")
-    ax.legend(fontsize=8, loc="upper right")
+    ax.set_title(f"Run {run.name}: closest pair from t = 10 s "
+                 f"{np.nanmin(closest[times > metrics.SAFETY_FROM_S]):.1f} m (whole log, with "
+                 f"the start line: {np.nanmin(closest):.1f} m)", fontsize=10)
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=4,
+              title="ticks at 1 m: safety filter active", title_fontsize=8)
     save(fig, out_dir, "separation.png")
 
 
