@@ -2,7 +2,7 @@
 """Pair the no-re-plan runs with the evaluation runs (same seed, victim, kill time) and print
 the per-seed numbers as JSON. Reads metrics.json and meta.json only.
 
-  python3 tools/ablation_table.py ~/Documents/Projects/ap-swarm-eval-snapshot/runs 1 6
+  python3 tools/ablation_table.py <runs_dir> 1 6
 """
 import json
 import statistics

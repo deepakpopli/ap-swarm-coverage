@@ -24,7 +24,7 @@ from swarm import config                     # noqa: E402
 from tools.dashboard.model import RunModel, footprint_geometry   # noqa: E402
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-SIM_LOCK = os.path.expanduser("~/Documents/Projects/swarm-coverage/run/sim.lock")
+SIM_LOCK = os.path.join(ROOT, "run", "sim.lock")   # the same lock as run_eval.sh
 LIVE_PERIOD_S = 0.5
 TAIL_LINES = 25
 MISSIONS = ("A", "B", "C", "ref")
@@ -276,8 +276,7 @@ def start_args(body):
 
 def default_run_roots():
     roots = [os.path.join(ROOT, "runs"), os.path.join(ROOT, "run", "dash")]
-    old_repo = os.path.expanduser("~/Documents/Projects/swarm-coverage/runs")
-    return [r for r in roots + [old_repo] if os.path.isdir(r)] or [ROOT]
+    return [r for r in roots if os.path.isdir(r)] or [ROOT]
 
 
 def main(argv=None):

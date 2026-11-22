@@ -1,7 +1,7 @@
 """Metrics of one run, from each agent's logged position (its autopilot's EKF estimate) and the
 camera footprint.
 
-Definitions: docs/metrics.md. Usage: python -m analysis.metrics RUN_DIR
+Definitions: REPORT.md section 11. Usage: python -m analysis.metrics RUN_DIR
 Writes RUN_DIR/metrics.json and RUN_DIR/coverage.csv (coverage in %, once per second).
 """
 import csv

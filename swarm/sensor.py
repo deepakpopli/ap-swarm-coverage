@@ -2,7 +2,7 @@
 
 A rectangle on flat ground: the wide side (horizontal field of view) lies across the track and
 the rectangle turns with the logged yaw. Sources, assumptions and the altitude choice:
-docs/sensor.md.
+REPORT.md section 5.
 """
 import math
 

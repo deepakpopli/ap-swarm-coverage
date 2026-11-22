@@ -93,7 +93,7 @@ def main(runs_dir, out_dir):
     os.makedirs(os.path.join(out_dir, "runs"), exist_ok=True)
     lines = ["# Scenario runs, one each", "",
              "Expectation written before the runs; measured from the logs (analysis/metrics.py, "
-             "definitions in docs/metrics.md). Max speed here is the autopilot's estimate.", "",
+             "definitions in REPORT.md section 11). Max speed here is the autopilot's estimate.", "",
              "| Run | Command | Expected | Measured |", "|---|---|---|---|"]
     for name in EXPECTED:
         run_dir = os.path.join(runs_dir, name)

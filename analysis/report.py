@@ -7,7 +7,7 @@ python -m analysis.report --out results/<set> --name "<label>" RUN_DIR...
 --baseline: no-loss runs with N agents. Their mean coverage is the fixed level that recovery and
 deficit are also measured against (besides each run's own P, which flatters a low start).
 Every cell is median [min, max] over the runs; a reference set of one run prints its single
-value. Definitions: docs/metrics.md.
+value. Definitions: REPORT.md section 11.
 """
 import argparse
 import csv
@@ -23,7 +23,7 @@ from analysis import metrics
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 METRICS = [   # (key = path in metrics.json, label, unit, digits)
-    # the task's "worst revisit gap": longest time any cell went unseen (docs/metrics.md)
+    # the task's "worst revisit gap": longest time any cell went unseen (REPORT.md section 11)
     ("unseen.whole.worst_s", "Worst revisit gap (longest unseen), whole mission [0, end]",
      "s", 1),
     ("unseen.before.worst_s", "Worst revisit gap (longest unseen), before the loss [0, L)",
@@ -470,7 +470,7 @@ def render(name, runs, summary, refs=(), baselines=()):
     lines = [f"# {name}", "",
              f"{len(runs)} runs, backend {', '.join(backends)}, N = {runs[0]['n']}. "
              "Cells: median [min, max] over runs; a reference of one run is a single value. "
-             "Definitions: docs/metrics.md.", ""]
+             "Definitions: REPORT.md section 11.", ""]
     if summary["loss.before_pct"]["n"]:
         lines += how_to_read(summary, refs, baselines) + phase_table(summary) + [""]
         lines += per_victim_table(runs) + [""]

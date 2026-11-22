@@ -1,6 +1,6 @@
 # sitl_50m
 
-5 runs, backend sitl, N = 3. Cells: median [min, max] over runs. Definitions: docs/metrics.md.
+5 runs, backend sitl, N = 3. Cells: median [min, max] over runs. Definitions: REPORT.md section 11.
 
 | Metric | Before the loss | After the loss (from L + 60 s) | End of run (last 30 s) | Attainable with N-1 | (N-1)/N x before | n |
 |---|---|---|---|---|---|---|
