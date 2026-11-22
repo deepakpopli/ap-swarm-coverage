@@ -82,6 +82,7 @@ class AgentRecord:
     last_heard: float          # receive time of the last STATE
     good_since: float          # heard without a gap >= SUSPECT_S, and FLYING, since then
     xy: list = None
+    vel: tuple = (0.0, 0.0)
     status: str = ""
     epoch: int = 0
     slot: int = -1
@@ -149,6 +150,7 @@ class Ground:
                 self.first_ready = now
         rec.last_heard = now
         rec.xy = [msg.x, msg.y]
+        rec.vel = (msg.vx, msg.vy)
         rec.status = status
         epoch = msg.epoch                # -1 before the agent's first ASSIGN
         self.note_slot(a, rec, epoch, msg.slot)
@@ -293,8 +295,10 @@ class Ground:
         new = {}
         if members:
             positions = {a: self.agents[a].xy for a in members}
+            velocities = {a: self.agents[a].vel for a in members}
+            heading = {a: self.heading_slot(a) for a in members}
             new = allocate(members, positions, set(self.blacklist), self.assignments,
-                           self.priority_zone, reverse)
+                           self.priority_zone, reverse, velocities, heading)
         old = self.assignments
         changed = sorted(a for a in set(old) | set(new) if old.get(a) != new.get(a))
         self.epoch += 1
@@ -302,6 +306,14 @@ class Ground:
         self.log.write(now, "assign", epoch=self.epoch, trigger=trigger, changed=changed,
                        assignments={str(a): new[a].to_dict() for a in sorted(new)})
         self.next_assign = 0.0           # send the new plan now
+
+    def heading_slot(self, a):
+        """The slot agent a flies to, if it reports one of our current plan (unknown after a
+        restart)."""
+        rec, plan = self.agents[a], self.assignments.get(a)
+        if plan is None or rec.epoch != self.epoch or not 0 <= rec.slot < len(plan.slots):
+            return None
+        return tuple(plan.slots[rec.slot])
 
     def send_due(self, now):
         """ASSIGN at ASSIGN_HZ, START once a second: repeated because the radio is lossy.

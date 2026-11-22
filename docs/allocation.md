@@ -33,8 +33,11 @@ loop_from), never velocities or times.
 7. **On a loss** the cut for N - 1 is made on the same lanes (N = 3 -> 2: 2+2). Lanes never move,
    so a survivor flies ground it already knows; a survivor whose group is unchanged keeps its plan.
 8. **Active slots apart.** No two agents' simultaneously active slots (transit points and the
-   slot each starts on) may be closer than D_MIN + 2 x SLOT_REACH = 18 m: a swap run once issued
-   two transit slots 0.2 m apart and stalled for 15 s. A new plan that clashes keeps its transit
+   slot each starts on) may be closer than D_MIN + 2 x SLOT_REACH = 18 m. The start slot is
+   predicted with the agent's own rule, `coverage.start_slot`: the slot it heads to if the new
+   list has it, else the nearest slot ahead of it (above 1 m/s), else the nearest, so a re-plan
+   never turns it round. The ground passes each agent's velocity from its STATE. A swap run once
+   issued two transit slots 0.2 m apart and stalled for 15 s. A new plan that clashes keeps its transit
    leg but its points move along it, off every other agent's active slots (`_clear_leg`). This is
    a planner courtesy, not a separation guarantee: transits can still cross between slots, and
    separation is the safety filter's job.

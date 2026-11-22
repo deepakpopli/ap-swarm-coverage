@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 
 from swarm import config, sensor
+from swarm.coverage import TURN_PASS_DEG, start_slot
 
 # Camera footprint at the cruise altitude in whole metres (85 x 48 at 50 m). Read at call time,
 # so a test can patch them to plan for another altitude.
@@ -171,14 +172,13 @@ def _keep_or_plan(agent_id, xy, strip, blacklist, previous):
 # ---- lane groups -------------------------------------------------------------------------------
 
 def _corner_cost_s(a, b, c) -> float:
-    """Time lost turning at b from a->b to b->c (gentle turns are flown at full speed:
-    coverage.TURN_PASS_DEG = 30)."""
+    """Time lost turning at b from a->b to b->c."""
     u, w = (b[0] - a[0], b[1] - a[1]), (c[0] - b[0], c[1] - b[1])
     nu, nw = math.hypot(*u), math.hypot(*w)
     if nu < 1e-6 or nw < 1e-6:
         return 0.0
     cos = (u[0] * w[0] + u[1] * w[1]) / (nu * nw)
-    if cos >= math.cos(math.radians(30.0)):
+    if cos >= math.cos(math.radians(TURN_PASS_DEG)):
         return 0.0
     return TURN180_S if cos < math.cos(math.radians(135.0)) else TURN90_S
 
@@ -271,13 +271,12 @@ def _zone_owner(ids, xy, zone, strip, previous):
 
 # ---- active slots apart --------------------------------------------------------------------------
 
-def _first_slots(asg, xy) -> list:
-    """The slots an agent flies to first: its transit and the slot it starts on
-    (CoverageController starts at the nearest slot)."""
+def _first_slots(asg, motion) -> list:
+    """The slots an agent flies to first: its transit and the slot the CoverageController will
+    start on. motion: (xy, velocity, slot it heads to or None)."""
     if not asg.slots:                    # a spare agent: it flies nowhere
         return []
-    start = min(range(len(asg.slots)), key=lambda i: (math.dist(xy, asg.slots[i]), i))
-    return asg.slots[:asg.loop_from] + [asg.slots[start]]
+    return asg.slots[:asg.loop_from] + [asg.slots[start_slot(asg.slots, asg.loop_from, *motion)]]
 
 
 def _gap_m(slots_a, slots_b) -> float:
@@ -304,18 +303,18 @@ def _clear_leg(a, b, avoid):
     return points
 
 
-def _respace_transits(result, previous, xy, bad_pairs):
+def _respace_transits(result, previous, motion, bad_pairs):
     """Two agents' active slots (transit points and the slot they start on) must be
     ACTIVE_GAP_M apart (the swap run once issued two transit slots 0.2 m apart and stalled).
     Each new plan that clashes, highest id first, keeps its transit leg but moves the points
     off every other agent's active slots (_clear_leg). A kept plan is already being flown."""
     for move in sorted(result, reverse=True):
         asg = result[move]
-        others = [p for b in result if b != move for p in _first_slots(result[b], xy[b])]
+        others = [p for b in result if b != move for p in _first_slots(result[b], motion[b])]
         if (asg is (previous or {}).get(move) or asg.loop_from == 0
-                or _gap_m(_first_slots(asg, xy[move]), others) >= ACTIVE_GAP_M):
+                or _gap_m(_first_slots(asg, motion[move]), others) >= ACTIVE_GAP_M):
             continue
-        transit = _clear_leg(xy[move], asg.slots[asg.loop_from], others)
+        transit = _clear_leg(motion[move][0], asg.slots[asg.loop_from], others)
         if transit is not None and not any((move, slot_key(p)) in bad_pairs for p in transit):
             result[move] = dataclasses.replace(
                 asg, slots=transit + asg.slots[asg.loop_from:], loop_from=len(transit))
@@ -323,7 +322,8 @@ def _respace_transits(result, previous, xy, bad_pairs):
 
 
 def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
-             priority_zone: tuple = None, reverse: bool = False) -> dict:
+             priority_zone: tuple = None, reverse: bool = False, velocities: dict = None,
+             heading: dict = None) -> dict:
     """{agent_id: Assignment} for agent_ids.
 
     positions: {id: (x, y, ...)} for every id. blacklist: (agent_id, slot_key) pairs that must
@@ -332,6 +332,8 @@ def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
     priority_zone: (xmin, ymin, xmax, ymax) for Mission B, else None. Its owner flies the zone
     lane; the other agents share the whole area in lane groups, as if they were the fleet.
     reverse: hand the groups out in reverse order (only the ground's "swap" test hook).
+    velocities {id: (vx, vy)} and heading {id: slot xy} (missing: standing, unknown) predict
+    where each agent's CoverageController starts (coverage.start_slot).
     """
     xy = {a: [positions[a][0], positions[a][1]] for a in agent_ids}
     ids = sorted(agent_ids)
@@ -343,4 +345,6 @@ def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
         ids.remove(owner)
     if ids:
         result.update(_group_plans(ids, xy, blacklist, previous, reverse))
-    return _respace_transits(dict(sorted(result.items())), previous, xy, blacklist)
+    motion = {a: (xy[a], (velocities or {}).get(a, (0.0, 0.0)), (heading or {}).get(a))
+              for a in xy}
+    return _respace_transits(dict(sorted(result.items())), previous, motion, blacklist)

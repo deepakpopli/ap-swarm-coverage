@@ -10,15 +10,16 @@ TICK_S = 1.0 / config.CONTROL_HZ
 class Run:
     """A controller and a point mass that flies exactly what it is told (or stays put)."""
 
-    def __init__(self, xy=(0.0, 0.0)):
+    def __init__(self, xy=(0.0, 0.0), vel=(0.0, 0.0)):
         self.cov = CoverageController()
         self.xy = xy
+        self.vel = vel
         self.t = 0.0
         self.events = []
         self.speeds = []       # (active slot, commanded speed) per tick
 
     def assign(self, epoch, slots, loop_from=0):
-        return self.cov.on_assign(epoch, slots, loop_from, self.xy)
+        return self.cov.on_assign(epoch, slots, loop_from, self.xy, self.vel)
 
     def fly(self, seconds, move=True, deaf=False):
         for _ in range(round(seconds / TICK_S)):
@@ -78,11 +79,39 @@ def test_identical_replan_keeps_the_slot_and_its_timer():
 def test_different_plan_starts_at_the_nearest_slot():
     """Single-lane loop: the point near us appears twice; the lowest index wins."""
     run = Run((0.0, 98.0))
-    run.assign(1, [[0, 0], [100, 0]])
+    run.assign(1, [[50, 0], [100, 0]])
     run.assign(2, [[0, 0], [0, 100], [0, 200], [0, 100]], loop_from=0)
     assert run.cov.idx == 1
     out = run.fly(TICK_S)
     assert out.vy > 0.0                                     # it does not turn back
+
+
+def test_replan_keeps_the_slot_we_head_to():
+    run = Run((0.0, 100.0), vel=(0.0, config.WP_SPD_MS))
+    run.assign(1, [[0, 0], [0, 200]])
+    run.fly(TICK_S, move=False)
+    run.assign(2, [[0, 110], [100, 200], [0, 200], [0, 0]])
+    assert run.cov.idx == 2
+
+
+def test_replan_does_not_turn_us_round():
+    """Flying north at cruise, the nearest new slot 10 m behind: start at the one ahead."""
+    run = Run((0.0, 100.0), vel=(0.0, config.WP_SPD_MS))
+    run.assign(1, [[0, 300]])
+    run.assign(2, [[0, 90], [0, 170], [0, 250]])
+    assert run.cov.idx == 1
+    run.vel = (0.0, 0.0)                                    # standing: the nearest again
+    run.assign(3, [[50, 90], [50, 170]])
+    assert run.cov.idx == 0
+
+
+def test_allocator_predicts_the_start_slot():
+    """_first_slots must name the slot the controller really starts on (ACTIVE_GAP_M)."""
+    from swarm.allocator import Assignment, _first_slots
+    asg = Assignment([0, 300, 0, 300], [[0, 90], [0, 170], [0, 250], [50, 250]], 0)
+    run = Run((0.0, 100.0), vel=(0.0, config.WP_SPD_MS))
+    run.assign(1, asg.slots)
+    assert _first_slots(asg, (run.xy, run.vel, None)) == [asg.slots[run.cov.idx]] == [[0, 170]]
 
 
 def test_exactly_one_infeasible_per_stuck_slot_then_hold_and_resend():

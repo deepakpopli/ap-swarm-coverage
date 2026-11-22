@@ -104,8 +104,9 @@ def test_blacklist_changes_only_the_reporter():
 
 
 def active_gap_m(result, pos):
-    return min(allocator._gap_m(allocator._first_slots(result[a], list(pos[a])),
-                                allocator._first_slots(result[b], list(pos[b])))
+    def first(a):
+        return allocator._first_slots(result[a], (list(pos[a]), (0.0, 0.0), None))
+    return min(allocator._gap_m(first(a), first(b))
                for a, b in itertools.combinations(sorted(result), 2))
 
 

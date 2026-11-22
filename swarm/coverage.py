@@ -25,6 +25,7 @@ TURN_PASS_DEG = 30.0        # gentler turns are flown at full speed
 V_TURN_MIN_MS = 2.0         # slowest corner speed
 A_SLOW_MS2 = 1.5            # deceleration into sharp corners, well below the measured 4.2
 INFEASIBLE_RESEND_S = 1.0
+MOVING_MS = 1.0             # slower than this, every direction counts as ahead
 
 
 @dataclass
@@ -37,6 +38,26 @@ class CoverageOutput:
 
 def _dist(a, b) -> float:
     return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def start_slot(slots, loop_from, xy, vel, heading=None) -> int:
+    """Where a new slot list starts (-1 if empty). Shared with the allocator, which must predict
+    it. The slot we head to if the list has it, else the nearest one not behind us, else the
+    nearest: a re-plan must not turn us round. Equal distances: the slot whose next leg goes
+    our way, then the lowest index."""
+    if not slots:
+        return -1
+    moving = math.hypot(vel[0], vel[1]) > MOVING_MS
+
+    def ahead(a, b) -> bool:
+        return moving and (b[0] - a[0]) * vel[0] + (b[1] - a[1]) * vel[1] > 0
+
+    def nxt(i):
+        return slots[i + 1 if i + 1 < len(slots) else loop_from]
+    every = range(len(slots))
+    same = [i for i in every if heading is not None and tuple(slots[i]) == tuple(heading)]
+    candidates = same or [i for i in every if ahead(xy, slots[i])] or every
+    return min(candidates, key=lambda i: (_dist(xy, slots[i]), not ahead(slots[i], nxt(i)), i))
 
 
 class CoverageController:
@@ -52,7 +73,7 @@ class CoverageController:
         self.last_sent: Optional[float] = None
         self.last_now: Optional[float] = None
 
-    def on_assign(self, epoch: int, slots, loop_from: int, xy) -> Optional[dict]:
+    def on_assign(self, epoch: int, slots, loop_from: int, xy, vel) -> Optional[dict]:
         """Apply an ASSIGN. Returns an event to log, or None for an old epoch."""
         if self.epoch is not None and epoch <= self.epoch:
             return None
@@ -61,18 +82,13 @@ class CoverageController:
         slots = [(s[0], s[1]) for s in slots]
         if slots == self.slots and loop_from == self.loop_from:
             return {"event": "assign", "epoch": self.epoch, "same_plan": True}
+        heading = self.slots[self.idx] if self.idx >= 0 else None
+        self.idx = start_slot(slots, loop_from, xy, vel, heading)
         self.slots, self.loop_from = slots, loop_from
-        self.idx = self._nearest_slot(xy)
         self.seg_start = (xy[0], xy[1])
         self.active_s = 0.0
         self.reported = False
         return {"event": "assign", "epoch": self.epoch, "same_plan": False, "start": self.idx}
-
-    def _nearest_slot(self, xy) -> int:
-        """Start where we are: the nearest slot, the lowest index on a tie (-1 if none)."""
-        if not self.slots:
-            return -1
-        return min(range(len(self.slots)), key=lambda i: (_dist(xy, self.slots[i]), i))
 
     def infeasible_due(self, now: float) -> Optional[dict]:
         """The INFEASIBLE body to send now (about once a second), or None."""

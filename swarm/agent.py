@@ -123,7 +123,7 @@ class Agent:
             self.events.write(now, "start", t0=self.t0)
         elif kind == "SWARM_ASSIGN":
             event = self.coverage.on_assign(msg.epoch, protocol.assign_slots(msg),
-                                            msg.loop_from, st.pos)
+                                            msg.loop_from, st.pos, st.vel)
             if event is not None:
                 self.events.write(now, **event)
 
