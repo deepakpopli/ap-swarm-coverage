@@ -18,6 +18,9 @@ V_TURN_MIN_MS = 2.0         # slowest corner speed
 A_SLOW_MS2 = 1.5            # deceleration into sharp corners, well below the measured 4.2
 INFEASIBLE_RESEND_S = 1.0
 MOVING_MS = 1.0             # slower than this, every direction counts as ahead
+# A slot ahead further than this is not a start: with a turn it can take over SLOT_TIMEOUT_S
+# (a swap run started 150 m away after a 90 deg turn and timed out 19 m short).
+AHEAD_MAX_M = config.WP_SPD_MS * (config.SLOT_TIMEOUT_S - 5.0)
 
 
 @dataclass
@@ -34,9 +37,9 @@ def _dist(a, b) -> float:
 
 def start_slot(slots, loop_from, xy, vel, heading=None) -> int:
     """Where a new slot list starts (-1 if empty). Shared with the allocator, which must predict
-    it. The slot we head to if the list has it, else the nearest one not behind us, else the
-    nearest: a re-plan must not turn us round. Equal distances: the slot whose next leg goes
-    our way, then the lowest index."""
+    it. The slot we head to if the list has it, else the nearest one not behind us within
+    AHEAD_MAX_M, else the nearest: a re-plan must not turn us round unless the way ahead is too
+    long. Equal distances: the slot whose next leg goes our way, then the lowest index."""
     if not slots:
         return -1
     moving = math.hypot(vel[0], vel[1]) > MOVING_MS
@@ -48,7 +51,8 @@ def start_slot(slots, loop_from, xy, vel, heading=None) -> int:
         return slots[i + 1 if i + 1 < len(slots) else loop_from]
     every = range(len(slots))
     same = [i for i in every if heading is not None and tuple(slots[i]) == tuple(heading)]
-    candidates = same or [i for i in every if ahead(xy, slots[i])] or every
+    near_ahead = [i for i in every if ahead(xy, slots[i]) and _dist(xy, slots[i]) <= AHEAD_MAX_M]
+    candidates = same or near_ahead or every
     return min(candidates, key=lambda i: (_dist(xy, slots[i]), not ahead(slots[i], nxt(i)), i))
 
 

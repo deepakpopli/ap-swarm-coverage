@@ -105,6 +105,16 @@ def test_replan_does_not_turn_us_round():
     assert run.cov.idx == 0
 
 
+def test_replan_does_not_start_on_a_slot_too_far_ahead():
+    """The swap run: flying south at cruise, the nearest slot ahead 150 m away and a 90 deg
+    turn; it timed out 19 m short. Start at the transit point behind instead."""
+    run = Run((37.5, 164.7), vel=(0.0, -config.WP_SPD_MS))
+    run.assign(1, [[37.5, 0]])
+    run.assign(2, [[87.5, 207.3], [137.5, 244.1], [187.5, 281.0], [187.5, 215.5],
+                   [187.5, 150.0], [187.5, 84.5], [187.5, 19.0], [262.5, 19.0]], loop_from=2)
+    assert run.cov.idx == 0
+
+
 def test_allocator_predicts_the_start_slot():
     """_first_slots must name the slot the controller really starts on (ACTIVE_GAP_M)."""
     from swarm.allocator import Assignment, _first_slots

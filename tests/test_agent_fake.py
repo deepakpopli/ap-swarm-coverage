@@ -145,6 +145,17 @@ def test_failsafe_when_the_autopilot_leaves_guided(tmp_path):
     assert len(rig.link.sent) > states
 
 
+def test_obstacle_appears_at_its_mission_time(tmp_path):
+    rig = Rig(tmp_path, start_z=config.hold_alt(1))
+    rig.agent.obstacle = (150.0, 100.0, 10.0, 5.0)
+    rig.run_until("ready")
+    rig.t0 = rig.clock() + 2.0
+    rig.run(5)
+    assert rig.agent.safety.obstacle is None
+    rig.run(3)
+    assert rig.agent.safety.obstacle is not None and "obstacle" in rig.events()
+
+
 @pytest.mark.slow
 def test_real_time_loop_ticks_at_20_hz(tmp_path):
     """run() on the wall clock: rows every 50 ms, then exit when the autopilot link dies."""

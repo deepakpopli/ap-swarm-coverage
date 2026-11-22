@@ -1,7 +1,7 @@
 """Onboard agent process, one per drone.
 
     python -m swarm.agent --id K --n N --backend mav|fake --port-base P --log-dir DIR
-                          [--obstacle x,y,r]
+                          [--obstacle x,y,r[,t]]
 
 Every tick at CONTROL_HZ: coverage -> safety filter -> one setpoint to the own autopilot.
 Status, broadcast in STATE:
@@ -15,7 +15,8 @@ If the own autopilot link dies the agent sends nothing more and exits after LINK
 neighbours never get a stale position with a fresh time stamp.
 Logs: agent_<id>.csv (protocol.AGENT_CSV_COLUMNS, a row per tick) and agent_<id>.events.jsonl
 (its "takeoff_done" event holds the autopilot parameters as read back).
---obstacle: test hook, a static keep-out disc only this agent knows about (SafetyFilter).
+--obstacle: test hook, a static keep-out disc only this agent knows about (SafetyFilter),
+from mission time t on if given (else from the start).
 """
 import argparse
 import csv
@@ -79,6 +80,7 @@ class Agent:
         self.csv = csv.writer(self.csv_file)
         self.csv.writerow(protocol.AGENT_CSV_COLUMNS)
         self.events = JsonlLog(os.path.join(log_dir, f"agent_{agent_id}.events.jsonl"))
+        self.obstacle = None                         # (x, y, radius, t_mission), test hook
 
     def close(self) -> None:
         self.csv_file.close()
@@ -102,6 +104,10 @@ class Agent:
         if self.ticks % STATE_EVERY == 0:
             self._send_state(st)
         self.ticks += 1
+        if self.obstacle is not None and self.t0 is not None and now >= self.t0 + self.obstacle[3]:
+            self.safety.add_obstacle(*self.obstacle[:3])
+            self.events.write(now, "obstacle", xy=list(self.obstacle[:2]))
+            self.obstacle = None
         nominal = cmd = None
         if self.status == "takeoff":
             if not self._takeoff(now, st):
@@ -246,7 +252,8 @@ def main(argv=None) -> int:
     ap.add_argument("--backend", choices=("mav", "fake"), default="mav")
     ap.add_argument("--port-base", type=int, default=0)
     ap.add_argument("--log-dir", default="run")
-    ap.add_argument("--obstacle", default=None, help="test hook: x,y,radius in metres")
+    ap.add_argument("--obstacle", default=None,
+                    help="test hook: x,y,radius in metres[,from mission time in s]")
     args = ap.parse_args(argv)
     if args.backend == "mav":
         from swarm.mav_vehicle import MavVehicle
@@ -263,8 +270,11 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGTERM, stop)
     agent = Agent(args.id, vehicle, link, args.log_dir)
     if args.obstacle:
-        x, y, radius_m = (float(v) for v in args.obstacle.split(","))
-        agent.safety.add_obstacle(x, y, radius_m)
+        x, y, radius_m, *t = (float(v) for v in args.obstacle.split(","))
+        if t:
+            agent.obstacle = (x, y, radius_m, t[0])
+        else:
+            agent.safety.add_obstacle(x, y, radius_m)
     return agent.run()
 
 

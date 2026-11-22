@@ -103,6 +103,20 @@ def test_blacklist_changes_only_the_reporter():
     assert bad not in {allocator.slot_key(p) for p in after[3].slots}
 
 
+def test_blacklist_keeps_the_owners_when_another_group_is_nearer():
+    """Positions at the infeasible re-plan of a Gazebo swap run: agent 3, crossing to the west
+    group, was nearer agent 2's lane, and the re-plan used to swap the groups of 2 and 3."""
+    first = plan([1, 2, 3], starts(3))
+    swap_pos = {1: (37.5, 164.7), 2: (112.5, 46.5), 3: (187.5, 250.0)}
+    swapped = plan([1, 2, 3], swap_pos, previous=first, reverse=True)
+    pos = {1: (165.0, 148.7), 2: (112.51, 42.0), 3: (103.6, 282.5)}   # 0.4 s before the log row
+    assert plan([1, 2, 3], pos)[2].share != swapped[2].share        # by distance alone
+    after = plan([1, 2, 3], pos, previous=swapped, blacklist={(1, (188, 150))})
+    assert after[2] is swapped[2] and after[3] is swapped[3]
+    assert after[1].share == swapped[1].share
+    assert (188, 150) not in {allocator.slot_key(p) for p in after[1].slots}
+
+
 def active_gap_m(result, pos):
     def first(a):
         return allocator._first_slots(result[a], (list(pos[a]), (0.0, 0.0), None))

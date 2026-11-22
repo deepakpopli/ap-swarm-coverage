@@ -37,13 +37,14 @@ END_GRACE_S = 1.0           # run on past the mission end so the last log rows l
 STOP_WAIT_S = 10.0          # SIGTERM -> SIGKILL
 LOOP_S = 0.2
 OBSTACLE_RADIUS_M = 10.0    # > 2 x SLOT_REACH_M: the agent cannot "fly past" the slot either
+OBSTACLE_AT_S = 30.0        # it appears mid-mission: in the warm-up every loop slot is flown
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)
 RTF_MIN = 0.95              # slower than this, the sim no longer keeps up with the wall clock
 
 # scenario -> (the mission it modifies, what it tests)
 SCENARIOS = {
     "swap": ("A", "re-plan with the lane groups reversed at 30 s: agents cross at cruise"),
-    "obstacle": ("A", "an unknown obstacle on a loop slot: infeasible, blacklist, re-plan"),
+    "obstacle": ("A", "an unknown obstacle on a loop slot from 30 s: infeasible, re-plan"),
     "agentdeath": ("A", "kill the victim's agent process instead of its autopilot"),
     "radiooutage": ("A", "the radio is down from 60 s to 70 s"),
     "groundloss": ("A", "ground down from 40 s for good, then the Mission A kill"),
@@ -79,8 +80,9 @@ def plan(args):
         out["ground"] += ["--swap-at", "30"]
     if args.scenario == "obstacle":
         x, y = obstacle_slot(agent, args.n)
-        out["agents"][agent] = ["--obstacle", f"{x},{y},{OBSTACLE_RADIUS_M}"]
-        out["obstacle"] = {"agent": agent, "xy": [x, y], "radius_m": OBSTACLE_RADIUS_M}
+        out["agents"][agent] = ["--obstacle", f"{x},{y},{OBSTACLE_RADIUS_M},{OBSTACLE_AT_S}"]
+        out["obstacle"] = {"agent": agent, "xy": [x, y], "radius_m": OBSTACLE_RADIUS_M,
+                           "t_mission": OBSTACLE_AT_S}
     if args.scenario == "agentdeath":
         out["faults"].append((t_event, "kill", f"agent:{agent}"))
     if args.scenario == "groundloss":

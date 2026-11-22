@@ -199,17 +199,28 @@ def best_split(n):
     return best
 
 
+def _same_owners(ids, strips, previous):
+    """The previous owners of the strips, in strip order, if every strip had one among ids (an
+    infeasible re-plan: no reshuffle of the others). Else None."""
+    owners = {tuple(asg.share): a for a, asg in (previous or {}).items() if a in ids and asg.slots}
+    perm = tuple(owners.get(tuple(strip.share)) for strip in strips)
+    return None if None in perm else perm
+
+
 def _group_plans(ids, xy, blacklist, previous, reverse):
-    """Contiguous lane groups, agent-to-group by the smallest total distance to the loops (ties:
-    the first permutation of the sorted ids). reverse (swap test hook): the opposite order.
-    More agents than lanes: the spares get no slots and hold until a loss frees a lane."""
+    """Contiguous lane groups. The same strips as before keep their owners; else agent-to-group
+    by the smallest total distance to the loops (ties: the first permutation of the sorted ids).
+    reverse (swap test hook): the opposite order. More agents than lanes: the spares get no
+    slots and hold until a loss frees a lane."""
     n_flying = min(len(ids), len(area_lanes()))
     strips = [_lanes_strip(g) for g in best_split(n_flying)]
     loops = [_loop(strip, True, True) for strip in strips]
 
     def cost(perm):
         return sum(min(math.dist(xy[a], p) for p in loop) for a, loop in zip(perm, loops))
-    perm = min(itertools.permutations(sorted(ids), n_flying), key=lambda p: round(cost(p), 3))
+    perm = None if reverse else _same_owners(ids, strips, previous)
+    if perm is None:
+        perm = min(itertools.permutations(sorted(ids), n_flying), key=lambda p: round(cost(p), 3))
     if reverse:
         perm = perm[::-1]
     result = {a: Assignment(list(config.AREA), [], 0) for a in ids if a not in perm}
