@@ -16,7 +16,7 @@ from swarm import config, sensor
 # so a test can patch them to plan for another altitude.
 SWATH_M, ALONG_M = sensor.lane_footprint(config.ALT_CRUISE_M)
 
-# Legs are cut 1 m below SLOT_SPACING_M so rounding slots to 1 cm can never break the bound.
+# Legs are cut 1 m below SLOT_SPACING_M so rounding slots to 0.1 m can never break the bound.
 # 79 m at 11.5 m/s cruise is 6.9 s. From a standing start the vehicle needs 5.2-5.4 s to
 # reach 95 % of cruise (measured, WP_SPD 11.5, PSC_NE_JERK 4: results/exp/step1), so at most
 # about 2.7 s more: under 10 s against the 15 s SLOT_TIMEOUT_S, a third of it spare.
@@ -72,7 +72,8 @@ def slot_key(xy) -> tuple:
 
 
 def _point(x, y):
-    return [round(x, 2), round(y, 2)]
+    """Slots on a 0.1 m grid: SWARM_ASSIGN carries them as int16 decimetres, losslessly."""
+    return [round(x, 1), round(y, 1)]
 
 
 def _end_inset():

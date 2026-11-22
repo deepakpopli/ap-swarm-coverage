@@ -30,7 +30,7 @@ import signal
 import time
 from dataclasses import dataclass
 
-from swarm import config
+from swarm import config, protocol
 from swarm.allocator import allocate, slot_key
 from swarm.net import RadioLink
 
@@ -114,9 +114,9 @@ class Ground:
     def step(self, now) -> bool:
         """Handle messages and timers. False once the mission is over."""
         for msg in self.link.recv_all():
-            if msg["type"] == "STATE":
+            if msg.get_type() == "SWARM_STATE":
                 self.on_state(msg, now)
-            elif msg["type"] == "INFEASIBLE":
+            elif msg.get_type() == "SWARM_INFEASIBLE":
                 self.on_infeasible(msg, now)
         if self.planned_at is None:
             self.maybe_plan_first(now)
@@ -138,21 +138,22 @@ class Ground:
 
     # ---- messages
     def on_state(self, msg, now):
-        a = msg["src"]
+        a = msg.get_srcSystem()
+        status = protocol.STATUSES[msg.status]
         rec = self.agents.setdefault(a, AgentRecord(last_heard=now, good_since=now))
-        if now - rec.last_heard >= config.SUSPECT_S or msg["status"] not in FLYING:
+        if now - rec.last_heard >= config.SUSPECT_S or status not in FLYING:
             rec.good_since = now
-        if msg["status"] == "ready" and rec.status != "ready":
+        if status == "ready" and rec.status != "ready":
             self.log.write(now, "ready", agent=a)
             if self.first_ready is None:
                 self.first_ready = now
         rec.last_heard = now
-        rec.xy = msg["pos"][:2]
-        rec.status = msg["status"]
-        epoch = msg["epoch"] or 0        # null or 0 before the agent's first ASSIGN
-        self.note_slot(a, rec, epoch, msg["slot"])
+        rec.xy = [msg.x, msg.y]
+        rec.status = status
+        epoch = msg.epoch                # -1 before the agent's first ASSIGN
+        self.note_slot(a, rec, epoch, msg.slot)
         rec.epoch = epoch
-        rec.slot = msg["slot"]
+        rec.slot = msg.slot
 
     def note_slot(self, a, rec, epoch, slot):
         """The active slot only moves on when the agent reaches it. So when the slot changes
@@ -168,7 +169,7 @@ class Ground:
     def on_infeasible(self, msg, now):
         """Blacklist the slot and re-plan, whatever epoch the report names, as long as the point
         is in the agent's current plan (an unrelated re-plan must not swallow the report)."""
-        a, xy = msg["src"], msg["slot_xy"]
+        a, xy = msg.get_srcSystem(), [msg.slot_x / 10, msg.slot_y / 10]
         key = slot_key(xy)
         plan = self.assignments.get(a)
         if plan is None or key not in [slot_key(p) for p in plan.slots]:
@@ -177,7 +178,7 @@ class Ground:
             why = "already blacklisted"   # the agent repeats its report until a new epoch
         else:
             why = "new"
-        self.log.write(now, "infeasible", agent=a, epoch=msg["epoch"], slot_xy=xy,
+        self.log.write(now, "infeasible", agent=a, epoch=msg.epoch, slot_xy=xy,
                        accepted=why == "new", why=why)
         if why == "new":
             self.blacklist[(a, key)] = now + config.BLACKLIST_COOLDOWN_S
@@ -310,10 +311,10 @@ class Ground:
         if now >= self.next_assign:
             for a in sorted(self.agents):
                 body = self.assignments[a].to_dict() if a in self.assignments else NO_PLAN
-                self.link.send(a, "ASSIGN", epoch=self.epoch, **body)
+                self.link.send(protocol.assign(a, self.epoch, **body))
             self.next_assign = now + 1.0 / config.ASSIGN_HZ
         if self.t0 is not None and now >= self.next_start:
-            self.link.send("all", "START", t0=self.t0)
+            self.link.send(protocol.start(self.t0))
             self.next_start = now + 1.0
 
 

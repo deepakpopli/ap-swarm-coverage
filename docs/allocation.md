@@ -90,12 +90,13 @@ cross at cruise altitude, to stress the safety filter. Later re-plans use the no
 
 ## Radio determinism (`sim/radio.py`)
 
-Whether one copy is dropped is a hash of `(seed, src, dst, seq)`, so with the same seed the
-k-th message from A to B is dropped in every run or in none. Real time still decides which
-message gets seq k, which messages fall inside a blackout or mute window, whether a receiver
-had registered when a broadcast arrived, and the exact delivery times (about 1 ms jitter). The
-per-pair loss rate matches `loss` statistically; the exact set of lost messages repeats only up
-to that timing.
+Each (src, dst) pair has its own `random.Random`, seeded from `(seed, src, dst)`, with one draw
+per copy in arrival order, so with the same seed the k-th copy from A to B is dropped in every
+run or in none. (Hashing the MAVLink seq would not do: it wraps every 256 messages, so the drop
+pattern would repeat.) Real time still decides how many copies a pair has had by a given moment,
+which messages fall inside a blackout or mute window, and the exact delivery times (about 1 ms
+jitter). The per-pair loss rate matches `loss` statistically; the exact set of lost messages
+repeats only up to that timing.
 
 ## Ground restart
 

@@ -186,7 +186,7 @@ class Mission:
         launch.register_pid(f"run_{name}", process.pid)
 
     def start_radio(self):
-        self.start("radio", ["sim.radio", "--seed", str(self.args.seed),
+        self.start("radio", ["sim.radio", "--n", str(self.args.n), "--seed", str(self.args.seed),
                              "--log", os.path.join(self.out, "radio.jsonl")] + self.plan["radio"])
 
     def start_ground(self):

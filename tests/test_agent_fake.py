@@ -59,9 +59,9 @@ class Rig:
 
     def ground_sends(self):
         if self.assignment is not None:
-            self.ground.send(1, "ASSIGN", **self.assignment)
+            self.ground.send(protocol.assign(1, **self.assignment))
         if self.t0 is not None:
-            self.ground.send("all", "START", t0=self.t0)
+            self.ground.send(protocol.start(self.t0))
 
     def rows(self):
         with open(self.log_dir / "agent_1.csv") as f:
@@ -85,9 +85,9 @@ def test_start_sequence_flies_on_assign_before_start(tmp_path):
     assert abs(rig.vehicle.pos[2] - config.ALT_CRUISE_M) < 1.0
     assert "slot_reached" in rig.events()
     assert all(r["t_mission"] == "" for r in rig.rows())
-    states = [m for m in rig.link.sent if m["type"] == "STATE"]
-    assert (states[-1]["epoch"], states[-1]["status"]) == (1, "cover")
-    assert states[-1]["t_pos"] == pytest.approx(rig.clock(), abs=0.2)
+    states = [m for m in rig.link.sent if m.get_type() == "SWARM_STATE"]
+    assert (states[-1].epoch, protocol.STATUSES[states[-1].status]) == (1, "cover")
+    assert states[-1].time_usec / 1e6 == pytest.approx(rig.clock(), abs=0.2)
     rig.t0 = rig.clock() + 3.0                     # START only sets the mission clock
     rig.run(5)
     rows = rig.rows()
@@ -101,9 +101,9 @@ def test_take_off_waits_until_nobody_is_close(tmp_path):
     x, y = config.start_xy(0, 1)
     other = rig.radio.link(2)
     for _ in range(round(3 / TICK_S)):              # agent 2 hovers 4 m away for 3 s
-        other.send("all", "STATE", pos=[x + 4.0, y, 40.0], vel=[0, 0, 0], t_pos=rig.clock(),
-                   epoch=-1, slot=-1, status="hold")
+        other.send(protocol.state(rig.clock(), (x + 4.0, y, 40.0), (0, 0, 0), -1, -1, "hold"))
         rig.run(TICK_S)
+    rig.run(2 * config.RADIO_DELAY_S)                # its last STATEs arrive
     assert rig.agent.takeoff_thread is None
     rig.agent.safety.nbrs.clear()                    # it left (and was forgotten)
     rig.run(1)
@@ -141,7 +141,7 @@ def test_failsafe_when_the_autopilot_leaves_guided(tmp_path):
     setpoints, states = rig.vehicle.setpoints, len(rig.link.sent)
     rig.run(2)
     assert rig.vehicle.setpoints == setpoints                  # no more setpoints ...
-    assert rig.link.sent[-1]["status"] == "failsafe"           # ... but STATE goes on
+    assert protocol.STATUSES[rig.link.sent[-1].status] == "failsafe"    # ... but STATE goes on
     assert len(rig.link.sent) > states
 
 

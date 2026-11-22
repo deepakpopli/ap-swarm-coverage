@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<!-- The swarm's radio messages only (the autopilot link uses pymavlink's ardupilotmega).
+     Regenerate swarm/swarm_mav.py with the mavgen step in setup.sh. -->
+<mavlink>
+  <version>1</version>
+  <dialect>0</dialect>
+  <enums>
+    <enum name="SWARM_STATUS">
+      <description>What an agent is doing.</description>
+      <entry value="0" name="SWARM_STATUS_TAKEOFF"><description>Listening, waiting to climb, or climbing.</description></entry>
+      <entry value="1" name="SWARM_STATUS_READY"><description>At its hold altitude, no assignment yet.</description></entry>
+      <entry value="2" name="SWARM_STATUS_COVER"><description>Flying its assignment.</description></entry>
+      <entry value="3" name="SWARM_STATUS_HOLD"><description>Holding at its hold altitude (deaf, nothing to fly, or an infeasible slot).</description></entry>
+      <entry value="4" name="SWARM_STATUS_FAILSAFE"><description>The autopilot left GUIDED; the agent no longer controls the vehicle.</description></entry>
+    </enum>
+  </enums>
+  <messages>
+    <!-- Ids 43000-43003: used by no dialect bundled with pymavlink 2.4.49 (common, ardupilotmega, all.xml). -->
+    <message id="43000" name="SWARM_STATE">
+      <description>Agent to all, at STATE_HZ: its own state from its own autopilot.</description>
+      <!-- Shared clock, so neighbours can age the sample; real drones would use GPS time. -->
+      <field type="uint64_t" name="time_usec" units="us">Time the position was sampled (UNIX epoch).</field>
+      <field type="float" name="x" units="m">Position east of the area origin.</field>
+      <field type="float" name="y" units="m">Position north of the area origin.</field>
+      <field type="float" name="z" units="m">Height above the area origin.</field>
+      <field type="float" name="vx" units="m/s">Velocity east.</field>
+      <field type="float" name="vy" units="m/s">Velocity north.</field>
+      <field type="float" name="vz" units="m/s">Velocity up.</field>
+      <field type="int32_t" name="epoch">Epoch of the assignment flown, -1 before the first.</field>
+      <field type="int16_t" name="slot">Index of the active slot, -1 without one.</field>
+      <field type="uint8_t" name="status" enum="SWARM_STATUS">What the agent is doing.</field>
+    </message>
+    <message id="43001" name="SWARM_START">
+      <description>Ground to all, repeated: the mission clock.</description>
+      <field type="uint64_t" name="t0_usec" units="us">Wall time of mission t = 0 (UNIX epoch).</field>
+    </message>
+    <message id="43002" name="SWARM_ASSIGN">
+      <description>Ground to one agent, repeated at ASSIGN_HZ: its share and ordered goal slots.</description>
+      <field type="uint8_t" name="target_system">Agent id.</field>
+      <field type="int32_t" name="epoch">Increases on every re-plan.</field>
+      <field type="uint8_t" name="loop_from">After the last slot, continue from this index.</field>
+      <field type="uint8_t" name="slot_count">Slots used in slot_x and slot_y; 0 = hold.</field>
+      <field type="float[4]" name="share" units="m">xmin, xmax, ymin, ymax; all 0 with no plan.</field>
+      <field type="int16_t[48]" name="slot_x" units="dm">Slot x, east.</field>
+      <field type="int16_t[48]" name="slot_y" units="dm">Slot y, north.</field>
+    </message>
+    <message id="43003" name="SWARM_INFEASIBLE">
+      <description>Agent to ground, repeated until a newer epoch: a slot it could not reach in SLOT_TIMEOUT_S.</description>
+      <field type="uint8_t" name="target_system">Ground station id.</field>
+      <field type="int32_t" name="epoch">Epoch of the slot.</field>
+      <field type="int16_t" name="slot">Index of the slot.</field>
+      <field type="int16_t" name="slot_x" units="dm">Slot x, east.</field>
+      <field type="int16_t" name="slot_y" units="dm">Slot y, north.</field>
+    </message>
+  </messages>
+</mavlink>

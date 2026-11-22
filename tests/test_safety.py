@@ -6,7 +6,7 @@ import pytest
 
 from fakes import FakeRadio, SimClock
 from sim.fake_vehicle import FakeVehicle
-from swarm import config
+from swarm import config, protocol
 from swarm.safety import Neighbour, SafetyFilter, SafetyParams, clear_for_takeoff
 
 CRUISE = config.ALT_CRUISE_M
@@ -42,13 +42,13 @@ class Flyer:
     def tick(self, now, send_state):
         for m in self.link.recv_all():
             self.filter.heard(now)
-            if m["type"] == "STATE":
-                self.filter.update_neighbour(m["src"], m["pos"], m["vel"], m["t_pos"],
-                                             m["status"])
+            if m.get_type() == "SWARM_STATE":
+                self.filter.update_neighbour(m.get_srcSystem(), (m.x, m.y, m.z),
+                                             (m.vx, m.vy, m.vz), m.time_usec / 1e6,
+                                             protocol.STATUSES[m.status])
         v = self.vehicle
         if send_state:
-            self.link.send("all", "STATE", pos=list(v.pos), vel=list(v.vel), t_pos=now,
-                           status="cover")
+            self.link.send(protocol.state(now, v.pos, v.vel, 1, 0, "cover"))
         cmd = self.filter.step(now, tuple(v.pos), tuple(v.vel), self.nominal(), self.hold)
         v.send_setpoint(cmd.vx, cmd.vy, cmd.z)
         self.log.append((now, tuple(v.pos), cmd.holding, cmd.flags))
@@ -84,7 +84,7 @@ def fly(specs, seconds, seed, blackouts=()):
             for a, b in itertools.combinations(flyers, 2):
                 d_min = min(d_min, math.dist(a.vehicle.pos, b.vehicle.pos))
         if k % round(config.CONTROL_HZ) == 0:
-            ground.send("all", "START", t0=0.0)
+            ground.send(protocol.start(0.0))
         for f in flyers:
             f.tick(clock(), k % round(config.CONTROL_HZ / config.STATE_HZ) == 0)
     return flyers, d_min

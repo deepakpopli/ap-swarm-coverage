@@ -4,6 +4,7 @@
 #   ./setup.sh           check only
 #   ./setup.sh --build   also clone and build ArduCopter SITL and ardupilot_gazebo at the pinned
 #                        commits into $ARDUPILOT_HOME and $ARDUPILOT_GAZEBO (if not there yet)
+#   ./setup.sh --mavgen  regenerate swarm/swarm_mav.py from swarm/swarm.xml (after editing it)
 #
 # The code depends on parameter names of this ArduPilot commit (WP_SPD, MAV_GCS_SYSID, ...);
 # other commits may have renamed them, and MavVehicle then refuses to arm.
@@ -47,7 +48,12 @@ check_commit() {   # $1 = name, $2 = directory, $3 = pinned commit
   fi
 }
 
+mavgen() {   # the dialect includes nothing, so mavgen needs only swarm.xml
+  mavgen.py --lang=Python3 --wire-protocol=2.0 --output="$ROOT/swarm/swarm_mav.py" "$ROOT/swarm/swarm.xml"
+}
+
 [ "${1:-}" = --build ] && build
+[ "${1:-}" = --mavgen ] && { mavgen; exit; }
 
 echo
 printf '%-8s %-24s %s\n' STATUS COMPONENT "DETAIL / FIX"

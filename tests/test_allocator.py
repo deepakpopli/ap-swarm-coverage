@@ -122,7 +122,7 @@ def lane_of(asg):
 
 
 @pytest.mark.parametrize("zone, owner, lane_x", [(MIDDLE_ZONE, 2, 150.0),
-                                                 (CORNER_ZONE, 1, 18.75)])
+                                                 (CORNER_ZONE, 1, 18.8)])
 def test_priority_zone(at_alt, zone, owner, lane_x):
     """The owner's lane covers the zone within 30 s, half way between two area lanes; the
     others fly the whole area's lanes in groups, as if they were the whole fleet."""

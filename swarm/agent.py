@@ -111,24 +111,26 @@ class Agent:
         self._log_row(now, st, nominal, cmd)
         return True
 
-    def _on_message(self, msg: dict, now: float, st) -> None:
+    def _on_message(self, msg, now: float, st) -> None:
         self.safety.heard(now)
-        if msg["type"] == "STATE":
-            self.safety.update_neighbour(msg["src"], msg["pos"], msg["vel"], msg["t_pos"],
-                                         msg["status"])
-        elif msg["type"] == "START" and msg["t0"] != self.t0:
-            self.t0 = msg["t0"]
+        kind = msg.get_type()
+        if kind == "SWARM_STATE":
+            self.safety.update_neighbour(msg.get_srcSystem(), (msg.x, msg.y, msg.z),
+                                         (msg.vx, msg.vy, msg.vz), msg.time_usec / 1e6,
+                                         protocol.STATUSES[msg.status])
+        elif kind == "SWARM_START" and msg.t0_usec / 1e6 != self.t0:
+            self.t0 = msg.t0_usec / 1e6
             self.events.write(now, "start", t0=self.t0)
-        elif msg["type"] == "ASSIGN":
-            event = self.coverage.on_assign(msg, now, st.pos)
+        elif kind == "SWARM_ASSIGN":
+            event = self.coverage.on_assign(msg.epoch, protocol.assign_slots(msg),
+                                            msg.loop_from, st.pos)
             if event is not None:
                 self.events.write(now, **event)
 
     def _send_state(self, st) -> None:
-        self.link.send("all", "STATE", pos=[round(v, 2) for v in st.pos],
-                       vel=[round(v, 2) for v in st.vel], t_pos=st.t,
-                       epoch=-1 if self.coverage.epoch is None else self.coverage.epoch,
-                       slot=self.coverage.idx, status=self.status)
+        self.link.send(protocol.state(st.t, st.pos, st.vel,
+                                      -1 if self.coverage.epoch is None else self.coverage.epoch,
+                                      self.coverage.idx, self.status))
 
     # ---- phases ---------------------------------------------------------------------------
     def _taking_off(self) -> bool:
@@ -193,7 +195,7 @@ class Agent:
             self.events.write(now, **event)
         body = self.coverage.infeasible_due(now)
         if body is not None:
-            self.link.send(config.GROUND_ID, "INFEASIBLE", **body)
+            self.link.send(protocol.infeasible(body["epoch"], body["slot"], body["slot_xy"]))
         if not cmd.holding:
             self.status = "cover"
         elif self.coverage.epoch is None and "deaf" not in cmd.flags:

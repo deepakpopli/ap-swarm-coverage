@@ -3,11 +3,18 @@ import json
 
 import pytest
 
-from swarm import config, ground
+from swarm import config, ground, protocol
+from swarm import swarm_mav as mav
 from swarm.allocator import slot_key
 from swarm.ground import Ground, JsonLines
 
 TICK_S = 0.2
+
+
+def wire(src, msg):
+    """msg as `src` would send it, packed and decoded."""
+    packer = mav.MAVLink(None, srcSystem=src, srcComponent=protocol.COMPONENT)
+    return packer.decode(bytearray(msg.pack(packer)))
 
 
 class FakeLink:
@@ -19,8 +26,8 @@ class FakeLink:
         messages, self.inbox = self.inbox, []
         return messages
 
-    def send(self, dst, mtype, **body):
-        self.sent.append((dst, mtype, body))
+    def send(self, msg):
+        self.sent.append(wire(config.GROUND_ID, msg))
 
 
 class FakeAgent:
@@ -37,16 +44,16 @@ class FakeAgent:
         self.slot = -1
 
     def state(self):
-        msg = {"src": self.id, "type": "STATE", "pos": self.xy + [50.0], "epoch": self.epoch,
-               "slot": self.slot, "status": self.status}
+        msg = wire(self.id, protocol.state(0.0, self.xy + [50.0], [0.0] * 3, self.epoch,
+                                           self.slot, self.status))
         if self.on_loop and self.epoch > 0:
             self.slot += 1
         return msg
 
-    def hear(self, body):
-        if body["epoch"] != self.epoch:
-            self.epoch = body["epoch"]
-            self.slot = body["loop_from"]
+    def hear(self, msg):
+        if msg.epoch != self.epoch:
+            self.epoch = msg.epoch
+            self.slot = msg.loop_from
 
 
 class Sim:
@@ -64,15 +71,14 @@ class Sim:
                 if agent.talking:
                     self.link.inbox.append(agent.state())
             self.ground.step(self.now)
-            for dst, mtype, body in self.link.sent:
-                if mtype == "ASSIGN" and self.agents[dst].talking:
-                    self.agents[dst].hear(body)
+            for msg in self.link.sent:
+                if msg.get_type() == "SWARM_ASSIGN" and self.agents[msg.target_system].talking:
+                    self.agents[msg.target_system].hear(msg)
             self.link.sent.clear()
             self.now += TICK_S
 
     def infeasible(self, agent_id, epoch, xy):
-        self.link.inbox.append({"src": agent_id, "type": "INFEASIBLE", "epoch": epoch,
-                                "slot": 0, "slot_xy": xy})
+        self.link.inbox.append(wire(agent_id, protocol.infeasible(epoch, 0, xy)))
 
     def events(self, kind):
         with open(self.path) as f:
@@ -145,9 +151,9 @@ def test_lost_agent_is_told_it_has_no_plan(tmp_path):
     sim.agents[2].talking = False
     sim.run(config.LOST_S + 1.0)
     sim.ground.step(sim.now + 1.0)
-    assigns = {dst: body for dst, mtype, body in sim.link.sent if mtype == "ASSIGN"}
-    assert assigns[2]["slots"] == [] and assigns[2]["epoch"] == sim.ground.epoch
-    assert assigns[1]["slots"] and assigns[3]["slots"]
+    assigns = {m.target_system: m for m in sim.link.sent if m.get_type() == "SWARM_ASSIGN"}
+    assert assigns[2].slot_count == 0 and assigns[2].epoch == sim.ground.epoch
+    assert assigns[1].slot_count and assigns[3].slot_count
 
 
 def test_rejoin_needs_steady_contact(tmp_path):

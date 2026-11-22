@@ -52,16 +52,16 @@ class CoverageController:
         self.last_sent: Optional[float] = None
         self.last_now: Optional[float] = None
 
-    def on_assign(self, msg: dict, now: float, xy) -> Optional[dict]:
+    def on_assign(self, epoch: int, slots, loop_from: int, xy) -> Optional[dict]:
         """Apply an ASSIGN. Returns an event to log, or None for an old epoch."""
-        if self.epoch is not None and msg["epoch"] <= self.epoch:
+        if self.epoch is not None and epoch <= self.epoch:
             return None
-        self.epoch = msg["epoch"]
+        self.epoch = epoch
         self.infeasible = None
-        slots = [(s[0], s[1]) for s in msg["slots"]]
-        if slots == self.slots and msg["loop_from"] == self.loop_from:
+        slots = [(s[0], s[1]) for s in slots]
+        if slots == self.slots and loop_from == self.loop_from:
             return {"event": "assign", "epoch": self.epoch, "same_plan": True}
-        self.slots, self.loop_from = slots, msg["loop_from"]
+        self.slots, self.loop_from = slots, loop_from
         self.idx = self._nearest_slot(xy)
         self.seg_start = (xy[0], xy[1])
         self.active_s = 0.0

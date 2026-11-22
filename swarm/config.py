@@ -77,7 +77,9 @@ PRIORITY_REVISIT_S = 30.0
 # ---- network ports (a per-run --port-base is added to each)
 RADIO_PORT = 14000
 GROUND_PORT = 14099
-GROUND_ID = 0            # agents are 1..N (also their MAV_SYSID); SITL instance = id - 1
+# MAVLink system ids: the ground 255 (0 is broadcast); agents 1..N, the same as their own
+# autopilot's MAV_SYSID; SITL instance = id - 1
+GROUND_ID = 255
 
 
 def agent_port(agent_id):

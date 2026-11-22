@@ -1,4 +1,4 @@
-"""Radio emulator: drop decisions and windows without sockets, plus one slow end-to-end test."""
+"""Radio emulator: routing, seeded loss and windows in-process, plus delay over real sockets."""
 import json
 import os
 import subprocess
@@ -7,31 +7,87 @@ import time
 
 import pytest
 
-from sim.radio import drop_draw, window_drop
+from sim.radio import Radio, window_drop
+from swarm import config, protocol
+from swarm import swarm_mav as mav
 from swarm.net import RadioLink
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GROUND = config.GROUND_ID
+STATE = protocol.state(0.0, (1.0, 2.0, 50.0), (0.0, 0.0, 0.0), 1, 0, "cover")
 
 
-def test_drop_decision_is_a_function_of_seed_src_dst_seq():
-    assert drop_draw(7, 1, 2, 42) == drop_draw(7, 1, 2, 42)
-    assert len({drop_draw(7, 1, 2, seq) for seq in range(100)}) == 100
-    assert drop_draw(7, 1, 2, 42) != drop_draw(8, 1, 2, 42)
-    assert drop_draw(7, 1, 2, 42) != drop_draw(7, 2, 1, 42)
+def port_base(k):
+    """A port range per test and per pytest process, clear of a running mission's."""
+    return 20000 + os.getpid() % 400 * 20 + k
 
 
-@pytest.mark.parametrize("seed", [0, 1, 2])
-def test_measured_loss_rate(seed):
-    draws = [drop_draw(seed, src, dst, seq) for src, dst in [(1, 2), (2, 0), (0, 3)]
-             for seq in range(1, 1668)]                       # about 5000 copies
-    loss = sum(u < 0.2 for u in draws) / len(draws)
-    assert loss == pytest.approx(0.2, abs=0.02)               # 3.5 standard deviations
+def packet(src, msg) -> bytes:
+    return bytes(msg.pack(mav.MAVLink(None, srcSystem=src, srcComponent=protocol.COMPONENT)))
+
+
+def radio(tmp_path, k, seed=1, loss=0.2, blackouts=(), mutes=()):
+    return Radio(3, seed, loss, 0.2, port_base(k), str(tmp_path / f"radio{k}.jsonl"),
+                 list(blackouts), list(mutes))
+
+
+def queued(r):
+    return sorted((src, dst) for _, _, _, src, dst, _ in r.queue)
+
+
+def test_broadcast_goes_to_every_node_but_the_sender(tmp_path):
+    r = radio(tmp_path, 0, loss=0.0)
+    r.on_datagram(packet(2, STATE), 100.0)
+    assert queued(r) == [(2, 1), (2, 3), (2, GROUND)]
+
+
+def test_assign_and_infeasible_go_to_target_system_only(tmp_path):
+    r = radio(tmp_path, 1, loss=0.0)
+    r.on_datagram(packet(GROUND, protocol.assign(3, 5, [0, 1, 2, 3], [(1.0, 2.0)], 0)), 100.0)
+    r.on_datagram(packet(1, protocol.infeasible(5, 0, (1.0, 2.0))), 100.0)
+    assert queued(r) == [(1, GROUND), (GROUND, 3)]
+
+
+def drops(r, src, dst, count):
+    """Route `count` copies src -> dst; True where the copy was dropped for loss."""
+    out = []
+    for _ in range(count):
+        stats = r.stats.get(f"{src}->{dst}")
+        lost_before = stats.dropped_loss if stats else 0
+        r.route(b"", src, dst, 100.0)
+        out.append(r.stats[f"{src}->{dst}"].dropped_loss > lost_before)
+    r.queue.clear()
+    return out
+
+
+def test_seeded_loss_is_reproducible_and_about_20_percent(tmp_path):
+    a, b, c = radio(tmp_path, 2), radio(tmp_path, 3), radio(tmp_path, 4, seed=2)
+    for src, dst in [(1, 2), (2, 1), (GROUND, 3), (3, GROUND)]:
+        pattern = drops(a, src, dst, 10000)
+        assert drops(b, src, dst, 10000) == pattern          # same seed: same copies dropped
+        assert drops(c, src, dst, 10000) != pattern          # another seed: others
+        assert sum(pattern) / 10000 == pytest.approx(0.2, abs=0.014)   # 3.5 sigma
+        assert pattern[:256] != pattern[256:512]             # no 256-message period
+
+
+def test_window_drops_need_t0_from_start(tmp_path):
+    r = radio(tmp_path, 5, loss=0.0, blackouts=[(3, 10.0, 20.0)], mutes=[(2, 5.0, 8.0)])
+    r.on_datagram(packet(3, STATE), 1015.0)                  # no t0 yet: no window
+    assert len(r.queue) == 3
+    r.on_datagram(packet(GROUND, protocol.start(1000.0)), 1001.0)
+    assert r.t0 == 1000.0
+    r.queue.clear()
+    r.on_datagram(packet(3, STATE), 1015.0)                  # blackout: from 3 ...
+    r.on_datagram(packet(1, STATE), 1015.0)                  # ... and to 3
+    r.on_datagram(packet(2, STATE), 1006.0)                  # mute: what 2 sends
+    assert queued(r) == [(1, 2), (1, GROUND)]
+    assert r.stats["1->3"].dropped_window == 1 and r.stats["2->1"].dropped_window == 1
 
 
 def test_blackout_cuts_both_directions():
     blackouts = [(3, 10.0, 20.0)]
     assert window_drop(3, 1, 10.0, blackouts, [])             # from 3
-    assert window_drop(0, 3, 19.9, blackouts, [])             # to 3
+    assert window_drop(GROUND, 3, 19.9, blackouts, [])        # to 3
     assert not window_drop(1, 2, 15.0, blackouts, [])         # others unaffected
     assert not window_drop(3, 1, 9.9, blackouts, [])          # [T0, T1)
     assert not window_drop(1, 3, 20.0, blackouts, [])
@@ -40,56 +96,40 @@ def test_blackout_cuts_both_directions():
 def test_mute_cuts_only_what_the_agent_sends():
     mutes = [(2, 5.0, 8.0)]
     assert window_drop(2, 1, 6.0, [], mutes)
-    assert window_drop(2, 0, 6.0, [], mutes)
+    assert window_drop(2, GROUND, 6.0, [], mutes)
     assert not window_drop(1, 2, 6.0, [], mutes)              # it still hears
     assert not window_drop(2, 1, 8.0, [], mutes)
 
 
-def start_radio(port_base, log_path):
-    proc = subprocess.Popen([sys.executable, "-m", "sim.radio", "--seed", "1", "--loss", "0",
-                             "--delay", "0.2", "--port-base", str(port_base), "--log", log_path],
-                            cwd=REPO)
-    time.sleep(0.5)
-    return proc
-
-
-def exchange(sender, receiver, count):
-    """Send `count` messages, one per 10 ms poll, and return those that arrived."""
-    got = []
-    sent = 0
-    end = time.time() + 3.0
-    while time.time() < end and len(got) < count:
-        if sent < count:
-            sender.send(receiver.node_id, "PING")
-            sent += 1
-        got += [m for m in receiver.recv_all() if m["type"] == "PING"]
-        time.sleep(0.01)
-    return got
-
-
-@pytest.mark.slow
-def test_delay_and_reregistration_after_radio_restart(tmp_path):
-    port_base = 20000 + os.getpid() % 500 * 10
+def test_delay_over_sockets(tmp_path):
+    """Real relay, no loss: 20 STATEs from 1 reach 2 after about 0.2 s; agent 3 is not running."""
+    base = port_base(6)
     log_path = str(tmp_path / "radio.jsonl")
-    a, b = RadioLink(1, port_base), RadioLink(2, port_base)
-    radio = start_radio(port_base, log_path)
+    a, b = RadioLink(1, base), RadioLink(2, base)
+    proc = subprocess.Popen([sys.executable, "-m", "sim.radio", "--n", "3", "--seed", "1",
+                             "--loss", "0", "--delay", "0.2", "--port-base", str(base),
+                             "--log", log_path], cwd=REPO)
+    got, sent_at = [], []
     try:
-        a.recv_all(), b.recv_all()                            # HELLO
-        a.next_hello = b.next_hello = 0.0
-        got = exchange(a, b, 20)
-        delays = [m["t_recv"] - m["t"] for m in got]
-        assert len(got) == 20
-        assert 0.195 <= min(delays) and max(delays) < 0.25
-        radio.terminate()
-        radio.wait(5)
-        radio = start_radio(port_base, log_path)              # forgets every node
-        time.sleep(1.1)                                       # one HELLO period
-        assert len(exchange(a, b, 10)) == 10
+        time.sleep(0.5)
+        end = time.time() + 3.0
+        while time.time() < end and len(got) < 20:
+            if len(sent_at) < 20:      # the epoch field numbers the messages
+                sent_at.append(time.time())
+                a.send(protocol.state(sent_at[-1], (1.0, 2.0, 50.0), (0.0, 0.0, 0.0),
+                                      len(sent_at) - 1, 0, "cover"))
+            got += b.recv_all()
+            time.sleep(0.01)
     finally:
-        radio.terminate()
-        radio.wait(5)
+        proc.terminate()
+        proc.wait(5)
         a.close()
         b.close()
+    assert len(got) == 20 and all(m.get_srcSystem() == 1 for m in got)
+    delays = [m.t_recv - sent_at[m.epoch] for m in got]
+    assert 0.195 <= min(delays) and max(delays) < 0.25
     with open(log_path) as f:
-        stats = [r for r in map(json.loads, f) if r["event"] == "stats"]
-    assert [s["pairs"]["1->2"]["delivered"] for s in stats] == [20, 10]
+        [stats] = [r for r in map(json.loads, f) if r["event"] == "stats"]
+    pair = stats["pairs"]["1->2"]
+    assert pair["delivered"] == 20 and pair["delay_mean_s"] == pytest.approx(0.2, abs=0.01)
+    assert stats["pairs"]["1->3"]["delivered"] == 20          # nobody listens: harmless

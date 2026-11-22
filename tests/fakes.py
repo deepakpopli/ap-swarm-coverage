@@ -1,11 +1,14 @@
 """Test doubles: a simulated clock and an in-memory radio with loss, delay and blackouts.
 
-FakeLink has the same two methods as swarm.net.RadioLink: send(dst, mtype, **body) and
-recv_all() -> list of message dicts, each with "t_recv" added.
+FakeLink has the same two methods as swarm.net.RadioLink: send(msg) and recv_all() -> list of
+decoded MAVLink messages, each with .t_recv set. Packets are packed and decoded for real.
 """
 import heapq
 import itertools
 import random
+
+from swarm import protocol
+from swarm import swarm_mav as mav
 
 
 class SimClock:
@@ -54,7 +57,7 @@ class FakeRadio:
             if item[2] != node:
                 keep.append(item)
             elif not self.blacked_out(node, item[0]):
-                out.append(dict(item[3], t_recv=now))
+                out.append((item[3], now))
         for item in keep:
             heapq.heappush(self.queue, item)
         return out
@@ -63,15 +66,18 @@ class FakeRadio:
 class FakeLink:
     def __init__(self, node_id, radio: FakeRadio):
         self.id, self.radio = node_id, radio
-        self.seq = 0
+        self.mav = mav.MAVLink(None, srcSystem=node_id, srcComponent=protocol.COMPONENT)
         self.sent = []
 
-    def send(self, dst, mtype, **body):
-        self.seq += 1
-        msg = {"src": self.id, "dst": dst, "seq": self.seq, "t": self.radio.clock(),
-               "type": mtype, **body}
+    def send(self, msg):
         self.sent.append(msg)
-        self.radio.submit(self.id, dst, msg)
+        dst = protocol.destination(msg)
+        self.radio.submit(self.id, "all" if dst is None else dst, bytes(msg.pack(self.mav)))
 
     def recv_all(self):
-        return self.radio.collect(self.id)
+        out = []
+        for data, t_recv in self.radio.collect(self.id):
+            msg = self.mav.decode(bytearray(data))
+            msg.t_recv = t_recv
+            out.append(msg)
+        return out

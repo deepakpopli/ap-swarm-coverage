@@ -7,10 +7,6 @@ from swarm.coverage import CoverageController
 TICK_S = 1.0 / config.CONTROL_HZ
 
 
-def assign(epoch, slots, loop_from=0):
-    return {"epoch": epoch, "share": [0, 300, 0, 300], "slots": slots, "loop_from": loop_from}
-
-
 class Run:
     """A controller and a point mass that flies exactly what it is told (or stays put)."""
 
@@ -22,7 +18,7 @@ class Run:
         self.speeds = []       # (active slot, commanded speed) per tick
 
     def assign(self, epoch, slots, loop_from=0):
-        return self.cov.on_assign(assign(epoch, slots, loop_from), self.t, self.xy)
+        return self.cov.on_assign(epoch, slots, loop_from, self.xy)
 
     def fly(self, seconds, move=True, deaf=False):
         for _ in range(round(seconds / TICK_S)):

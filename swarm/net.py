@@ -1,17 +1,13 @@
-"""RadioLink: the only path between nodes. Every datagram goes to the radio emulator (sim/radio.py),
-which drops or delays it and forwards it.
-
-A node binds its own UDP port and tells the radio about it with HELLO, once a second, so a
-restarted radio relearns every node within a second. HELLO uses seq 0; data messages count
-from 1 (the radio's loss decision depends on seq).
+"""RadioLink: the only path between nodes. Every MAVLink packet goes to the radio emulator
+(sim/radio.py), which drops or delays it and forwards it to the receivers' listen ports.
 """
 import socket
 import time
 
 from swarm import config, protocol
+from swarm import swarm_mav as mav
 
 HOST = "127.0.0.1"
-HELLO_PERIOD_S = 1.0
 
 
 def listen_port(node_id, port_base=0) -> int:
@@ -23,44 +19,35 @@ def listen_port(node_id, port_base=0) -> int:
 class RadioLink:
     def __init__(self, node_id: int, port_base: int = 0):
         self.node_id = node_id
-        self.port = listen_port(node_id, port_base)
         self.radio = (HOST, config.RADIO_PORT + port_base)
-        self.seq = 0
-        self.next_hello = 0.0
+        self.mav = mav.MAVLink(self, srcSystem=node_id, srcComponent=protocol.COMPONENT)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((HOST, self.port))
+        self.sock.bind((HOST, listen_port(node_id, port_base)))
         self.sock.setblocking(False)
 
-    def _to_radio(self, data):
+    def write(self, data):
+        """Called by self.mav.send: one packet, one datagram."""
         try:
             self.sock.sendto(data, self.radio)
         except OSError:
             pass   # radio not up: the message is lost, as on a real radio
 
-    def _hello_if_due(self):
-        now = time.time()
-        if now >= self.next_hello:
-            self._to_radio(protocol.encode(self.node_id, "radio", 0, now, "HELLO", port=self.port))
-            self.next_hello = now + HELLO_PERIOD_S
-
-    def send(self, dst, mtype: str, **body) -> int:
-        """Send one message to node `dst` or "all". Returns its seq."""
-        self._hello_if_due()
-        self.seq += 1
-        self._to_radio(protocol.encode(self.node_id, dst, self.seq, time.time(), mtype, **body))
-        return self.seq
+    def send(self, msg) -> None:
+        self.mav.send(msg)
 
     def recv_all(self) -> list:
-        """Every message waiting, decoded, with "t_recv" (wall time) added. Never blocks."""
-        self._hello_if_due()
+        """Every message waiting, decoded, with .t_recv (wall time) set. Never blocks."""
         messages = []
         while True:
             try:
                 data = self.sock.recv(65535)
             except BlockingIOError:
                 return messages
-            msg = protocol.decode(data)
-            msg["t_recv"] = time.time()
+            try:
+                msg = self.mav.decode(bytearray(data))
+            except mav.MAVError:
+                continue   # not a packet of our dialect
+            msg.t_recv = time.time()
             messages.append(msg)
 
     def close(self):

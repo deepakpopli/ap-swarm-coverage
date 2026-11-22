@@ -1,35 +1,26 @@
 """Radio emulator: one UDP relay that every message between nodes passes through.
 
-    python -m sim.radio --seed S --loss 0.2 --delay 0.2 --port-base 0 --log run/radio.jsonl
+    python -m sim.radio --n N --seed S --loss 0.2 --delay 0.2 --port-base 0 --log run/radio.jsonl
                         [--blackout ID:T0:T1 ...] [--mute ID:T0:T1 ...]
 
-HELLO {"port"} registers a node; nodes repeat it every second, so a restarted radio relearns
-them. Any other message goes to each receiver (dst, or every registered node but src for "all"):
-per receiver, dropped with probability `loss`, else forwarded unchanged after `delay` seconds.
---blackout drops everything to and from agent ID in mission time [T0, T1); --mute drops only
-what ID sends (a one-way failure: it still hears). Mission time needs t0, which the radio
-learns from the ground's START: the only place it reads inside a payload.
+Each datagram is one MAVLink packet from the header's source system, to target_system for
+SWARM_ASSIGN and SWARM_INFEASIBLE, else to every other node; nodes listen on net.listen_port(id),
+so nothing registers. Per receiver a copy is dropped with probability `loss`, else forwarded
+`delay` s after arrival. --blackout drops all to and from ID in mission time [T0, T1); --mute
+only what ID sends (it still hears). Mission time comes from the ground's SWARM_START.
 
-Determinism: the drop of one copy is a hash of (seed, src, dst, seq), so with the same seed
-the k-th message from A to B is dropped in every run or in none. Not fixed by the seed: which
-message gets seq k, what falls inside a window, and whether a receiver had registered in time.
-More in docs/allocation.md.
+Determinism: one random.Random per (src, dst), one draw per copy in arrival order, so the k-th
+copy from A to B is dropped in every run or in none (MAVLink seq would wrap every 256).
+The queue holds at most `delay` s of traffic: each pass reads one datagram and forwards all due.
 
-Queue bound: each pass reads one datagram and forwards every copy that is due, so no copy
-waits longer than `delay` plus one pass. The queue therefore holds at most what the radio read
-in the last `delay` seconds; senders faster than the radio reads lose datagrams in the kernel's
-fixed-size socket buffer, never in this queue.
-
-Log (JSON lines, each with "t_wall" and "event"): "config" at start, "register", "start_seen",
-and "stats" once at exit: per "src->dst" pair and in total {sent, delivered, dropped_loss,
-dropped_window, delay_mean_s, delay_max_s}. sent - delivered - dropped = copies with no
-registered receiver, a failed sendto, or still queued at exit. Delay = forward time - the
-sender's "t".
+Log (JSON lines, "t_wall", "event"): "config", "start_seen", and at exit "stats" per "src->dst"
+and in total {sent, delivered, dropped_loss, dropped_window, delay_mean_s, delay_max_s};
+delay = forward time - receive time.
 """
 import argparse
-import hashlib
 import heapq
 import json
+import random
 import select
 import signal
 import socket
@@ -37,14 +28,13 @@ import time
 from dataclasses import dataclass
 
 from swarm import config, protocol
+from swarm import swarm_mav as mav
+from swarm.net import HOST, listen_port
 
-HOST = "127.0.0.1"
 
-
-def drop_draw(seed, src, dst, seq) -> float:
-    """A uniform number in [0, 1) that depends only on (seed, src, dst, seq)."""
-    digest = hashlib.blake2b(f"{seed}:{src}:{dst}:{seq}".encode(), digest_size=8).digest()
-    return int.from_bytes(digest, "big") / 2.0 ** 64
+def pair_rng(seed, src, dst) -> random.Random:
+    """The loss draws of one (src, dst) pair; a str seed is hashed the same in every process."""
+    return random.Random(f"{seed}:{src}:{dst}")
 
 
 def in_window(windows, node, t_mission) -> bool:
@@ -88,21 +78,24 @@ class PairStats:
 
 
 class Radio:
-    def __init__(self, seed, loss, delay_s, port_base, log_path, blackouts, mutes):
+    def __init__(self, n, seed, loss, delay_s, port_base, log_path, blackouts, mutes):
+        self.nodes = [config.GROUND_ID] + list(range(1, n + 1))
         self.seed = seed
         self.loss = loss
         self.delay_s = delay_s
+        self.port_base = port_base
         self.blackouts = blackouts
         self.mutes = mutes
-        self.nodes = {}            # node id -> listen port
-        self.t0 = None             # mission t0 (wall time), from the ground's START
-        self.queue = []            # heap of (due time, count, data, src, dst, sender's t)
+        self.parser = mav.MAVLink(None)
+        self.rngs = {}             # (src, dst) -> random.Random, see pair_rng
+        self.t0 = None             # mission t0 (wall time), from the ground's SWARM_START
+        self.queue = []            # heap of (due time, count, data, src, dst, receive time)
         self.count = 0             # tie-breaker: copies due at the same time keep their order
         self.stats = {}            # "src->dst" -> PairStats
         self.log = open(log_path, "a")
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((HOST, config.RADIO_PORT + port_base))
-        self.write("config", seed=seed, loss=loss, delay_s=delay_s, port_base=port_base,
+        self.write("config", n=n, seed=seed, loss=loss, delay_s=delay_s, port_base=port_base,
                    blackouts=blackouts, mutes=mutes)
 
     def write(self, event, **fields):
@@ -110,42 +103,40 @@ class Radio:
         self.log.flush()
 
     def on_datagram(self, data, now):
-        msg = protocol.decode(data)
-        src = msg["src"]
-        if msg["type"] == "HELLO":
-            if self.nodes.get(src) != msg["port"]:
-                self.nodes[src] = msg["port"]
-                self.write("register", node=src, port=msg["port"])
-            return
-        if msg["type"] == "START" and msg["t0"] != self.t0:   # the one payload read
-            self.t0 = msg["t0"]
+        try:
+            msg = self.parser.decode(bytearray(data))
+        except mav.MAVError:
+            return             # not one of our packets
+        src = msg.get_srcSystem()
+        if msg.get_type() == "SWARM_START" and msg.t0_usec / 1e6 != self.t0:
+            self.t0 = msg.t0_usec / 1e6
             self.write("start_seen", t0=self.t0)
-        receivers = [msg["dst"]] if msg["dst"] != "all" else sorted(set(self.nodes) - {src})
-        for dst in receivers:
-            self.route(data, src, dst, msg["seq"], msg["t"], now)
+        dst = protocol.destination(msg)
+        for receiver in [dst] if dst is not None else [d for d in self.nodes if d != src]:
+            self.route(data, src, receiver, now)
 
-    def route(self, data, src, dst, seq, t_sent, now):
+    def route(self, data, src, dst, now):
         stats = self.stats.setdefault(f"{src}->{dst}", PairStats())
         stats.sent += 1
+        rng = self.rngs.setdefault((src, dst), pair_rng(self.seed, src, dst))
+        lost = rng.random() < self.loss      # drawn for every copy: windows do not shift it
         if self.t0 is not None and window_drop(src, dst, now - self.t0, self.blackouts,
                                                self.mutes):
             stats.dropped_window += 1
-        elif drop_draw(self.seed, src, dst, seq) < self.loss:
+        elif lost:
             stats.dropped_loss += 1
         else:
             self.count += 1
-            heapq.heappush(self.queue, (now + self.delay_s, self.count, data, src, dst, t_sent))
+            heapq.heappush(self.queue, (now + self.delay_s, self.count, data, src, dst, now))
 
     def forward_due(self, now):
         while self.queue and self.queue[0][0] <= now:
-            _, _, data, src, dst, t_sent = heapq.heappop(self.queue)
-            if dst not in self.nodes:
-                continue
+            _, _, data, src, dst, t_recv = heapq.heappop(self.queue)
             try:
-                self.sock.sendto(data, (HOST, self.nodes[dst]))
+                self.sock.sendto(data, (HOST, listen_port(dst, self.port_base)))
             except OSError:
                 continue
-            delay = time.time() - t_sent
+            delay = time.time() - t_recv
             stats = self.stats[f"{src}->{dst}"]
             stats.delivered += 1
             stats.delay_sum_s += delay
@@ -177,6 +168,7 @@ def _exit_on_signal(signum, frame):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Radio emulator")
+    ap.add_argument("--n", type=int, required=True, help="agents 1..N")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--loss", type=float, default=config.RADIO_LOSS)
     ap.add_argument("--delay", type=float, default=config.RADIO_DELAY_S)
@@ -187,7 +179,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGINT, _exit_on_signal)
-    Radio(args.seed, args.loss, args.delay, args.port_base, args.log, args.blackout,
+    Radio(args.n, args.seed, args.loss, args.delay, args.port_base, args.log, args.blackout,
           args.mute).run()
 
 
