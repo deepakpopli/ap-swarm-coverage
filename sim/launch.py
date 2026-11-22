@@ -9,6 +9,10 @@ Both backends report the same area ENU positions:
 
 Every child runs under `nice -n 19` and gets SIGKILL when this process dies (PR_SET_PDEATHSIG,
 so call start() from the main thread).
+SWARM_DEMO=1 / SWARM_DEMO_ZONE=1, gazebo only, live view only (tools/show_gazebo.sh): the
+visuals of sim/demo_world.py. SWARM_DEMO_PHYSICS=1 with them: the drones are really
+SWARM_DEMO_SCALE x larger, and every arducopter gets their scaled tune as one more defaults
+file (run_dir/demo_physics.parm). Off by default.
 """
 import ctypes
 import os
@@ -18,8 +22,11 @@ import subprocess
 import time
 from typing import Optional
 
-from sim import gazebo_world
+from sim import demo_world, gazebo_world
 from swarm import config
+
+DEMO = os.environ.get("SWARM_DEMO") == "1"
+DEMO_ZONE = os.environ.get("SWARM_DEMO_ZONE") == "1"
 
 ARDUPILOT = os.path.expanduser(os.environ.get("ARDUPILOT_HOME", "~/ardupilot"))
 ARDUCOPTER = os.path.join(ARDUPILOT, "build/sitl/bin/arducopter")
@@ -84,7 +91,7 @@ class Fleet:
     def _start_gazebo(self) -> None:
         gz_dir = os.path.join(self.run_dir, "gz")
         positions = [config.start_xy(i, self.n) for i in range(self.n)]
-        sdf = gazebo_world.generate(gz_dir, positions, config.ORIGIN_LLA)
+        sdf = gazebo_world.generate(gz_dir, positions, config.ORIGIN_LLA, DEMO, DEMO_ZONE)
         self.gz = start_process(["gz", "sim", "-s", "-r", "-v", "2", sdf],
                          os.path.join(self.run_dir, "gz.log"), env=self.env)
 
@@ -96,6 +103,11 @@ class Fleet:
         if self.backend == "gazebo":
             model = "JSON"
             params += "," + os.path.join(DEFAULT_PARAMS, "gazebo-iris.parm")
+            if gazebo_world.physical_demo(DEMO):          # the tune of the big drone
+                tune = os.path.join(self.run_dir, "demo_physics.parm")
+                with open(tune, "w") as f:
+                    f.write(demo_world.physical_params(demo_world.DRONE_SCALE))
+                params += "," + tune
             lat, lon = config.ORIGIN_LLA[0], config.ORIGIN_LLA[1]
         else:
             model = "+"

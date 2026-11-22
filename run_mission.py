@@ -41,6 +41,9 @@ OBSTACLE_RADIUS_M = 10.0    # > 2 x SLOT_REACH_M: the agent cannot "fly past" th
 OBSTACLE_AT_S = 30.0        # it appears mid-mission: in the warm-up every loop slot is flown
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)
 RTF_MIN = 0.95              # slower than this, the sim no longer keeps up with the wall clock
+# live view only (tools/show_gazebo.sh): a drone that goes away on its own, e.g. removed in the
+# Gazebo window, is an unplanned loss the swarm has to handle, not an invalid run. Off by default.
+LIVE = os.environ.get("SWARM_LIVE") == "1"
 
 # scenario -> (the mission it modifies, what it tests)
 SCENARIOS = {
@@ -216,6 +219,9 @@ class Mission:
             self.fleet.gps_off(int(target.split(":")[1]))
         elif target.startswith("sitl:"):
             agent = int(target.split(":")[1])
+            if LIVE and agent not in self.fleet.autopilots:
+                log(f"drone {agent} is already gone, no kill")      # removed in the window
+                return
             self.may_exit.add(f"agent_{agent}")       # it exits by itself once its link dies
             self.fleet.kill_vehicle(agent)            # raises if the Gazebo model stays
         elif action == "kill":
@@ -225,16 +231,35 @@ class Mission:
         if ":" in target:
             self.meta["kill_wall"] = fault["wall"]
 
+    def unplanned_loss(self, agent, why):
+        """Live view: a drone went away by itself (e.g. removed in the window). Its agent and
+        autopilot may end; the others carry on and the swarm treats it like any loss."""
+        self.may_exit.add(f"agent_{agent}")
+        if self.fleet is not None and agent in self.fleet.autopilots:
+            process = self.fleet.autopilots.pop(agent)
+            process.kill()
+            process.wait()
+        self.meta.setdefault("unplanned_losses", []).append(
+            {"agent": agent, "wall": time.time(), "why": why})
+        self.save_meta()
+        log(f"unplanned loss of drone {agent} ({why}), the mission goes on")
+
     # ---- watching
     def check(self, t_mission):
         """Raise Invalid if a process ended unexpectedly."""
         for name, process in self.procs.items():
             ended_on_time = name == "ground" and t_mission >= self.args.mission_s - 1.0
             if process.poll() is not None and name not in self.may_exit and not ended_on_time:
+                if LIVE and name.startswith("agent_"):
+                    self.unplanned_loss(int(name.split("_")[1]), f"{name} exit {process.returncode}")
+                    continue
                 raise Invalid(f"{name} died unexpectedly (exit {process.returncode})")
         if self.fleet is not None:
-            for agent, process in self.fleet.autopilots.items():
+            for agent, process in list(self.fleet.autopilots.items()):
                 if process.poll() is not None:
+                    if LIVE:
+                        self.unplanned_loss(agent, "arducopter ended")
+                        continue
                     raise Invalid(f"arducopter {agent} died unexpectedly")
             if self.fleet.gz is not None and self.fleet.gz.poll() is not None:
                 raise Invalid("gz sim died unexpectedly")
