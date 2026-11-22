@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from analysis import logs, metrics, report
+from analysis import logs, metrics, report, scenarios
 from analysis.logs import TEXT_COLUMNS, Run
 from swarm import sensor
 from swarm.protocol import AGENT_CSV_COLUMNS
@@ -211,16 +211,18 @@ class LossTest(unittest.TestCase):
 class ChurnTest(unittest.TestCase):
     def test_counting(self):
         ground = [assign(None, 1, "initial", [1, 2, 3]),     # before the start: not counted
-                  assign(30.0, 2, "infeasible", [2]),
+                  assign(-20.0, 2, "infeasible", [2]),       # warm-up: counted apart
+                  assign(30.0, 3, "infeasible", [2]),
                   lost(72.0, 3),
-                  assign(72.0, 3, "lost", [1, 2, 3]),        # 3 is dead by then: not counted
-                  assign(120.0, 4, "infeasible", [1])]
+                  assign(72.0, 4, "lost", [1, 2, 3]),        # 3 is dead by then: not counted
+                  assign(120.0, 5, "infeasible", [1])]
         agents = {a: agent_log(track(0.0, 180.0, 50.0 * a, 0.0)) for a in (1, 2, 3)}
         run = make_run(agents, ground, kill_agent=3, kill_wall=T0_WALL + 60.0)
         churn = metrics.churn_block(run)
         self.assertAlmostEqual(churn["before_per_agent_min"], 1 / 3.0)   # 1 change, 3 agent-min
         self.assertAlmostEqual(churn["after_per_agent_min"], 3 / 4.0)    # 3 changes, 2 x 2 min
         self.assertEqual(churn["replans_by_trigger"], {"infeasible": 2, "lost": 1})
+        self.assertEqual(churn["replans_warmup_by_trigger"], {"infeasible": 1})
         self.assertEqual(churn["extra_changes_after_loss"], 1)
         self.assertEqual(churn["epoch_mismatch"]["1"], [3, 0])           # logs stayed at 1
 
@@ -328,6 +330,18 @@ class ReportTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             report.refuse_fake_in_results(results_dir, {"gazebo", "fake"})
         report.refuse_fake_in_results("/tmp/elsewhere", {"fake"})       # allowed outside
+
+
+class ScenarioLabelTest(unittest.TestCase):
+    def test_labels_name_sums_windows_and_run_length(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_run_dir(os.path.join(tmp, "r"), loss_run(1))
+            m = metrics.analyse(os.path.join(tmp, "r"))
+        text = scenarios.measured(m, {"outcome": "ok", "mission_s": 240.0})
+        for label in ("summed over agents", "after (loss + 60 s to end)", "dip (loss to end)",
+                      "warm-up: none", "run 240 s, longer than 180"):
+            self.assertIn(label, text)
+        self.assertIn("empty plan", scenarios.EXPECTED["mute"])
 
 
 if __name__ == "__main__":

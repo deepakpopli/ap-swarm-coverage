@@ -10,6 +10,8 @@ import os
 import shutil
 import sys
 
+from swarm import config
+
 # run name -> expectation. The names are the ones run_scenarios.sh uses.
 EXPECTED = {
     "B_middle": "zone owner (agent 2) keeps the middle zone seen within 30 s; the other two "
@@ -25,8 +27,8 @@ EXPECTED = {
     "blackout13": "13 s blackout: declared lost after 12 s, re-plan; rejoins after 3 s of "
                   "steady contact, second re-plan",
     "mute": "one agent's transmitter dead from 60 s: declared lost after 12 s, re-plan; it "
-            "still hears, is never deaf and keeps flying its old loop; after 12 s the others "
-            "forget it, so only its own filter keeps it apart (a known residual risk)",
+            "still hears, so it gets an empty plan and holds at its private hold altitude, "
+            "out of the cruise layer, to the end",
     "agentdeath": "the agent process is killed, the autopilot lands it in failsafe: declared "
                   "lost after 12 s, re-plan as in Mission A",
     "groundrestart": "ground down 40-55 s: agents keep flying their plans; the new ground "
@@ -55,21 +57,24 @@ def measured(m, meta):
         return f"INVALID: {meta['outcome']}"
     safety, loss = m["safety"], m["loss"] or {}
     replans = ", ".join(f"{k} {v}" for k, v in m["churn"]["replans_by_trigger"].items())
+    warmup = ", ".join(f"{k} {v}" for k, v in m["churn"]["replans_warmup_by_trigger"].items())
     parts = [f"min sep {fmt(safety['min_separation_from_10s_m'])} m from 10 s, "
              f"{fmt(safety['below_d_min_s'])} s < 8 m",
              f"max speed {fmt(m['control']['max_ground_speed_ms'], 2)} m/s (EKF), "
              f"rate {fmt(m['control']['min_rate_hz'])} Hz",
-             f"re-plans: {replans or 'none'}; infeasible {safety['infeasible_accepted']} "
-             f"accepted / {safety['infeasible_ignored']} ignored",
-             f"brake {fmt(safety['brake_s'])} s, "
-             f"deaf {fmt(safety['deaf_s'])} s",
+             f"re-plans: {replans or 'none'} (warm-up: {warmup or 'none'}); infeasible "
+             f"{safety['infeasible_accepted']} accepted / {safety['infeasible_ignored']} "
+             "ignored (warm-up included)",
+             f"brake {fmt(safety['brake_s'])} s, deaf {fmt(safety['deaf_s'])} s (summed over "
+             "agents)",
              f"coverage mean {fmt(m['coverage']['mean_pct'])} %, longest unseen "
              f"{fmt(m['unseen']['whole']['worst_s'])} s"]
     if loss:
         parts.append(f"victim {m['victim']} at {fmt(loss['loss_s'])} s, declared "
                      f"{fmt(loss['lost_declared_s'])} s; coverage {fmt(loss['before_pct'])} -> "
-                     f"after {fmt(loss['after_mean_pct'])} % (min {fmt(loss['after_min_pct'])}), "
-                     f"dip {fmt(loss['dip_pct'])} %, recovery {fmt(loss['recovery_s'])} s")
+                     f"after (loss + 60 s to end) {fmt(loss['after_mean_pct'])} % (min "
+                     f"{fmt(loss['after_min_pct'])}), dip (loss to end) {fmt(loss['dip_pct'])} "
+                     f"%, recovery {fmt(loss['recovery_s'])} s")
     if m["mission_b"]:
         b = m["mission_b"]
         parts.append(f"zone longest unseen {fmt(b['longest_unseen_s'])} s (limit 30), whole "
@@ -79,6 +84,8 @@ def measured(m, meta):
         parts.append(f"agent {c['agent']}: declared lost {c['declared_lost']}, re-plans "
                      f"{c['replans_from_blackout']}, deaf {fmt(c['deaf_s'])} s, back in "
                      f"cover {fmt(c['back_in_cover_after_s'])} s after")
+    if meta["mission_s"] > config.MISSION_S:
+        parts.append(f"run {fmt(meta['mission_s'], 0)} s, longer than {fmt(config.MISSION_S, 0)}")
     return "; ".join(parts)
 
 

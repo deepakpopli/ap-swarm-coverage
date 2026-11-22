@@ -1,4 +1,5 @@
-"""Metrics of one run, from each agent's logged true position and the camera footprint.
+"""Metrics of one run, from each agent's logged position (its autopilot's EKF estimate) and the
+camera footprint.
 
 Definitions: docs/metrics.md. Usage: python -m analysis.metrics RUN_DIR
 Writes RUN_DIR/metrics.json and RUN_DIR/coverage.csv (coverage in %, once per second).
@@ -247,10 +248,17 @@ def epoch_mismatches(run, assigns):
     return out
 
 
+def by_trigger(assigns) -> dict:
+    triggers = [e["trigger"] for e in assigns]
+    return {name: triggers.count(name) for name in sorted(set(triggers))}
+
+
 def churn_block(run):
-    """Changes per live agent per minute; the initial assignment (t <= 0) is not counted."""
-    assigns = [e for e in run.events("assign")
-               if e["t_mission"] is not None and e["t_mission"] > 0.0]
+    """Changes per live agent per minute of mission time (t > 0). Re-plans before t = 0, except
+    the first plan, are counted apart: the infeasible counters have no time filter."""
+    every = run.events("assign")
+    assigns = [e for e in every if e["t_mission"] is not None and e["t_mission"] > 0.0]
+    warmup = [e for e in every[1:] if e["t_mission"] is None or e["t_mission"] <= 0.0]
     if run.victim is None:
         windows = {"whole": (0.0, run.end_s)}
     else:
@@ -259,8 +267,8 @@ def churn_block(run):
     for name, (start_s, end_s) in windows.items():
         changes = count_changes(run, assigns, start_s, end_s)
         out[name + "_per_agent_min"] = changes / live_minutes(run, start_s, end_s)
-    triggers = [e["trigger"] for e in assigns]
-    out["replans_by_trigger"] = {name: triggers.count(name) for name in sorted(set(triggers))}
+    out["replans_by_trigger"] = by_trigger(assigns)
+    out["replans_warmup_by_trigger"] = by_trigger(warmup)
     if run.victim is not None:
         replan = loss_replan(run)
         forced = count_changes(run, [replan], 0.0, math.inf) if replan else 0
@@ -273,7 +281,7 @@ def churn_block(run):
 # ------------------------------------------------------------------ safety, control
 
 def separation_series(run):
-    """Time grid (s, from the first log row) and {(a, b): true 3D distance} for every pair.
+    """Time grid (s, from the first log row) and {(a, b): 3D distance (EKF)} for every pair.
 
     NaN where either agent has no log yet, or no longer counts (after the end or the loss).
     """

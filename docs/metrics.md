@@ -42,10 +42,10 @@ there). Only its end must lie in the phase.
 | Deficit | Sum over 1 s ticks t >= L of max(0, P - coverage(t)), in %.s. Needs no threshold. |
 | (N-1)/N line | (N-1)/N x P, the task's bar, drawn on the coverage and before/after plots. At 50 m two survivors hold far above it, so passing it shows little. |
 | Recovery steps | Seconds from L to each of: declared lost (R); new epoch in the log of every survivor; first survivor at slot index >= its loop_from under the new epoch; recovered. |
-| Churn | Ground "assign" events: number of agents in "changed" that are still live, per live agent-minute. Assignments before t = 0 (the initial plan and any warm-up re-plan) are excluded. Counted over [0, L) and [L, end], or [0, end] without a loss. |
+| Churn | Ground "assign" events: number of agents in "changed" that are still live, per live agent-minute. Assignments before t = 0 (the initial plan and any warm-up re-plan) are excluded. Counted over [0, L) and [L, end], or [0, end] without a loss. Re-plans by trigger are reported for t > 0 (`replans_by_trigger`) and, apart, for the warm-up, every re-plan before t = 0 except the first plan (`replans_warmup_by_trigger`): the infeasible counters have no time filter, so a warm-up INFEASIBLE shows up there. |
 | Extra changes | Changes in [L, end] minus those of the first "lost" re-plan. Expected 0. |
 | Epoch cross-check | Per agent: epoch changes in its own log vs ground re-plans while it was live. A mismatch is listed. Two re-plans within one lost resend would also cause one. |
-| Separation | Minimum true 3D distance between live agents, with positions interpolated on a 20 Hz grid. Reported over the whole log (this includes the 10 m start line and the warm-up) and from t = 10 s. Also: seconds below 8 m, over the whole log. |
+| Separation | Minimum 3D distance between live agents as the autopilots' EKF estimates it (the logged positions, not simulator truth), interpolated on a 20 Hz grid. Reported over the whole log (this includes the 10 m start line and the warm-up) and from t = 10 s. Also: seconds below 8 m, over the whole log. |
 | Flag times | Per agent, seconds with "brake" or "deaf" in [0, end]. A flagged row counts until the next row. |
 | Infeasible | Number of ground "infeasible" events, accepted and ignored. |
 | Control | From t_wall spacing of log rows (one row per setpoint): slowest agent's mean rate, worst p99 and max period, max ground speed. |
