@@ -13,34 +13,40 @@ The runs were flown from the frozen evaluation copy `~/Documents/Projects/ap-swa
 
 ## The code hash
 
-`run_experiments.sh` (03:38:00) and `run_ablation.sh` (12:25:00) were added after the freeze
-(03:36:42) and are not part of the evaluated code.
+Five scripts were added to the snapshot after the freeze (03:36:42) and are not part of the
+evaluated code: `run_experiments.sh` (03:38:00), `run_fleet.sh` (12:51:35), `run_40m.sh`
+(13:32:38), `run_ablation.sh` (13:43:47) and `run_scen.sh` (13:43:55). These are all the
+`run_*.sh` files newer than EVAL-SNAPSHOT.txt, and no other hashed file is newer.
 
 VERIFIED: the recorded hash dd608d... reproduces exactly with this command, run in the snapshot
-with the two post-freeze scripts left out (checked on 22 Nov at 12:33, and independently by the
-results audit):
+with every post-freeze script left out (checked on 22 Nov):
 
 ```bash
 cd ~/Documents/Projects/ap-swarm-eval-snapshot
 git ls-files -co --exclude-standard | grep -E '\.(py|sh|xml|sdf|parm|toml)$' \
-  | grep -v -E '^run_(experiments|ablation)\.sh$' | sort | xargs sha256sum | sha256sum
-# dd608d20505c4692b8b3077497fad2a25e16b0775d866124808708a6d30bbeb8
+  | grep -v -E '^run_(experiments|ablation|fleet|40m|scen)\.sh$' | sort | xargs sha256sum | sha256sum
+# dd608d20505c4692b8b3077497fad2a25e16b0775d866124808708a6d30bbeb8  -
 ```
 
-Also, no tracked or untracked file in the snapshot, other than the two scripts, the logs,
-`results/` and `EVAL-SNAPSHOT.diff` (written 14 ms after the .txt), has a modification time after
-the freeze. A hash of the code as it is now, for later checks:
+The same, without naming the scripts (it leaves out any `run_*.sh` newer than the freeze file,
+so it keeps working if more are added):
 
 ```bash
 cd ~/Documents/Projects/ap-swarm-eval-snapshot
-EX='^(results/|run$|run_experiments.sh|run_ablation.sh|EVAL-SNAPSHOT|eval_)'
-{ git ls-files; git ls-files -o --exclude-standard; } | grep -Ev "$EX" | sort | xargs sha256sum | sha256sum
-# fd5a4a1631f21bc00419517e213f6d6da5de3c1172396286e3794c870923a70a  -
+git ls-files -co --exclude-standard | grep -E '\.(py|sh|xml|sdf|parm|toml)$' \
+  | grep -vxF -f <(find . -maxdepth 1 -name 'run_*.sh' -newer EVAL-SNAPSHOT.txt -printf '%P\n') \
+  | sort | xargs sha256sum | sha256sum
+# dd608d20505c4692b8b3077497fad2a25e16b0775d866124808708a6d30bbeb8  -
 ```
+
+Also, no tracked or untracked file in the snapshot, other than these scripts, the logs, the `run` symlink,
+`results/` and `EVAL-SNAPSHOT.diff` (written 14 ms after the .txt), has a modification time
+after the freeze. I don't give a hash of the snapshot "as it is now": it changes every time a
+run script is added there after the freeze, so a number would go stale. Use the command above.
 
 ## Untracked code in the snapshot
 
-The snapshot's untracked files (43: code, models, textures, notes, the two post-freeze scripts,
+The snapshot's untracked files (43: code, models, textures, notes, the two post-freeze scripts that existed then,
 EVAL-SNAPSHOT.txt/.diff; not `results/`, logs or the `run` symlink) are saved in
 `~/Documents/Projects/ap-swarm-coverage/run/eval_snapshot_untracked.tar.gz`:
 

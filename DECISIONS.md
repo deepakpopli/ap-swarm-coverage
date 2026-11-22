@@ -44,8 +44,11 @@ More messages per second means shorter silences, and a SiK telemetry radio only 
 
 | | JSON (first version) | mavlink 2 |
 |---|---|---|
-| one state message | 185 bytes | 37 bytes (GLOBAL_POSITION_INT) |
-| 3 drones at 5 Hz | about 22 kbit/s | about 4.4 kbit/s |
+| one state message | 185 bytes | 51 bytes (our SWARM_STATE) |
+| 3 drones at 5 Hz | about 22 kbit/s | about 6.1 kbit/s |
+
+These are bytes on the wire: 10 header, the payload, 2 CRC, no signing. For scale, the
+standard GLOBAL_POSITION_INT is 40 bytes on the wire, but it isn't enough on its own (below).
 
 mavlink doesn't make the radio lose less. It makes each message cheap, so I can afford 5 Hz,
 and every packet has a CRC so a corrupted one is dropped instead of misread.
