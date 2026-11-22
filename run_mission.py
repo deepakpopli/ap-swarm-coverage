@@ -4,9 +4,6 @@
     python run_mission.py --mission A|B|C|ref --backend gazebo|sitl|fake --n 3 --seed S --out DIR
                           [--scenario NAME] [--mission-s 180] [--zone xmin,ymin,xmax,ymax]
                           [--port-base P]
-Environment: SWARM_ALT (cruise altitude, m; default 50), SWARM_BACKUP=1 (the onboard backup
-allocator, see swarm/backup.py; the agents also get --mission-s and the zone; meta.json
-"backup": true).
 
 The runner is test equipment: it starts processes, injects faults at mission times and stops
 everything. It never sends anything to the swarm; it learns t0 by re-reading ground.jsonl.
@@ -14,7 +11,7 @@ everything. It never sends anything to the swarm; it learns t0 by re-reading gro
 A fault is (t_mission, action, target):
   kill sitl:<id>    SIGKILL the arducopter only; the agent must notice and go silent by itself
   kill agent:<id>   SIGKILL the onboard process only; the autopilot's failsafe lands the vehicle
-  kill ground, start ground (same log file), kill radio, start radio
+  kill ground, kill radio, start radio
 The fake backend has no arducopter, so there "kill sitl" kills the agent (its vehicle lives in it).
 
 Missions: A = seeded kill of a seeded victim at t in [60, 90]; ref = no fault; B = priority zone
@@ -35,7 +32,6 @@ from swarm import config
 from swarm.allocator import allocate
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-TAINT_FILE = os.path.join(ROOT, "run", "TAINTED")
 START_TIMEOUT_S = 400.0     # agents launched -> START: take-off, assignment, first loop slot
 END_GRACE_S = 1.0           # run on past the mission end so the last log rows land
 STOP_WAIT_S = 10.0          # SIGTERM -> SIGKILL
@@ -48,10 +44,7 @@ RTF_MIN = 0.95              # slower than this, the sim no longer keeps up with 
 SCENARIOS = {
     "swap": ("A", "re-plan with the lane groups reversed at 30 s: agents cross at cruise"),
     "obstacle": ("A", "an unknown obstacle on a loop slot: infeasible, blacklist, re-plan"),
-    "blackout13": ("C", "a 13 s blackout, longer than LOST_S: declared lost, then rejoins"),
-    "mute": ("A", "one agent's transmitter fails from 60 s to the end (it still hears)"),
     "agentdeath": ("A", "kill the victim's agent process instead of its autopilot"),
-    "groundrestart": ("A", "ground down from 40 s to 55 s, then the Mission A kill"),
     "radiooutage": ("A", "the radio is down from 60 s to 70 s"),
     "groundloss": ("A", "ground down from 40 s for good, then the Mission A kill"),
 }
@@ -71,33 +64,27 @@ def plan(args):
     t_event = round(rng.uniform(60.0, 90.0), 3)
     agent = rng.randint(1, args.n)
     out = {"faults": [], "ground": [], "radio": [], "agents": {}, "kill_agent": None,
-           "blackout": None, "mute": None, "priority_zone": None}
+           "blackout": None, "priority_zone": None}
     kill = (t_event, "kill", f"sitl:{agent}")
-    if args.mission == "A" and args.scenario in (None, "groundrestart", "groundloss"):
+    if args.mission == "A" and args.scenario in (None, "groundloss"):
         out["faults"].append(kill)
     if args.mission == "B":
         out["priority_zone"] = list(args.zone or MIDDLE_ZONE)
         out["ground"] += ["--priority-zone", ",".join(str(v) for v in out["priority_zone"])]
         out["faults"].append(kill)
     if args.mission == "C":
-        length_s = 13.0 if args.scenario == "blackout13" else 10.0
-        out["blackout"] = {"agent": agent, "t0": t_event, "t1": t_event + length_s}
-        out["radio"] += ["--blackout", f"{agent}:{t_event}:{t_event + length_s}"]
+        out["blackout"] = {"agent": agent, "t0": t_event, "t1": t_event + 10.0}
+        out["radio"] += ["--blackout", f"{agent}:{t_event}:{t_event + 10.0}"]
     if args.scenario == "swap":
         out["ground"] += ["--swap-at", "30"]
     if args.scenario == "obstacle":
         x, y = obstacle_slot(agent, args.n)
         out["agents"][agent] = ["--obstacle", f"{x},{y},{OBSTACLE_RADIUS_M}"]
         out["obstacle"] = {"agent": agent, "xy": [x, y], "radius_m": OBSTACLE_RADIUS_M}
-    if args.scenario == "mute":
-        out["mute"] = {"agent": agent, "t0": 60.0, "t1": args.mission_s}
-        out["radio"] += ["--mute", f"{agent}:60:{args.mission_s}"]
     if args.scenario == "agentdeath":
         out["faults"].append((t_event, "kill", f"agent:{agent}"))
-    if args.scenario in ("groundrestart", "groundloss"):
+    if args.scenario == "groundloss":
         out["faults"].insert(0, (40.0, "kill", "ground"))
-    if args.scenario == "groundrestart":
-        out["faults"].insert(1, (55.0, "start", "ground"))
     if args.scenario == "radiooutage":
         out["faults"] += [(60.0, "kill", "radio"), (70.0, "start", "radio")]
     if args.backend == "fake":     # no arducopter: the fake vehicle dies with its agent
@@ -153,10 +140,6 @@ def git_commit():
     return head + ("-dirty" if dirty else "")
 
 
-def taint_mtime():
-    return os.stat(TAINT_FILE).st_mtime if os.path.exists(TAINT_FILE) else None
-
-
 class Mission:
     def __init__(self, args, faults_plan):
         self.args = args
@@ -166,7 +149,6 @@ class Mission:
         self.procs = {}             # name -> Popen of the processes we started ourselves
         self.starts = {}            # name -> how often it was started (for its log name)
         self.may_exit = set()       # names that may end without it being an error
-        self.taint0 = taint_mtime()
         self.meta = {"mission": args.mission, "scenario": args.scenario, "seed": args.seed,
                      "n": args.n, "backend": args.backend, "alt_cruise_m": config.ALT_CRUISE_M,
                      "lost_after_s": config.LOST_S, "wp_spd_ms": config.WP_SPD_MS,
@@ -174,15 +156,13 @@ class Mission:
                      "faults": [{"t_mission": t, "action": a, "target": target, "wall": None}
                                 for t, a, target in faults_plan["faults"]],
                      "kill_agent": faults_plan["kill_agent"], "kill_wall": None,
-                     "blackout": faults_plan["blackout"], "mute": faults_plan["mute"],
+                     "blackout": faults_plan["blackout"],
                      "priority_zone": faults_plan["priority_zone"],
                      "obstacle": faults_plan.get("obstacle"), "autopilot_params": None,
                      "rtf": None, "radio": {"loss": config.RADIO_LOSS,
                                             "delay": config.RADIO_DELAY_S, "seed": args.seed},
-                     "outcome": "running", "tainted": False, "git_commit": git_commit(),
+                     "outcome": "running", "git_commit": git_commit(),
                      "wall_s": None}
-        if config.BACKUP:            # only then: meta.json of a core run stays as it was
-            self.meta["backup"] = True
 
     def save_meta(self):
         with open(os.path.join(self.out, "meta.json"), "w") as f:
@@ -197,7 +177,6 @@ class Mission:
                                        os.path.join(self.out, log_name + ".log"), cwd=ROOT)
         self.procs[name] = process
         self.may_exit.discard(name)
-        launch.register_pid(f"run_{name}", process.pid)
 
     def start_radio(self):
         self.start("radio", ["sim.radio", "--n", str(self.args.n), "--seed", str(self.args.seed),
@@ -212,22 +191,13 @@ class Mission:
     def start_agent(self, a):
         backend = "fake" if self.args.backend == "fake" else "mav"
         argv = ["swarm.agent", "--id", str(a), "--n", str(self.args.n), "--backend", backend,
-                "--log-dir", self.out] + self.plan["agents"].get(a, []) + self.backup_args()
+                "--log-dir", self.out] + self.plan["agents"].get(a, [])
         self.start(f"agent_{a}", argv)
-
-    def backup_args(self):
-        """SWARM_BACKUP=1: what the ground knows that an agent's backup allocator needs too."""
-        if not config.BACKUP:
-            return []
-        zone = self.plan["priority_zone"]
-        return (["--mission-s", str(self.args.mission_s)]
-                + (["--priority-zone", ",".join(str(v) for v in zone)] if zone else []))
 
     def kill(self, name):
         self.may_exit.add(name)
         self.procs[name].kill()
         self.procs[name].wait()
-        launch.unregister_pids(f"run_{name}")
 
     def apply(self, fault):
         """Inject one fault now and record when."""
@@ -240,8 +210,6 @@ class Mission:
             self.fleet.kill_vehicle(agent)            # raises if the Gazebo model stays
         elif action == "kill":
             self.kill(target.replace("agent:", "agent_"))
-        elif target == "ground":
-            self.start_ground()
         else:
             self.start_radio()
         if ":" in target:
@@ -249,10 +217,7 @@ class Mission:
 
     # ---- watching
     def check(self, t_mission):
-        """Raise Invalid if the thermal guard paused anything or a process ended unexpectedly."""
-        if taint_mtime() != self.taint0:
-            self.meta["tainted"] = True
-            raise Invalid("tainted: the thermal guard paused the run")
+        """Raise Invalid if a process ended unexpectedly."""
         for name, process in self.procs.items():
             ended_on_time = name == "ground" and t_mission >= self.args.mission_s - 1.0
             if process.poll() is not None and name not in self.may_exit and not ended_on_time:
@@ -287,10 +252,6 @@ class Mission:
     def run(self):
         started = time.time()
         if self.args.backend != "fake":
-            log("waiting for the machine to be cool")
-            subprocess.run(["bash", os.path.join(ROOT, "tools", "thermal_guard.sh"), "--wait"],
-                           check=True)
-            self.taint0 = taint_mtime()
             self.fleet = launch.Fleet(self.args.backend, self.args.n,
                                       os.path.join(self.out, "sim"))
             self.fleet.start()
@@ -317,11 +278,9 @@ class Mission:
 
     def stop(self):
         """Stop everything we started: agents first (they close their logs), then the rest."""
-        launch.unregister_pids("run_")              # the guard must not pause them again
         names = sorted(self.procs, key=lambda name: not name.startswith("agent_"))
         for name in names:
             if self.procs[name].poll() is None:
-                self.procs[name].send_signal(signal.SIGCONT)
                 self.procs[name].terminate()
         for name in names:
             try:
@@ -369,7 +328,6 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     os.makedirs(args.out, exist_ok=True)
-    launch.register_pid("run_mission", os.getpid())  # the guard pauses us with the rest
     mission = Mission(args, plan(args))
     mission.save_meta()
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -383,9 +341,6 @@ def main(argv=None):
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(signum, signal.SIG_IGN)       # a second signal must not stop the stop
         mission.stop()
-    if taint_mtime() != mission.taint0:
-        mission.meta["tainted"] = True
-        mission.meta["outcome"] = "invalid: tainted: the thermal guard paused the run"
     if args.backend != "fake" and mission.meta["t0_wall"] is not None:
         mission.meta["autopilot_params"] = read_params(mission.out, args.n)
     mission.save_meta()

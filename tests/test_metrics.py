@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from analysis import logs, metrics, report, scenarios
+from analysis import logs, metrics, report
 from analysis.logs import TEXT_COLUMNS, Run
 from swarm import sensor
 from swarm.protocol import AGENT_CSV_COLUMNS
@@ -328,18 +328,6 @@ class ReportTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             report.refuse_fake_in_results(results_dir, {"gazebo", "fake"})
         report.refuse_fake_in_results("/tmp/elsewhere", {"fake"})       # allowed outside
-
-
-class ScenarioLabelTest(unittest.TestCase):
-    def test_labels_name_sums_windows_and_run_length(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            write_run_dir(os.path.join(tmp, "r"), loss_run(1))
-            m = metrics.analyse(os.path.join(tmp, "r"))
-        text = scenarios.measured(m, {"outcome": "ok", "mission_s": 240.0})
-        for label in ("summed over agents", "after (loss + 60 s to end)", "dip (loss to end)",
-                      "warm-up: none", "run 240 s, longer than 180"):
-            self.assertIn(label, text)
-        self.assertIn("empty plan", scenarios.EXPECTED["mute"])
 
 
 if __name__ == "__main__":

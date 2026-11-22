@@ -141,18 +141,12 @@ def recovery_time(ticks, coverage, loss_s, threshold_pct):
     return float(t[back] - loss_s)
 
 
-BACKUP_FIRST = "backup"    # a backup's first plan (swarm/backup.py): it may be the loss re-plan
-
-
 def loss_replan(run):
-    """The first re-plan after the loss that was triggered by a lost agent, or a backup's first
-    plan without the victim (the victim was the backup: the next one re-plans the loss)."""
+    """The ground's first re-plan after the loss that was triggered by a lost agent."""
     for e in run.events("assign"):
         if e["t_mission"] is None or e["t_mission"] < run.loss_s:
             continue
         if e["trigger"] == "lost":
-            return e
-        if e["trigger"] == BACKUP_FIRST and str(run.victim) not in e["assignments"]:
             return e
     return None
 

@@ -1,12 +1,7 @@
 """Shared constants. Every process imports this file. Units are in the names:
 _M metres, _S seconds, _MS metres per second, _HZ hertz.
-
-Per run, from the environment: SWARM_ALT=<metres> sets the cruise altitude (default 50),
-SWARM_BACKUP=1 the onboard backup allocator (swarm/backup.py; off by default).
-run_mission.py passes its environment to every child, so all processes agree.
 """
 import math
-import os
 
 # ---- area and mission (local ENU metres: origin = south-west corner, x east, y north, z up)
 AREA = (0.0, 300.0, 0.0, 300.0)                # xmin, xmax, ymin, ymax
@@ -29,7 +24,7 @@ V_MAX_MS = 12.0          # task limit
 # (measured 11.71 m/s worst).
 WP_SPD_MS = 11.5
 CONTROL_HZ = 20.0        # setpoint rate to the autopilot (task: 10 Hz or faster)
-ALT_CRUISE_M = float(os.environ.get("SWARM_ALT", "50"))
+ALT_CRUISE_M = 50.0
 LAYER_STEP_M = 10.0      # vertical spacing of hold altitudes: D_MIN_M + 2 x 1 m tracking error
 
 
@@ -52,12 +47,6 @@ RADIO_LOSS = 0.20
 RADIO_DELAY_S = 0.200
 SUSPECT_S = 2.0          # silent this long: suspect
 LOST_S = 12.0            # silent this long: lost. Longer than Mission C's 10 s blackout.
-
-# ---- onboard backup allocator (SWARM_BACKUP=1; swarm/backup.py). Off = ground only.
-BACKUP = os.environ.get("SWARM_BACKUP") == "1"
-# The ground sends each agent 2 messages a second (its ASSIGN, START): 12 s silence is ~24 lost
-# in a row at 20 % loss, and longer than a 10 s blackout, so a quiet ground is not a dead one.
-GROUND_LOST_S = LOST_S
 
 # ---- feasibility feedback
 SLOT_TIMEOUT_S = 15.0    # a slot not reached this long after becoming active is infeasible

@@ -88,8 +88,7 @@ def run_scenario(out_dir):
     return digests
 
 
-def test_golden_run_is_unchanged(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "BACKUP", False)   # the golden is the core system's
+def test_golden_run_is_unchanged(tmp_path):
     assert run_scenario(str(tmp_path)) == GOLDEN
 
 
