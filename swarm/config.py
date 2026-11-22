@@ -2,6 +2,7 @@
 _M metres, _S seconds, _MS metres per second, _HZ hertz.
 """
 import math
+import os
 
 # ---- area and mission (local ENU metres: origin = south-west corner, x east, y north, z up)
 AREA = (0.0, 300.0, 0.0, 300.0)                # xmin, xmax, ymin, ymax
@@ -46,7 +47,8 @@ ASSIGN_HZ = 1.0          # the ground re-sends the current assignment (idempoten
 RADIO_LOSS = 0.20
 RADIO_DELAY_S = 0.200
 SUSPECT_S = 2.0          # silent this long: suspect
-LOST_S = 12.0            # silent this long: lost. Longer than Mission C's 10 s blackout.
+LOST_S = float(os.environ.get("SWARM_LOST_S", "12"))   # silent this long: lost. Longer than
+                         # Mission C's 10 s blackout; SWARM_LOST_S=4 for the comparison run
 
 # ---- feasibility feedback
 SLOT_TIMEOUT_S = 15.0    # a slot not reached this long after becoming active is infeasible
