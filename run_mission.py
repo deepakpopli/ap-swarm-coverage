@@ -3,6 +3,7 @@
 
     python run_mission.py --mission A|B|C|ref --backend gazebo|sitl|fake --n 3 --seed S --out DIR
                           [--scenario NAME] [--mission-s 180] [--zone xmin,ymin,xmax,ymax]
+                          [--port-base P]
 Environment: SWARM_ALT (cruise altitude, m; default 50).
 
 The runner is test equipment: it starts processes, injects faults at mission times and stops
@@ -39,6 +40,7 @@ STOP_WAIT_S = 10.0          # SIGTERM -> SIGKILL
 LOOP_S = 0.2
 OBSTACLE_RADIUS_M = 10.0    # > 2 x SLOT_REACH_M: the agent cannot "fly past" the slot either
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)
+RTF_MIN = 0.95              # slower than this, the sim no longer keeps up with the wall clock
 
 # scenario -> (the mission it modifies, what it tests)
 SCENARIOS = {
@@ -111,6 +113,13 @@ def obstacle_slot(agent, n):
     return allocate(list(starts), starts, set())[agent].slots[-1]
 
 
+def check_rtf(rtf):
+    """Raise Invalid if a Gazebo real-time factor sample {when: value or None} is too low."""
+    for when, value in rtf.items():
+        if value is not None and value < RTF_MIN:
+            raise Invalid(f"real-time factor {value:.2f} < {RTF_MIN} at the {when}")
+
+
 def read_t0(ground_log):
     """t0 of the first "start" record in ground.jsonl, or None."""
     if not os.path.exists(ground_log):
@@ -177,6 +186,7 @@ class Mission:
 
     # ---- processes
     def start(self, name, argv):
+        argv = argv + ["--port-base", str(self.args.port_base)]
         self.starts[name] = self.starts.get(name, 0) + 1
         log_name = name if self.starts[name] == 1 else f"{name}.{self.starts[name]}"
         process = launch.start_process([sys.executable, "-m"] + argv,
@@ -279,14 +289,17 @@ class Mission:
         self.wait_for_start()
         t0 = self.meta["t0_wall"]
         self.wait_until(t0)
-        rtf_start = self.rtf()
+        if self.fleet is not None:
+            self.meta["rtf"] = {"start": self.rtf()}
+            check_rtf(self.meta["rtf"])
         for fault in self.meta["faults"]:
             self.wait_until(t0 + fault["t_mission"])
             self.apply(fault)
             self.save_meta()
         self.wait_until(t0 + self.args.mission_s - 2.0)
         if self.fleet is not None:
-            self.meta["rtf"] = {"start": rtf_start, "end": self.rtf()}
+            self.meta["rtf"]["end"] = self.rtf()
+            check_rtf(self.meta["rtf"])
         self.wait_until(t0 + self.args.mission_s + END_GRACE_S)
         self.meta["wall_s"] = round(time.time() - started)
 
@@ -321,6 +334,8 @@ def parse_args(argv=None):
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--out", required=True, help="run directory; must not exist or be empty")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS))
+    ap.add_argument("--port-base", type=int, default=0,
+                    help="added to the radio and node ports, so two runs can share the machine")
     ap.add_argument("--mission-s", type=float,
                     help="default 180 s; 240 s for the obstacle scenario (blacklist expiry)")
     ap.add_argument("--zone", type=lambda text: [float(v) for v in text.split(",")],
