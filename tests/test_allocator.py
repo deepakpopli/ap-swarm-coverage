@@ -126,7 +126,7 @@ def lane_of(asg):
                                                  (CORNER_ZONE, 1, 18.8)])
 def test_priority_zone(at_alt, zone, owner, lane_x):
     """The owner's lane covers the zone within 30 s, half way between two area lanes; the
-    others fly the whole area's lanes in groups, as if they were the whole fleet."""
+    others fly lanes outside the owner's share, and the shares together cover the area."""
     at_alt(50)
     result = allocate([1, 2, 3], starts(3), set(), priority_zone=zone)
     asg = result[owner]
@@ -137,9 +137,12 @@ def test_priority_zone(at_alt, zone, owner, lane_x):
     assert y_south - half_along <= zone[1] and zone[3] <= y_north + half_along
     for y in range(int(zone[1]), int(zone[3]) + 1):
         assert revisit_s(asg, y) <= config.PRIORITY_REVISIT_S
-    others = allocate([a for a in (1, 2, 3) if a != owner], starts(3), set())
-    for a in others:
-        assert result[a].share == others[a].share
+    for a in result:
+        if a != owner:
+            assert all(abs(x - p[0]) >= half_swath for p in result[a].slots[result[a].loop_from:])
+    shares = sorted(asg.share for asg in result.values())    # together they cover the area
+    assert shares[0][0] == config.AREA[0] and max(sh[1] for sh in shares) == config.AREA[1]
+    assert all(east[0] <= west[1] for west, east in zip(shares, shares[1:]))
 
 
 def test_zone_owner_kept_and_replaced_on_loss():

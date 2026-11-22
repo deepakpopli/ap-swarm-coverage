@@ -186,10 +186,11 @@ def _contiguous_cuts(n_items, n_groups):
         yield [list(range(bounds[i], bounds[i + 1])) for i in range(n_groups)]
 
 
-def best_split(n):
-    """[lane x groups, west to east] of the contiguous cut into n groups whose longest loop is
-    shortest. Ties: the first cut in itertools order. n must not exceed the number of lanes."""
-    lanes = area_lanes()
+def best_split(n, lanes=None):
+    """[lane x groups, west to east] of the contiguous cut of lanes (default: the area's) into n
+    groups whose longest loop is shortest. Ties: the first cut in itertools order. n must not
+    exceed the number of lanes."""
+    lanes = lanes or area_lanes()
     best_s, best = math.inf, None
     for cut in _contiguous_cuts(len(lanes), n):
         groups = [[lanes[i] for i in g] for g in cut]
@@ -207,13 +208,14 @@ def _same_owners(ids, strips, previous):
     return None if None in perm else perm
 
 
-def _group_plans(ids, xy, blacklist, previous, reverse):
+def _group_plans(ids, xy, blacklist, previous, reverse, lanes=None):
     """Contiguous lane groups. The same strips as before keep their owners; else agent-to-group
     by the smallest total distance to the loops (ties: the first permutation of the sorted ids).
     reverse (swap test hook): the opposite order. More agents than lanes: the spares get no
-    slots and hold until a loss frees a lane."""
-    n_flying = min(len(ids), len(area_lanes()))
-    strips = [_lanes_strip(g) for g in best_split(n_flying)]
+    slots and hold until a loss frees a lane. lanes: Mission B's remainder lanes, else the area's."""
+    lanes = lanes or area_lanes()
+    n_flying = min(len(ids), len(lanes))
+    strips = [_lanes_strip(g) for g in best_split(n_flying, lanes)]
     loops = [_loop(strip, True, True) for strip in strips]
 
     def cost(perm):
@@ -252,6 +254,19 @@ def _zone_strip(zone):
              y0, y1]
     return _Strip(share, [lane_x], max(y0 + _end_inset(), zone_y - REACH_M),
                   min(y1 - _end_inset(), zone_y + REACH_M))
+
+
+def _remainder_lanes(zone_share):
+    """x of the lanes outside the zone lane's share, west then east: ceil(width / swath) lanes
+    per side, the outer ones half a swath in (fully covered, shortest loop); one lane: centred."""
+    lanes = []
+    for a, b in ((config.AREA[0], zone_share[0]), (zone_share[1], config.AREA[1])):
+        n = math.ceil((b - a) / SWATH_M - 1e-9)
+        if n == 1:
+            lanes.append((a + b) / 2)
+        elif n > 1:
+            lanes += [a + SWATH_M / 2 + i * (b - a - SWATH_M) / (n - 1) for i in range(n)]
+    return lanes
 
 
 def _zone_owner(ids, xy, zone, strip, previous):
@@ -324,21 +339,22 @@ def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
     not be issued. previous: the last result; an agent whose share is unchanged and whose old
     plan has no blacklisted point keeps its old Assignment object (no churn).
     priority_zone: (xmin, ymin, xmax, ymax) for Mission B, else None. Its owner flies the zone
-    lane; the other agents share the whole area in lane groups, as if they were the fleet.
+    lane; the other agents share the rest of the area (_remainder_lanes) in lane groups.
     reverse: hand the groups out in reverse order (only the ground's "swap" test hook).
     velocities {id: (vx, vy)} and heading {id: slot xy} (missing: standing, unknown) predict
     where each agent's CoverageController starts (coverage.start_slot).
     """
     xy = {a: [positions[a][0], positions[a][1]] for a in agent_ids}
     ids = sorted(agent_ids)
-    result = {}
+    result, lanes = {}, None
     if priority_zone is not None:
         strip = _zone_strip(priority_zone)
         owner = _zone_owner(ids, xy, priority_zone, strip, previous)
         result[owner] = _keep_or_plan(owner, xy[owner], strip, blacklist, previous)
         ids.remove(owner)
+        lanes = _remainder_lanes(strip.share)
     if ids:
-        result.update(_group_plans(ids, xy, blacklist, previous, reverse))
+        result.update(_group_plans(ids, xy, blacklist, previous, reverse, lanes))
     motion = {a: (xy[a], (velocities or {}).get(a, (0.0, 0.0)), (heading or {}).get(a))
               for a in xy}
     return _respace_transits(dict(sorted(result.items())), previous, motion, blacklist)
