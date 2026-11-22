@@ -5,8 +5,8 @@ The autopilot acts on it REACT_S later (the target is aimed from where the vehic
 flies toward it the way the measured ArduCopter does: it speeds up at A_UP_MS2, slows down at
 A_BRAKE_MS2, never exceeds WP_SPD_MS, and climbs or descends at most VZ_MAX_MS. A zero velocity
 puts the target on the vehicle, so it brakes as hard as it can, like the real one.
-Numbers: results/spike/speed_cap.md. Real time through poll(); tests call step(dt) or pass a
-simulated clock.
+Numbers measured on ArduCopter in SITL and Gazebo. Real time through poll(); tests call
+step(dt) or pass a simulated clock.
 """
 import math
 import threading

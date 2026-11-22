@@ -322,8 +322,6 @@ class ReportTest(unittest.TestCase):
                 text = f.read()
             self.assertIn("2 of 2 runs recovered", text)
             self.assertTrue(os.path.exists(os.path.join(out, "runs", "seed_2.json")))
-            report.write_comparison([out, out])
-            self.assertTrue(os.path.exists(os.path.join(tmp, "comparison.md")))
 
     def test_fake_runs_are_refused_under_results(self):
         results_dir = os.path.join(report.REPO, "results", "_never_written")

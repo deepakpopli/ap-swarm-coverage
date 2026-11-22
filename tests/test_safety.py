@@ -93,7 +93,7 @@ def fly(specs, seconds, seed, blackouts=()):
 # ---- the model the tests fly on ------------------------------------------------------------
 
 def test_fake_vehicle_matches_measured_autopilot():
-    """Speed-up, cap, stop and climb numbers from results/spike/speed_cap.md."""
+    """Speed-up, cap, stop and climb numbers measured on ArduCopter (SITL and Gazebo)."""
     v = FakeVehicle(1, (0.0, 0.0, CRUISE), clock=lambda: 0.0)
     t_95 = None
     for k in range(400):                                  # 20 s at 20 Hz, asking for 18 m/s

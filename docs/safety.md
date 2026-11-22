@@ -18,7 +18,7 @@ hold altitude `config.hold_alt(id)` = cruise +10, -10, +20, -20, ... m for ids 1
 No hold altitude equals cruise and no two agents share one, for any N.
 
 Altitude intervals (tracking error +-1 m: measured <= 0.08 m cruising, 0.94 m as take-off ends,
-no overshoot on 10 m steps; `results/spike/motion_bounds_{sitl,gazebo}.json` flights):
+no overshoot on 10 m steps, in SITL and Gazebo flights):
 
 - own: within 1 m of the altitude we now target, or between that and where we are;
 - neighbour: within 1 m of cruise or of its hold altitude, or between those and its last
@@ -59,8 +59,8 @@ R(age) = D_MIN + MARGIN (1 m, position error of both agents) + drift. From the c
 | R (m)   | 9.22 | 14.50 | 42.09 | 88.49                     |
 
 Drift against the largest measured deviation from the constant-velocity prediction (11.5 m/s
-vehicle, WP_SPD 11.5, PSC_NE_JERK 4, whole flight programme of `experiments/motion_bounds.py`,
-SITL / Gazebo, `results/exp/step1/`):
+vehicle, WP_SPD 11.5, PSC_NE_JERK 4, a flight programme of straights, turns, stops and
+reversals, SITL / Gazebo):
 
 | horizon (s) | 0.5 | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|---|

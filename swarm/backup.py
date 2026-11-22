@@ -8,13 +8,12 @@ Election, each agent on its own radio view:
     of its ASSIGN / START has been heard for GROUND_LOST_S;
   - the agent runs a backup if the boss is gone, it is flying, and no lower id is alive
     (a FLYING SWARM_STATE received within LOST_S, the ground's own "not lost" rule).
-The backup is a swarm.ground.Ground fed with this agent's received STATE, INFEASIBLE and
-SIGHTING plus its own STATE, sending through this agent's radio. It starts like a restarted
+The backup is a swarm.ground.Ground fed with this agent's received STATE and INFEASIBLE
+plus its own STATE, sending through this agent's radio. It starts like a restarted
 ground: listen RESTART_LISTEN_S, jump EPOCH_STRIDE above every epoch heard, keep t0.
 It stops when a boss is heard again (the ground came back, or a lower-id backup), when a lower
 id is heard alive, or when this agent stops flying. Like every Ground with SWARM_BACKUP=1 it
-overtakes: an agent flying a higher epoch makes it jump EPOCH_STRIDE above (Ground.overtake;
-BACKUP.md has the convergence argument).
+overtakes: an agent flying a higher epoch makes it jump EPOCH_STRIDE above (Ground.overtake).
 
 Logs: "backup_start" / "backup_stop" in agent_<id>.events.jsonl; the backup's ground events in
 agent_<id>.ground.jsonl, the format of ground.jsonl (analysis/logs.py merges them).
@@ -24,7 +23,7 @@ import os
 from swarm import config, protocol
 from swarm.ground import FLYING, Ground, JsonLines
 
-FED = ("SWARM_STATE", "SWARM_INFEASIBLE", "SWARM_SIGHTING")   # what a Ground reads
+FED = ("SWARM_STATE", "SWARM_INFEASIBLE")   # what a Ground reads
 TRIGGER_FIRST = "backup"         # the backup's first plan (a restarted ground logs "restart")
 
 
@@ -81,7 +80,7 @@ class Backup:
             self.link.feed(msg)
 
     def on_own(self, msg) -> None:
-        """Our own STATE (and SIGHTING): the radio never returns them to the sender."""
+        """Our own STATE: the radio never returns them to the sender."""
         if self.ground is not None and msg.get_type() in FED:
             self.link.feed(msg)
 

@@ -10,7 +10,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import test_vision_off  # noqa: E402
 from fakes import FakeRadio, SimClock  # noqa: E402
 from sim.fake_vehicle import FakeVehicle  # noqa: E402
 from swarm import backup, config, ground, protocol  # noqa: E402
@@ -110,14 +109,7 @@ def backup_on(monkeypatch):
     monkeypatch.setattr(config, "BACKUP", True)
 
 
-# ---- off path -----------------------------------------------------------------------------
-
-def test_off_path_logs_are_unchanged(tmp_path, monkeypatch):
-    """The golden in-process run of test_vision_off, hash for hash, with the backup off."""
-    monkeypatch.setattr(config, "BACKUP", False)
-    monkeypatch.setattr(config, "VISION", False, raising=False)
-    assert test_vision_off.run_scenario(str(tmp_path)) == test_vision_off.GOLDEN
-
+# ---- off path (test_golden_run.py checks its logs hash for hash) -------------------------
 
 def test_off_nobody_takes_over_when_the_ground_dies(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "BACKUP", False)

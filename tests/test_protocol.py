@@ -1,8 +1,6 @@
 """Wire format: every plan the allocator makes fits one SWARM_ASSIGN and survives it exactly."""
 import itertools
 
-import pytest
-
 from swarm import config, protocol
 from swarm import swarm_mav as mav
 from swarm.allocator import allocate, slot_key

@@ -26,7 +26,7 @@ def start_xy(index, n):
 V_MAX_MS = 12.0          # task limit
 # Cruise speed and the autopilot's WP_SPD. The vehicle overshoots WP_SPD by a tracking error
 # that grows with PSC_NE_JERK; the low jerk, not a lower cruise, keeps it under V_MAX_MS
-# (measured 11.71 m/s worst, results/exp/step1).
+# (measured 11.71 m/s worst).
 WP_SPD_MS = 11.5
 CONTROL_HZ = 20.0        # setpoint rate to the autopilot (task: 10 Hz or faster)
 ALT_CRUISE_M = float(os.environ.get("SWARM_ALT", "50"))
@@ -41,12 +41,6 @@ def hold_alt(agent_id):
     return ALT_CRUISE_M + sign * step * LAYER_STEP_M
 
 
-def alt_band(n):
-    """The fixed altitude band used by n agents: lowest and highest hold altitude."""
-    alts = [hold_alt(i) for i in range(1, n + 1)] + [ALT_CRUISE_M]
-    return (min(alts), max(alts))
-
-
 # ---- safety
 D_MIN_M = 8.0            # required minimum separation between any two agents
 DEAF_STOP_S = 3.0        # an agent that has heard nobody for this long stops and holds
@@ -59,7 +53,7 @@ RADIO_DELAY_S = 0.200
 SUSPECT_S = 2.0          # silent this long: suspect
 LOST_S = 12.0            # silent this long: lost. Longer than Mission C's 10 s blackout.
 
-# ---- onboard backup allocator (SWARM_BACKUP=1; swarm/backup.py, BACKUP.md). Off = ground only.
+# ---- onboard backup allocator (SWARM_BACKUP=1; swarm/backup.py). Off = ground only.
 BACKUP = os.environ.get("SWARM_BACKUP") == "1"
 # The ground sends each agent 2 messages a second (its ASSIGN, START): 12 s silence is ~24 lost
 # in a row at 20 % loss, and longer than a 10 s blackout, so a quiet ground is not a dead one.

@@ -1,8 +1,7 @@
-"""Results of a set of runs (results.md, results.json, runs/*.json) and comparison of sets.
+"""Results of a set of runs (results.md, results.json, runs/*.json).
 
 python -m analysis.report --out results/<set> --name "<label>" RUN_DIR...
                           [--ref RUN_DIR...] [--baseline RUN_DIR...]
-python -m analysis.report --compare results/a results/b ...
 
 --ref: no-loss runs with N-1 agents (the attainable coverage of the survivors).
 --baseline: no-loss runs with N agents. Their mean coverage is the fixed level that recovery and
@@ -521,35 +520,6 @@ def write_set(out_dir, name, run_dirs, ref_dirs, baseline_dirs):
         f.write(render(name, runs, summary, refs, baselines))
 
 
-def runs_with_value(summary):
-    """" (n)", or " (k of n)" when some runs have no value (e.g. did not recover)."""
-    if summary["n"] == 0:
-        return ""
-    if summary.get("n_none"):
-        return f" ({summary['n']} of {summary['n'] + summary['n_none']})"
-    return f" ({summary['n']})"
-
-
-def write_comparison(set_dirs):
-    """results/comparison.md: the sets side by side, matched by metric key."""
-    sets = []
-    for d in set_dirs:
-        with open(os.path.join(d, "results.json")) as f:
-            sets.append(json.load(f))
-    lines = ["# Comparison", "", "Cells: median [min, max] (n runs). Definitions: docs/metrics.md.",
-             "", "| Metric | Unit | " + " | ".join(s["name"] for s in sets) + " |",
-             "|---|---|" + "---|" * len(sets)]
-    for key, label, unit, digits in METRICS:
-        summaries = [s["summary"].get(key, {"n": 0}) for s in sets]
-        if any(x["n"] for x in summaries):
-            cells = [cell(x, digits) + runs_with_value(x) for x in summaries]
-            lines.append(f"| {label} | {unit} | " + " | ".join(cells) + " |")
-    out = os.path.join(os.path.dirname(os.path.abspath(set_dirs[0])), "comparison.md")
-    with open(out, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    return out
-
-
 def main():
     parser = argparse.ArgumentParser(description="results table of a set of runs")
     parser.add_argument("runs", nargs="*")
@@ -557,13 +527,9 @@ def main():
     parser.add_argument("--name")
     parser.add_argument("--ref", nargs="*", default=[])
     parser.add_argument("--baseline", nargs="*", default=[])
-    parser.add_argument("--compare", nargs="+")
     args = parser.parse_args()
-    if args.compare:
-        print(write_comparison(args.compare))
-    else:
-        write_set(args.out, args.name, args.runs, args.ref, args.baseline)
-        print(os.path.join(args.out, "results.md"))
+    write_set(args.out, args.name, args.runs, args.ref, args.baseline)
+    print(os.path.join(args.out, "results.md"))
 
 
 if __name__ == "__main__":

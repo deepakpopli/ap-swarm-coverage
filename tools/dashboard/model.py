@@ -19,7 +19,6 @@ CELL_M = 5.0                   # heatmap cell
 WINDOW_S = config.COVERAGE_WINDOW_S
 NEVER = -1                     # heat value of a cell never seen
 SEND_EVERY = 2                 # 20 Hz rows -> 10 Hz to the browser; enough for drawing
-ROW_FIELDS = ("x", "y", "z", "yaw", "status", "epoch", "slot", "nbr_age", "nbr_dist")
 
 COLUMN_X_M = np.arange(config.AREA[0] + CELL_M / 2, config.AREA[1], CELL_M)
 ROW_Y_M = np.arange(config.AREA[2] + CELL_M / 2, config.AREA[3], CELL_M)

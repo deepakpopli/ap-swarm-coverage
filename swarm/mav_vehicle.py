@@ -6,7 +6,7 @@ yaw is rad, 0 = north, clockwise.
 
 send_setpoint(vx, vy, z) sends ONE position-only target per call,
     target_xy = current_xy + (vx, vy) * lead_s(speed),
-because WP_SPD caps position targets but not velocity targets (results/spike/speed_cap.md), and
+because WP_SPD caps position targets but not velocity targets (measured in SITL and Gazebo), and
 re-aiming from the current position makes a filter cut act at once (zero velocity = brake).
 The altitude step per target is capped at ALT_STEP_M: the autopilot caps speed along the 3D line,
 so a large step would slow the horizontal flight.

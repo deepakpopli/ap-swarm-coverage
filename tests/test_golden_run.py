@@ -1,9 +1,8 @@
-"""SWARM_VISION off: the agents and the ground behave and log exactly as before vision existed.
+"""Golden run: the agents and the ground log exactly what they logged when GOLDEN was recorded.
 
 A deterministic in-process run (3 agents, the ground, the lossy fake radio, stepped time, agent 2
-goes silent at 150 s) is hashed file by file. GOLDEN was recorded with the code from before the
-vision patch (phase A tree), so any change on the off path shows up here as a different hash.
-Re-record (python tests/test_vision_off.py) only for a change that is meant to alter the off path.
+goes silent at 150 s) is hashed file by file, so any change in behaviour shows up as a different
+hash. Re-record (python tests/test_golden_run.py) only for a change that is meant to alter it.
 """
 import hashlib
 import os
@@ -89,8 +88,7 @@ def run_scenario(out_dir):
     return digests
 
 
-def test_vision_off_path_is_unchanged(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "VISION", False, raising=False)
+def test_golden_run_is_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "BACKUP", False)   # the golden is the core system's
     assert run_scenario(str(tmp_path)) == GOLDEN
 

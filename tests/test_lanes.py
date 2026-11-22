@@ -111,8 +111,8 @@ def active_gap_m(result, pos):
 
 
 def test_active_slots_spaced_in_the_swap_run():
-    """gz_swap (run/int): positions at the swap re-plan. The prototype issued agents 1 and 3
-    transit slots 0.2 m apart."""
+    """Positions at the swap re-plan of a Gazebo swap run, where agents 1 and 3 were once
+    issued transit slots 0.2 m apart."""
     pos = {1: (74.99, 244.89), 2: (125.0, 275.94), 3: (225.0, 245.3)}
     first = plan([1, 2, 3], starts(3))
     swapped = plan([1, 2, 3], pos, previous=first, reverse=True)
