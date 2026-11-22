@@ -50,8 +50,10 @@ metres). The allocator never issues a blacklisted pair. For an agent whose plan 
 1. Try the other loop variants (other entry end, other first-lane direction), nearest entry
    first, and take the first one without a blacklisted point.
 2. Otherwise drop the blacklisted points from the nearest variant and re-space its legs. A leg
-   whose new points would land on a blacklisted point is cut into one more piece (n and n + 1
-   pieces share no inner point).
+   whose new points would land on a blacklisted point is cut into n + 1, then up to 2n pieces
+   (n and n + 1 pieces share no inner point). If all of them hit the blacklist (8 points on the
+   zone lane once made the old open-ended search hang), the n-piece points are kept without the
+   blacklisted ones; that leg may then exceed 80 m.
 3. If every point is blacklisted (only a zone lane, 3 distinct points, can get there), the agent
    holds where it is until a pair expires.
 

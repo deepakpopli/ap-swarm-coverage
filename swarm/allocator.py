@@ -102,19 +102,24 @@ def _lanes_strip(lane_xs):
 
 # ---- slots ------------------------------------------------------------------------------------
 
+def _even(a, b, pieces):
+    return [_point(a[0] + (b[0] - a[0]) * k / pieces, a[1] + (b[1] - a[1]) * k / pieces)
+            for k in range(1, pieces)]
+
+
 def _leg(a, b, bad_keys):
     """Evenly spaced points strictly between a and b, no gap longer than LEG_M.
 
-    If one would be blacklisted, cut the leg into one more piece and try again: n and n + 1
-    pieces share no inner point, so the blacklisted point is gone.
+    A blacklisted point: try n + 1 .. 2n pieces (n and n + 1 share no inner point). If every
+    one hits the blacklist, the n points without the blacklisted ones: a gap may then exceed
+    LEG_M, but the search ends and the slot count stays bounded.
     """
-    pieces = max(1, math.ceil(math.dist(a, b) / LEG_M))
-    while True:
-        points = [_point(a[0] + (b[0] - a[0]) * k / pieces, a[1] + (b[1] - a[1]) * k / pieces)
-                  for k in range(1, pieces)]
+    n = max(1, math.ceil(math.dist(a, b) / LEG_M))
+    for pieces in range(n, 2 * n + 1):
+        points = _even(a, b, pieces)
         if not any(slot_key(p) in bad_keys for p in points):
             return points
-        pieces += 1
+    return [p for p in _even(a, b, n) if slot_key(p) not in bad_keys]
 
 
 def _close(points, bad_keys):

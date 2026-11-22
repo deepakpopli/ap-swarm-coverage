@@ -1,5 +1,6 @@
 """Tests for swarm/allocator.py. Pure functions: no sockets, no clock."""
 import math
+import signal
 
 import pytest
 
@@ -149,3 +150,20 @@ def test_zone_owner_kept_and_replaced_on_loss():
     near_zone = {1: (150.0, 100.0), 3: (250.0, 0.0)}
     lost = allocate([1, 3], near_zone, set(), previous=before, priority_zone=MIDDLE_ZONE)
     assert lane_of(lost[1]) == lane_of(before[2])       # the nearest survivor takes the zone
+
+
+def test_many_blacklisted_points_on_the_zone_lane_end():
+    """These 8 points block every spacing of the zone lane's 126 m middle leg: _leg once
+    searched forever."""
+    def hang(signum, frame):
+        raise TimeoutError("allocate did not return")
+    bad = {(2, (150, y)) for y in (94, 98, 129, 141, 150, 188, 204, 205)}
+    old = signal.signal(signal.SIGALRM, hang)
+    signal.alarm(5)
+    try:
+        asg = allocate([1, 2, 3], starts(3), bad, priority_zone=MIDDLE_ZONE)[2]
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+    assert asg.share == allocator._zone_strip(MIDDLE_ZONE).share
+    assert not {slot_key(p) for p in asg.slots} & {key for _, key in bad}
