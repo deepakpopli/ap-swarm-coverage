@@ -29,18 +29,15 @@ is the only safe rule if the radio is all you have.
 
 ## A second way to tell: look at it
 
-The radio can't tell dead from quiet, a camera can. When a neighbour goes suspect, a drone in
-range turns its gimbal to where the neighbour should be (last position + velocity x age) and
-checks the image with OpenCV. Not there: call it lost early instead of waiting 12 s. There:
-it's only quiet, leave its lanes alone.
+The radio can't tell dead from quiet, a camera could. The idea: when a neighbour goes suspect,
+a drone in range turns its gimbal to where the neighbour should be (last position + velocity x
+age) and checks the image with OpenCV. Not there: call it lost early instead of waiting 12 s.
+There: it's only quiet, leave its lanes alone. It has to come from pixels, not from Gazebo's
+true positions, otherwise it's just reading the other drone's state a different way.
 
-It has to come from pixels, not from Gazebo's true positions, otherwise it's just reading the
-other drone's state a different way.
-
-Tried it. On dead drones it was 2 right and 2 wrong. One "seen" was its own propeller arm in
-the picture, the camera sits inside the frame. Another was the horizon edge. A wrong "seen" is
-worse than nothing, it keeps a dead drone's lanes unflown. So it's off main until the camera
-is moved and it's tested on many runs.
+I tried it on a few runs and it didn't work reliably. It "saw" its own propeller arm (the
+camera sits inside the frame) and the horizon edge. A wrong "seen" is worse than nothing, it
+keeps a dead drone's lanes unflown. So it's not in this submission.
 
 ## mavlink for everything
 
@@ -71,7 +68,4 @@ the swarm degrades gracefully. So I went with 3, the minimum allowed and the har
 lanes split 1+1+2, and after a loss the two survivors have to cover the whole field between
 them.
 
-More drones is still the right answer for a real deployment, so I flew 4 and 5 too to see how
-much margin each extra drone buys. 3 seeds each: with 4 coverage after the loss is 97.7 %,
-with 5 it's 100 %. The worst revisit gap still goes to 100-110 s though, because the
-survivors shift lanes.
+More drones is still the right answer for a real deployment.

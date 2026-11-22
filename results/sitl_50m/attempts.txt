@@ -1,9 +1,0 @@
-evaluation sitl_50m, 2026-11-22 12:54:09, mission 180 s, seeds: 1 2 3 4 5
-  seed_1: done before, skipped (0 failed attempts in runs/sitl_50m/failed/)
-  seed_2: done before, skipped (0 failed attempts in runs/sitl_50m/failed/)
-  seed_3: ok on attempt 1
-  seed_4: ok on attempt 1
-  seed_5: ok on attempt 1
-  baseline_n3: ok on attempt 1
-  ref_n2: ok on attempt 1
-  analysis: ok -> results/sitl_50m/
