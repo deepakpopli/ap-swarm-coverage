@@ -3,22 +3,19 @@
     python -m swarm.ground --n 3 --port-base 0 --log run/ground.jsonl [--mission-s 180]
                            [--priority-zone xmin,ymin,xmax,ymax] [--swap-at T]
 
-Start: when all n agents report "ready" (or READY_DEADLINE_S after the first did), plan for the
-ready ones; they fly to their loops at once. When every assigned agent has reached a slot of its
-loop under the current epoch (or ON_STATION_DEADLINE_S after the first plan), START is sent with
-t0 = now + COVERAGE_WINDOW_S: the swarm observes for one full coverage window before the
-mission clock reaches 0, so coverage at t = 0 already comes from a full window.
-Liveness, from STATE receive times: alive -> suspect (SUSPECT_S) -> lost (LOST_S). A status
-other than ready/cover/hold (e.g. "failsafe") counts as lost at once. A lost agent rejoins once
-it has been heard steadily for REJOIN_S. Re-plan on: lost, rejoin, accepted INFEASIBLE.
-Restart: see Ground.maybe_plan_first.
+Plans when all n agents are ready (or READY_DEADLINE_S after the first). Once every assigned
+agent has reached a slot of its loop (or ON_STATION_DEADLINE_S), START sets t0 one coverage
+window ahead, so coverage at t = 0 already comes from a full window.
+Liveness from STATE receive times: alive -> suspect (SUSPECT_S) -> lost (LOST_S); a status other
+than ready/cover/hold is lost at once; rejoin after REJOIN_S of steady contact.
+Re-plan on: lost, rejoin, accepted INFEASIBLE. Restart: see Ground.maybe_plan_first.
 
-ground.jsonl: one JSON object per line, each with "t_wall", "t_mission" (null before start) and
-"event", one of:
+ground.jsonl: one JSON object per line with "t_wall", "t_mission" (null before start), "event":
   ready       {agent}
-  assign      {epoch, trigger, assignments: {id: {share, slots, loop_from}}, changed: [ids]}
-  start       {t0, late: [ids not on station]}   (t_mission = -COVERAGE_WINDOW_S)
-  liveness    {agent, from, to, status}       alive | suspect | lost; status = last reported
+  assign      {epoch, trigger, assignments: {id: {share, slots, loop_from}}, changed: [ids]};
+              trigger: start, restart, lost, rejoin, infeasible, swap
+  start       {t0, late: [ids not on station]}
+  liveness    {agent, from, to, status}
   infeasible  {agent, epoch, slot_xy, accepted, why}
   blacklist   {pairs: [{agent, slot_key, expires_t_wall}]}
   end         {epoch}
@@ -45,7 +42,7 @@ LOOP_S = 0.02
 
 
 class JsonLines:
-    """Appends one JSON object per line, stamped with the caller's `now`."""
+    """Appends one JSON object per line; appending lets a restarted ground keep the old log."""
 
     def __init__(self, path):
         self.file = open(path, "a")
@@ -158,9 +155,8 @@ class Ground:
         rec.slot = msg.slot
 
     def note_slot(self, a, rec, epoch, slot):
-        """The active slot only moves on when the agent reaches it. So when the slot changes
-        under the same epoch, the previously reported slot was reached; if it is a loop slot,
-        the agent is on station. A lost STATE can only delay this, never make it early."""
+        """A slot change under the same epoch means the previous slot was reached; a loop slot
+        puts the agent on station. A lost STATE can only delay this."""
         if epoch != rec.epoch:
             rec.on_loop = False
             return
@@ -169,8 +165,8 @@ class Ground:
             rec.on_loop = rec.on_loop or rec.slot >= plan.loop_from
 
     def on_infeasible(self, msg, now):
-        """Blacklist the slot and re-plan, whatever epoch the report names, as long as the point
-        is in the agent's current plan (an unrelated re-plan must not swallow the report)."""
+        """Blacklist and re-plan if the point is in the agent's current plan, whatever epoch the
+        report names: an unrelated re-plan must not swallow it."""
         a, xy = msg.get_srcSystem(), [msg.slot_x / 10, msg.slot_y / 10]
         key = slot_key(xy)
         plan = self.assignments.get(a)
@@ -191,9 +187,9 @@ class Ground:
     def maybe_plan_first(self, now):
         """Plan once everyone is ready, or on the deadline.
 
-        Restart: agents that already report an epoch are flying a plan from a ground that died.
-        Listen RESTART_LISTEN_S, jump EPOCH_STRIDE above any epoch heard (so no agent ever sees
-        an epoch number twice), keep t0 from the old log, and plan for everyone flying.
+        Restart (agents already report an epoch): listen RESTART_LISTEN_S, jump EPOCH_STRIDE
+        above any epoch heard so no agent sees one twice, keep t0 from the old log, plan for
+        everyone flying.
         """
         epochs = [r.epoch for r in self.agents.values() if r.epoch > 0]
         if epochs:
@@ -237,11 +233,9 @@ class Ground:
         self.log.t0 = t0
         self.next_start = 0.0            # send START now
 
-    # ---- test hook for the "swap" scenario (run_mission.py --scenario swap)
+    # ---- test hook for the "swap" scenario
     def maybe_swap(self, now):
-        """At mission time swap_at, re-plan once with the lane groups handed out in reverse
-        order, so the agents have to cross at cruise altitude: a stress test of the safety
-        filter."""
+        """At swap_at, re-plan once with the groups reversed: the agents cross at cruise."""
         if self.swap_at is None or self.t0 is None or now < self.t0 + self.swap_at:
             return
         self.swap_at = None
@@ -272,12 +266,12 @@ class Ground:
 
     @staticmethod
     def heard_steadily(rec, now) -> bool:
-        """Heard, flying and without a gap of SUSPECT_S for the last REJOIN_S: no flapping."""
+        """Flying, without a SUSPECT_S gap, for the last REJOIN_S: no flapping."""
         return now - rec.last_heard < config.SUSPECT_S and now - rec.good_since >= REJOIN_S
 
     # ---- blacklist
     def expire_blacklist(self, now):
-        """Expiry only frees the pair for later plans; it does not trigger a re-plan."""
+        """Expiry only frees the pair for later plans: no re-plan."""
         expired = [pair for pair, t in self.blacklist.items() if t <= now]
         for pair in expired:
             del self.blacklist[pair]
@@ -316,10 +310,9 @@ class Ground:
         return tuple(plan.slots[rec.slot])
 
     def send_due(self, now):
-        """ASSIGN at ASSIGN_HZ, START once a second: repeated because the radio is lossy.
-        An agent outside the plan (lost) gets an empty ASSIGN: if it can still hear (a dead
-        transmitter, scenario "mute") it must stop flying lanes that are now someone else's,
-        since the others forget it after LOST_S; with no slots it holds at its hold altitude."""
+        """ASSIGN at ASSIGN_HZ, START once a second (the radio is lossy). A lost agent gets an
+        empty ASSIGN: if it still hears (scenario "mute") it must leave lanes now someone else's,
+        since the others forget it after LOST_S; with no slots it holds."""
         if now >= self.next_assign:
             for a in sorted(self.agents):
                 body = self.assignments[a].to_dict() if a in self.assignments else NO_PLAN

@@ -16,19 +16,16 @@ COVERAGE_WINDOW_S = 60.0                       # "seen within the last 60 s"
 
 
 def start_xy(index, n):
-    """Start position of agent number `index` (0..n-1): a line centred on the south edge."""
+    """Start of agent number `index` (0..n-1): a line centred on the south edge."""
     x_mid = (AREA[0] + AREA[1]) / 2.0
     return (x_mid + START_SPACING_M * (index - (n - 1) / 2.0), AREA[2])
 
 
 # ---- flight
 V_MAX_MS = 12.0          # task limit
-# WP_SPD_MS: autopilot speed cap (parameter WP_SPD) and cruise speed. WP_SPD caps the
-# autopilot's shaped trajectory, not the vehicle: the vehicle overshoots it by a tracking error
-# that grows with PSC_NE_JERK (mav_vehicle.PARAMS), worst after a brake and full
-# re-acceleration. Measured true speed over that manoeuvre set: 12.70 m/s at 10.4 with jerk 12
-# (Gazebo), 11.52 (Gazebo) / 11.71 (SITL) at 11.5 with jerk 4. So the jerk, not a lower cruise
-# speed, keeps it under V_MAX_MS.
+# Cruise speed and the autopilot's WP_SPD. The vehicle overshoots WP_SPD by a tracking error
+# that grows with PSC_NE_JERK; the low jerk, not a lower cruise, keeps it under V_MAX_MS
+# (measured 11.71 m/s worst, results/exp/step1).
 WP_SPD_MS = 11.5
 CONTROL_HZ = 20.0        # setpoint rate to the autopilot (task: 10 Hz or faster)
 ALT_CRUISE_M = float(os.environ.get("SWARM_ALT", "50"))
@@ -36,12 +33,8 @@ LAYER_STEP_M = 10.0      # vertical spacing of hold altitudes: D_MIN_M + 2 x 1 m
 
 
 def hold_alt(agent_id):
-    """Private hold altitude of an agent: cruise +10, -10, +20, -20, ... m for ids 1, 2, 3, 4, ...
-
-    No hold altitude equals the cruise altitude, and no two agents share one. An agent that
-    holds (deaf, nothing to fly, before the mission starts) is therefore vertically separated from
-    every cruising agent and from every other holding agent.
-    """
+    """Private hold altitude: cruise +10, -10, +20, -20, ... m for ids 1, 2, 3, 4, ...: never
+    cruise, never shared, so a holding agent is vertically clear of everyone holding or cruising."""
     step = (agent_id + 1) // 2
     sign = 1.0 if agent_id % 2 == 1 else -1.0
     return ALT_CRUISE_M + sign * step * LAYER_STEP_M

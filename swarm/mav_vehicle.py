@@ -4,19 +4,12 @@ Frames: pos is area ENU metres from config.lla_to_enu(GLOBAL_POSITION_INT lat, l
 relative_alt, metres above home (home altitude = the area origin's). vel is ENU m/s.
 yaw is rad, 0 = north, clockwise.
 
-How send_setpoint(vx, vy, z) flies: every call sends ONE position-only target
-    target_xy = current_xy + (vx, vy) * lead_s(speed)
-lead_s() is the lead at which the autopilot flies at the commanded speed (with PARAMS:
-3.15 s at 3 m/s, 2.94 s at 11.5 m/s).
-  - WP_SPD caps the speed of position targets but not of velocity targets
-    (results/spike/speed_cap.md), so the autopilot itself enforces the speed limit.
-  - The target is re-aimed from the current position on every call, so a velocity cut by the
-    safety filter takes effect at once. (The old "rabbit" target kept the vehicle flying its
-    old heading for ~1.5 s and broke the 8 m separation in crossings.)
-  - Zero velocity puts the target on the current position, and the autopilot brakes.
-The altitude part of the target is at most ALT_STEP_M from the current altitude. The autopilot
-flies a straight 3D line to the target and caps the speed along it by WP_SPD horizontally and
-WP_SPD_UP/DN vertically, so a large altitude step would slow the horizontal flight.
+send_setpoint(vx, vy, z) sends ONE position-only target per call,
+    target_xy = current_xy + (vx, vy) * lead_s(speed),
+because WP_SPD caps position targets but not velocity targets (results/spike/speed_cap.md), and
+re-aiming from the current position makes a filter cut act at once (zero velocity = brake).
+The altitude step per target is capped at ALT_STEP_M: the autopilot caps speed along the 3D line,
+so a large step would slow the horizontal flight.
 
 Failsafe: poll() sends a HEARTBEAT every second. MAV_GCS_SYSID makes this link the autopilot's
 GCS, so if this program stops, the autopilot LANDS where it is after FS_GCS_TIMEOUT.
@@ -45,9 +38,7 @@ POSITION_ONLY = 0x09F8   # SET_POSITION_TARGET type_mask: use position and yaw, 
 PARAMS = {
     "WP_SPD": config.WP_SPD_MS,    # m/s, caps the speed of position targets in GUIDED
     "WP_ACC": 6.0,                 # m/s^2 (default 2.5): stop from cruise in ~20 m, not ~28 m
-    "PSC_NE_JERK": 4.0,            # m/s^3 (default 5): a low jerk keeps the vehicle on its
-                                   # shaped trajectory; at 12 it overshot WP_SPD by 2.3 m/s
-                                   # after a brake (config.WP_SPD_MS)
+    "PSC_NE_JERK": 4.0,            # m/s^3 (default 5): at 12 it overshot WP_SPD after a brake
     "WP_SPD_UP": 4.0,              # m/s (default 2.5): an ALT_STEP_M climb must not slow cruise
     "WP_SPD_DN": 4.0,              # m/s (default 1.5): same for descents
     "ATC_ANGLE_MAX": 45.0,         # deg (default 30): the SITL quad tops out at 10.3 m/s at 30
@@ -89,7 +80,7 @@ class MavVehicle:
         self.agent_id = agent_id
         self.port = config.sitl_tcp_port(agent_id)
         self.sock = None
-        self.out = b""                # bytes pymavlink packed but the socket has not taken yet
+        self.out = b""                # packed bytes the socket has not taken yet
         self.mav = mavlink.MAVLink(self, srcSystem=COMPANION_SYSID,
                                    srcComponent=mavlink.MAV_COMP_ID_ONBOARD_COMPUTER)
         self.mav.robust_parsing = True

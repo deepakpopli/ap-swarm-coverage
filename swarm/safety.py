@@ -1,17 +1,9 @@
 """Safety filter: nominal velocity -> safe setpoint (vx, vy, z). Pure logic: no I/O, no clock.
 
-Invariant: the 3D distance between any two agents stays >= D_MIN_M, using only the last STATE
-received from each neighbour. Per neighbour, either
-  - its possible altitude interval is >= D_MIN_M from ours (vertical separation), or
-  - we stay out of its keep-out disc, which grows with the age of its last position sample, and
-    we close on that disc no faster than we can still stop (else: full brake).
-Modes: cruise (at ALT_CRUISE_M), hold (at the agent's private hold altitude: before the
-mission, or when coverage has nothing to fly; it returns to cruise when clear), deaf (heard
-nobody for DEAF_STOP_S: stop, go to hold). A stand-off is not detected here: coverage's 15 s
-slot timer reports it upward.
-Every agent applies the same rules; responsibility for each pair is shared half and half.
-
-The derivation of every number, the tie-break and the residual risks: docs/safety.md.
+Invariant: any two agents stay >= D_MIN_M apart in 3D, from the last STATE of each neighbour
+only. Per neighbour, either the altitude intervals are D_MIN_M apart, or we stay out of its
+keep-out disc (growing with the age of its sample) and close on it no faster than we can stop.
+Both agents of a pair apply the same rules, each taking half. Derivations: docs/safety.md.
 """
 import math
 from dataclasses import dataclass, field
@@ -27,26 +19,13 @@ OBSTACLE_ID = config.GROUND_ID   # never a neighbour's id, so free for the test 
 
 @dataclass(frozen=True)
 class SafetyParams:
-    """Measured values (SITL / Gazebo): results/spike/motion_bounds_{sitl,gazebo}.json.
-
-    Re-measured at WP_SPD 11.5, PSC_NE_JERK 4 (results/exp/step1/motion_bounds_*.json).
-    Braking model: stop_offset + v t_react + v^2 / (2 a_brake) needs 28.6 m from 11.5 m/s;
-    measured 22.04 / 19.61 m (SITL / Gazebo); from 3.1 m/s 4.8 m against 4.44 / 4.09 m.
-    The drift model with a_max and dv_max covers the measured deviation from the
-    constant-velocity prediction: 1.38 / 5.5 / 19.1 / 33.1 / 47.1 m at 0.5 / 1 / 2 / 3 / 4 s
-    against 1.21 / 3.54 / 13.02 / 27.27 / 44.67 (SITL) and 1.05 / 3.72 / 13.45 / 27.87 / 45.24 m
-    (Gazebo).
-    """
+    """Each value and the measurement it covers: docs/safety.md."""
     margin_m: float = 1.0       # position error of both agents (estimate and sample timing)
-    a_brake_ms2: float = 3.0    # braking we count on (see the braking model above)
+    a_brake_ms2: float = 3.0    # braking we count on
     t_react_s: float = 0.4      # autopilot reaction + one 50 ms tick (in the braking model)
     stop_offset_m: float = 2.0  # measured back-track after a stop <= 0.45 m
-    a_max_ms2: float = 11.0     # drift envelope, not a physical acceleration (measured peak
-                                # 7.02 / 7.80 m/s^2): velocity samples lag, so 8 left the
-                                # deviation at 0.5 s and 1 s outside the disc
-    dv_max_ms: float = 14.0     # more than a full stop (11.75 m/s top speed): with 12.5 the
-                                # envelope missed the measured 4 s deviation of a reversal
-                                # (45.2 m Gazebo, 44.7 m SITL at WP_SPD 11.5, jerk 4)
+    a_max_ms2: float = 11.0     # drift envelope, not the physical peak: reported velocity lags
+    dv_max_ms: float = 14.0     # more than a full stop: 12.5 missed a measured reversal
     t_gap_s: float = 1.0        # 5 STATEs lost in a row at 20 % loss: p = 3e-4
     z_track_m: float = 1.0      # measured altitude error <= 0.08 m cruising, 0.94 m after takeoff
     plan_ahead_s: float = 0.6   # design: plan as if the next 3 STATEs are lost
@@ -144,13 +123,11 @@ class SafetyFilter:
         self.obstacle: Optional[Neighbour] = None
 
     def add_obstacle(self, x: float, y: float, radius_m: float) -> None:
-        """Test hook (scenario "obstacle"): a static disc of unknown height that the allocator
-        does not know about. It is a neighbour that never moves, is always fresh and has an
-        unknown altitude, so the filter treats it exactly like a hovering failsafe drone."""
+        """Test hook (scenario "obstacle"): a static disc of unknown height, the allocator
+        unaware; the filter treats it as a hovering failsafe drone that is always fresh."""
         self.obstacle = Neighbour((x, y, 0.0), (0.0, 0.0, 0.0), 0.0, True, radius_m)
 
     def heard(self, now: float) -> None:
-        """Any message from anyone arrived."""
         self.last_heard = now
 
     def update_neighbour(self, nid: int, pos, vel, t_pos: float, status: str) -> None:

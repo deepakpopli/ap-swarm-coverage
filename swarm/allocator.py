@@ -1,9 +1,6 @@
-"""Coverage allocator: which agent flies which slots. Pure and deterministic: same inputs, same
-output (no randomness, no I/O, sorted ids, ties broken by id). Rules and reasons:
-docs/allocation.md.
-
-Layout: lanes fixed over the whole area, cut into contiguous lane groups, one closed loop per
-agent. A membership change only changes who flies which lanes; the lanes never move.
+"""Coverage allocator: which agent flies which slots. Pure and deterministic (sorted ids, ties
+by id). Fixed lanes over the whole area, cut into contiguous groups, one closed loop per agent:
+a membership change moves owners, never lanes. Rules and reasons: docs/allocation.md.
 """
 import dataclasses
 import itertools
@@ -13,34 +10,24 @@ from dataclasses import dataclass
 from swarm import config, sensor
 from swarm.coverage import TURN_PASS_DEG, start_slot
 
-# Camera footprint at the cruise altitude in whole metres (85 x 48 at 50 m). Read at call time,
-# so a test can patch them to plan for another altitude.
+# Camera footprint at cruise in whole metres; read at call time so a test can patch them.
 SWATH_M, ALONG_M = sensor.lane_footprint(config.ALT_CRUISE_M)
 
-# Legs are cut 1 m below SLOT_SPACING_M so rounding slots to 0.1 m can never break the bound.
-# 79 m at 11.5 m/s cruise is 6.9 s. From a standing start the vehicle needs 5.2-5.4 s to
-# reach 95 % of cruise (measured, WP_SPD 11.5, PSC_NE_JERK 4: results/exp/step1), so at most
-# about 2.7 s more: under 10 s against the 15 s SLOT_TIMEOUT_S, a third of it spare.
+# 1 m below SLOT_SPACING_M so 0.1 m rounding cannot break it; under 10 s from a standing start
+# against the 15 s SLOT_TIMEOUT_S (docs/allocation.md).
 LEG_M = config.SLOT_SPACING_M - 1.0
 
-# Time lost per corner of a loop, measured for the CoverageController's corners (Gazebo,
-# WP_SPD 11.5, PSC_NE_JERK 4: results/exp/step1). Used only to compare loop periods.
-TURN90_S = 2.45           # a 90 degree corner
+# Measured corner costs, only to compare loop periods (docs/allocation.md).
+TURN90_S = 2.45
 TURN180_S = 3.65          # a lane-end reversal (one-lane out-and-back)
 
-# Mission B. TURN_S: time lost in a 180 degree turn at a lane end, an upper bound (5.9-6.0 s
-# measured for an instant reversal at full speed, results/exp/step1). A point on an
-# out-and-back lane is revisited after 2 x (distance to the far end) / speed + TURN_S, so lane
-# ends at most REACH_M from the zone centre keep the zone centre's revisit under
-# PRIORITY_REVISIT_S - REVISIT_MARGIN_S. The margin pays for zone points up to 30 m off centre
-# (the footprint's 24 m half-length absorbs all but 6 m = 0.5 s each way) and leaves about 1 s
-# for flying below cruise speed near the ends.
+# Mission B: zone lane ends at most REACH_M from the zone centre keep its revisit under
+# PRIORITY_REVISIT_S; TURN_S bounds a full-speed reversal (docs/allocation.md).
 TURN_S = 6.0
 REVISIT_MARGIN_S = 2.0
 REACH_M = (config.PRIORITY_REVISIT_S - REVISIT_MARGIN_S - TURN_S) * config.WP_SPD_MS / 2
 
-# No two agents' simultaneously active slots (transit points and the slot each starts on) may
-# be closer than this: both must be within SLOT_REACH_M of their slot while D_MIN_M apart.
+# Simultaneously active slots this far apart: both agents within SLOT_REACH_M while D_MIN_M apart.
 ACTIVE_GAP_M = config.D_MIN_M + 2 * config.SLOT_REACH_M
 
 # Loop variants (west lane first?, first lane northbound?), tried nearest entry first.
@@ -78,9 +65,8 @@ def _point(x, y):
 
 
 def _end_inset():
-    """How far lane ends lie inside the area's south and north edges. The agent counts a slot as
-    reached up to SLOT_REACH_M before it and turns there, so half the footprint length minus
-    that: the camera still reaches the edge (it missed the outermost 2-3 m in a Gazebo run)."""
+    """Lane ends inside the south and north edges: the agent turns SLOT_REACH_M early, and the
+    camera must still reach the edge."""
     return ALONG_M / 2 - config.SLOT_REACH_M
 
 
@@ -132,11 +118,8 @@ def _close(points, bad_keys):
 
 
 def _loop(strip, west_first, northbound):
-    """Boustrophedon over the strip's lanes, closed back to its start.
-
-    With one lane it is an out-and-back, so the same points appear twice; nothing relies on
-    slots being unique.
-    """
+    """Boustrophedon over the strip's lanes, closed back to its start. One lane: an out-and-back,
+    so points repeat; nothing relies on slots being unique."""
     ends = []
     for x in strip.lane_xs if west_first else strip.lane_xs[::-1]:
         ys = [strip.y_south, strip.y_north] if northbound else [strip.y_north, strip.y_south]
@@ -217,11 +200,9 @@ def best_split(n):
 
 
 def _group_plans(ids, xy, blacklist, previous, reverse):
-    """Contiguous lane groups; agent-to-group by the smallest total distance to the group's
-    loop (ties: the first permutation of the ids in ascending order). reverse (swap test hook):
-    the groups go to the agents in the opposite order, so they must cross.
-    More agents than lanes: one lane each; the agents left over get no slots and hold at their
-    private hold altitude, out of the lanes' way, until a loss frees a lane."""
+    """Contiguous lane groups, agent-to-group by the smallest total distance to the loops (ties:
+    the first permutation of the sorted ids). reverse (swap test hook): the opposite order.
+    More agents than lanes: the spares get no slots and hold until a loss frees a lane."""
     n_flying = min(len(ids), len(area_lanes()))
     strips = [_lanes_strip(g) for g in best_split(n_flying)]
     loops = [_loop(strip, True, True) for strip in strips]
@@ -240,9 +221,8 @@ def _group_plans(ids, xy, blacklist, previous, reverse):
 # ---- Mission B: one agent owns an out-and-back lane through the priority zone ----------------
 
 def _zone_lane_x(zone):
-    """x of the zone lane: half way between two area lanes (or a lane and the area edge), so it
-    keeps clear of the other agents' lanes; of those, the one whose footprint covers the most of
-    the zone's width, then the one nearest the zone centre."""
+    """x of the zone lane: a midpoint between area lanes (or a lane and the edge), clear of the
+    other agents' lanes; the one covering most of the zone's width, then nearest its centre."""
     edges = [config.AREA[0]] + area_lanes() + [config.AREA[1]]
     middles = [(a + b) / 2 for a, b in zip(edges, edges[1:])]
     zone_x = (zone[0] + zone[2]) / 2
@@ -289,9 +269,8 @@ def _gap_m(slots_a, slots_b) -> float:
 
 
 def _clear_leg(a, b, avoid):
-    """Points strictly between a and b, gaps at most LEG_M, none closer than ACTIVE_GAP_M to
-    a point of `avoid`: walk from a, a full LEG_M step each time, shortened (1 m at a time)
-    while it lands too close. None if no step fits."""
+    """Points strictly between a and b, gaps at most LEG_M, none within ACTIVE_GAP_M of
+    `avoid`: LEG_M steps from a, each shortened 1 m at a time while too close. None if stuck."""
     length = math.dist(a, b)
     points, done = [], 0.0
 
@@ -309,10 +288,9 @@ def _clear_leg(a, b, avoid):
 
 
 def _respace_transits(result, previous, motion, bad_pairs):
-    """Two agents' active slots (transit points and the slot they start on) must be
-    ACTIVE_GAP_M apart (the swap run once issued two transit slots 0.2 m apart and stalled).
-    Each new plan that clashes, highest id first, keeps its transit leg but moves the points
-    off every other agent's active slots (_clear_leg). A kept plan is already being flown."""
+    """Keep active slots ACTIVE_GAP_M apart (a swap run once got transit slots 0.2 m apart and
+    stalled): each clashing new plan, highest id first, moves its transit points along the leg.
+    A kept plan is already being flown."""
     for move in sorted(result, reverse=True):
         asg = result[move]
         others = [p for b in result if b != move for p in _first_slots(result[b], motion[b])]

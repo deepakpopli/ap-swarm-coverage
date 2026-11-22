@@ -1,19 +1,11 @@
 """Coverage controller: the assigned slot list -> nominal horizontal velocity. Pure logic.
 
-Slots 0.. are flown once, then slots[loop_from:] repeat. The agent flies straight at the active
-slot at WP_SPD_MS, keeps full speed through gentle turns and slows before sharp ones. The
-safety filter picks the altitude (cruise or hold) and may change the velocity.
-
-Feasibility feedback: a slot not reached within SLOT_TIMEOUT_S of becoming active is reported
-once (event "infeasible"); the agent then holds and re-sends INFEASIBLE every second until a
-newer epoch arrives. The timer pauses only while the agent is deaf: it could not report, and a
-blackout says nothing about the slot. It keeps running while the safety filter blocks us,
-because a slot we are kept away from is exactly what the ground has to hear about.
-A newer epoch with the same slot list keeps the active slot, its timer and its report.
-
-No "blocked" detection: a stand-off is reported by the slot timer above. A real-progress
-detector (distance to the slot) was tried and removed: on the real stack it never ended a
-stand-off before the slot timer or the 12 s LOST_S forgetting (docs/safety.md).
+Slots 0.. are flown once, then slots[loop_from:] repeat, straight at the active slot, slowing
+only before sharp turns. A slot not reached SLOT_TIMEOUT_S after it became active is reported
+INFEASIBLE (re-sent every second until a newer epoch); then the agent holds. The timer pauses
+only while deaf (a blackout says nothing about the slot), not while the safety filter blocks
+us: a slot we are kept from is what the ground must hear about. No separate "blocked" detector:
+one tried on the real stack never beat the slot timer (docs/safety.md).
 """
 import math
 from dataclasses import dataclass, field
@@ -67,14 +59,15 @@ class CoverageController:
         self.loop_from = 0
         self.idx = -1                      # active slot, -1 without a plan
         self.seg_start = (0.0, 0.0)        # where the leg to the active slot began
-        self.active_s = 0.0                # time the active slot has been active (not deaf)
+        self.active_s = 0.0                # time the active slot has been active, not deaf
         self.reported = False              # the active slot timed out and was reported
         self.infeasible: Optional[dict] = None   # INFEASIBLE body, re-sent until a new epoch
         self.last_sent: Optional[float] = None
         self.last_now: Optional[float] = None
 
     def on_assign(self, epoch: int, slots, loop_from: int, xy, vel) -> Optional[dict]:
-        """Apply an ASSIGN. Returns an event to log, or None for an old epoch."""
+        """Apply an ASSIGN. Returns an event to log, or None for an old epoch. The same slots
+        under a newer epoch keep the active slot, its timer and its report."""
         if self.epoch is not None and epoch <= self.epoch:
             return None
         self.epoch = epoch

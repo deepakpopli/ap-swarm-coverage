@@ -144,6 +144,13 @@ stops it. The filter never reports infeasibility itself: if it keeps us from a s
   ASSIGN repeats at 1 Hz over a lossy radio) only its own filter protects it. Re-flown: it was in hold
   within 1 s of being dropped and climbed to 60 m, and the agent that took its lane passed straight under it
   at 50 m: 10.0 m apart, separated by altitude only.
+- **A dead drone blocks the next lane until it is declared lost** (known limitation, not fixed
+  on purpose). Its disc grows to 88.49 m (age >= 6.6 s), wider than the 75 m lane spacing. Until
+  LOST_S = 12 s forgets it, a survivor on the neighbouring lane may brake to a stop, and its 15 s
+  slot timer can then report a reachable slot as infeasible (seen in a real run): the slot is
+  blacklisted for 60 s and that agent is re-planned. The disc size comes from the safety
+  argument above (a silent neighbour may still be flying), so shrinking it to spare the
+  coverage would break the invariant.
 - **Forgotten neighbours**: after LOST_S nothing is known. A silent agent hovering at its hold
   altitude is safe from cruisers and holders, but an agent returning from a higher hold altitude
   to cruise passes through the hold altitudes in between (e.g. id 3: 70 -> 50 passes 60).

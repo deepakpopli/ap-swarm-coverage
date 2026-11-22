@@ -29,8 +29,4 @@ class Vehicle(Protocol):
     def state(self) -> Optional[VehicleState]: ...
 
     def send_setpoint(self, vx: float, vy: float, z: float) -> None:
-        """Horizontal velocity (ENU, m/s) and target altitude (m). Call at CONTROL_HZ.
-
-        MavVehicle turns this into a position target a short distance ahead of the current
-        position, because WP_SPD caps position targets but not velocity targets.
-        """
+        """Horizontal velocity (ENU, m/s) and target altitude (m). Call at CONTROL_HZ."""

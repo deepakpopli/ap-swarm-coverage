@@ -205,9 +205,7 @@ class Agent:
         return nominal, cmd
 
     def _log_row(self, now: float, st, nominal, cmd) -> None:
-        t_mission = None
-        if self.t0 is not None:
-            t_mission = now - self.t0
+        t_mission = None if self.t0 is None else now - self.t0
         row = [_num(now, 3), _num(t_mission, 3)]
         row += [_num(v) for v in st.pos + st.vel] + [_num(st.yaw, 3)]
         row += [self.status, "" if self.coverage.epoch is None else self.coverage.epoch,
