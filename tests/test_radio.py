@@ -26,9 +26,9 @@ def packet(src, msg) -> bytes:
     return bytes(msg.pack(mav.MAVLink(None, srcSystem=src, srcComponent=protocol.COMPONENT)))
 
 
-def radio(tmp_path, k, seed=1, loss=0.2, blackouts=(), mutes=()):
+def radio(tmp_path, k, seed=1, loss=0.2, blackouts=()):
     return Radio(3, seed, loss, 0.2, port_base(k), str(tmp_path / f"radio{k}.jsonl"),
-                 list(blackouts), list(mutes))
+                 list(blackouts))
 
 
 def queued(r):
@@ -71,7 +71,7 @@ def test_seeded_loss_is_reproducible_and_about_20_percent(tmp_path):
 
 
 def test_window_drops_need_t0_from_start(tmp_path):
-    r = radio(tmp_path, 5, loss=0.0, blackouts=[(3, 10.0, 20.0)], mutes=[(2, 5.0, 8.0)])
+    r = radio(tmp_path, 5, loss=0.0, blackouts=[(3, 10.0, 20.0)])
     r.on_datagram(packet(3, STATE), 1015.0)                  # no t0 yet: no window
     assert len(r.queue) == 3
     r.on_datagram(packet(GROUND, protocol.start(1000.0)), 1001.0)
@@ -79,26 +79,17 @@ def test_window_drops_need_t0_from_start(tmp_path):
     r.queue.clear()
     r.on_datagram(packet(3, STATE), 1015.0)                  # blackout: from 3 ...
     r.on_datagram(packet(1, STATE), 1015.0)                  # ... and to 3
-    r.on_datagram(packet(2, STATE), 1006.0)                  # mute: what 2 sends
     assert queued(r) == [(1, 2), (1, GROUND)]
-    assert r.stats["1->3"].dropped_window == 1 and r.stats["2->1"].dropped_window == 1
+    assert r.stats["1->3"].dropped_window == 1 and r.stats["3->1"].dropped_window == 1
 
 
 def test_blackout_cuts_both_directions():
     blackouts = [(3, 10.0, 20.0)]
-    assert window_drop(3, 1, 10.0, blackouts, [])             # from 3
-    assert window_drop(GROUND, 3, 19.9, blackouts, [])        # to 3
-    assert not window_drop(1, 2, 15.0, blackouts, [])         # others unaffected
-    assert not window_drop(3, 1, 9.9, blackouts, [])          # [T0, T1)
-    assert not window_drop(1, 3, 20.0, blackouts, [])
-
-
-def test_mute_cuts_only_what_the_agent_sends():
-    mutes = [(2, 5.0, 8.0)]
-    assert window_drop(2, 1, 6.0, [], mutes)
-    assert window_drop(2, GROUND, 6.0, [], mutes)
-    assert not window_drop(1, 2, 6.0, [], mutes)              # it still hears
-    assert not window_drop(2, 1, 8.0, [], mutes)
+    assert window_drop(3, 1, 10.0, blackouts)                 # from 3
+    assert window_drop(GROUND, 3, 19.9, blackouts)            # to 3
+    assert not window_drop(1, 2, 15.0, blackouts)             # others unaffected
+    assert not window_drop(3, 1, 9.9, blackouts)              # [T0, T1)
+    assert not window_drop(1, 3, 20.0, blackouts)
 
 
 def test_delay_over_sockets(tmp_path):

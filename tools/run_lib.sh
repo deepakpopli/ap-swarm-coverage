@@ -1,7 +1,7 @@
 # Sourced by run_eval.sh and run_scenarios.sh: simulator runs one at a time, each through the
-# machine lock (run/sim.lock: the simulator is shared) and the thermal guard. A finished run is
-# skipped, so re-running continues; a failed or tainted attempt is kept in <runs>/failed/ and
-# retried up to RETRIES times. Callers set BACKEND and FORCE and read SUMMARY.
+# machine lock (run/sim.lock: the simulator is shared). A finished run is skipped, so re-running
+# continues; a failed attempt is kept in <runs>/failed/ and retried up to RETRIES times.
+# Callers set BACKEND and FORCE and read SUMMARY.
 LOCK=run/sim.lock
 RETRIES=2
 SUMMARY=()
@@ -15,16 +15,6 @@ outcome() {   # $1 = run directory; "running" after the runner ended means it cr
 }
 
 is_done() { [ "$(outcome "$1")" = ok ]; }
-
-ensure_guard() {   # the guard must run during every simulation; start it if it died
-  local pid
-  pid=$(cat run/guard.pid 2> /dev/null)
-  if [ -n "$pid" ] && grep -q thermal_guard "/proc/$pid/cmdline" 2> /dev/null; then return; fi
-  mkdir -p run
-  setsid nohup bash tools/thermal_guard.sh > /dev/null 2>&1 < /dev/null &
-  echo $! > run/guard.pid
-  say "started the thermal guard (pid $!)"
-}
 
 no_leftovers() {   # nothing of a simulator may outlive its run; never kill by pattern
   local left
@@ -43,11 +33,9 @@ run_one() {   # $1 = runs directory, $2 = run name, then run_mission.py options
     SUMMARY+=("$name: done before, skipped (${#failed[@]} failed attempts in $runs/failed/)")
     return
   fi
-  mkdir -p "$runs/failed"
+  mkdir -p "$runs/failed" run
   [ -e "$dir" ] && mv "$dir" "$runs/failed/${name}_$(date +%Y%m%d-%H%M%S)_replaced"
   for attempt in $(seq 1 $((RETRIES + 1))); do
-    ensure_guard
-    bash tools/thermal_guard.sh --wait
     say "$name: attempt $attempt, waiting for the simulator lock"
     flock "$LOCK" nice -n 19 python3 run_mission.py --backend "$BACKEND" --out "$dir" "$@"
     no_leftovers

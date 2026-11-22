@@ -1,13 +1,13 @@
 """Radio emulator: one UDP relay that every message between nodes passes through.
 
     python -m sim.radio --n N --seed S --loss 0.2 --delay 0.2 --port-base 0 --log run/radio.jsonl
-                        [--blackout ID:T0:T1 ...] [--mute ID:T0:T1 ...]
+                        [--blackout ID:T0:T1 ...]
 
 Each datagram is one MAVLink packet from the header's source system, to target_system for
 SWARM_ASSIGN and SWARM_INFEASIBLE, else to every other node; nodes listen on net.listen_port(id),
 so nothing registers. Per receiver a copy is dropped with probability `loss`, else forwarded
-`delay` s after arrival. --blackout drops all to and from ID in mission time [T0, T1); --mute
-only what ID sends (it still hears). Mission time comes from the ground's SWARM_START.
+`delay` s after arrival. --blackout drops all to and from ID in mission time [T0, T1). Mission
+time comes from the ground's SWARM_START.
 
 Determinism: one random.Random per (src, dst), one draw per copy in arrival order, so the k-th
 copy from A to B is dropped in every run or in none (MAVLink seq would wrap every 256).
@@ -41,10 +41,9 @@ def in_window(windows, node, t_mission) -> bool:
     return any(node == w_id and t_start <= t_mission < t_end for w_id, t_start, t_end in windows)
 
 
-def window_drop(src, dst, t_mission, blackouts, mutes) -> bool:
-    """True if a blackout of src or dst, or a mute of src, covers this mission time."""
-    return (in_window(blackouts, src, t_mission) or in_window(blackouts, dst, t_mission)
-            or in_window(mutes, src, t_mission))
+def window_drop(src, dst, t_mission, blackouts) -> bool:
+    """True if a blackout of src or dst covers this mission time."""
+    return in_window(blackouts, src, t_mission) or in_window(blackouts, dst, t_mission)
 
 
 def parse_window(text) -> tuple:
@@ -78,14 +77,13 @@ class PairStats:
 
 
 class Radio:
-    def __init__(self, n, seed, loss, delay_s, port_base, log_path, blackouts, mutes):
+    def __init__(self, n, seed, loss, delay_s, port_base, log_path, blackouts):
         self.nodes = [config.GROUND_ID] + list(range(1, n + 1))
         self.seed = seed
         self.loss = loss
         self.delay_s = delay_s
         self.port_base = port_base
         self.blackouts = blackouts
-        self.mutes = mutes
         self.parser = mav.MAVLink(None)
         self.rngs = {}             # (src, dst) -> random.Random, see pair_rng
         self.t0 = None             # mission t0 (wall time), from the ground's SWARM_START
@@ -96,7 +94,7 @@ class Radio:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind((HOST, config.RADIO_PORT + port_base))
         self.write("config", n=n, seed=seed, loss=loss, delay_s=delay_s, port_base=port_base,
-                   blackouts=blackouts, mutes=mutes)
+                   blackouts=blackouts)
 
     def write(self, event, **fields):
         self.log.write(json.dumps({"t_wall": time.time(), "event": event, **fields}) + "\n")
@@ -120,8 +118,7 @@ class Radio:
         stats.sent += 1
         rng = self.rngs.setdefault((src, dst), pair_rng(self.seed, src, dst))
         lost = rng.random() < self.loss      # drawn for every copy: windows do not shift it
-        if self.t0 is not None and window_drop(src, dst, now - self.t0, self.blackouts,
-                                               self.mutes):
+        if self.t0 is not None and window_drop(src, dst, now - self.t0, self.blackouts):
             stats.dropped_window += 1
         elif lost:
             stats.dropped_loss += 1
@@ -175,12 +172,11 @@ def main(argv=None):
     ap.add_argument("--port-base", type=int, default=0)
     ap.add_argument("--log", required=True)
     ap.add_argument("--blackout", type=parse_window, action="append", default=[])
-    ap.add_argument("--mute", type=parse_window, action="append", default=[])
     args = ap.parse_args(argv)
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGINT, _exit_on_signal)
-    Radio(args.n, args.seed, args.loss, args.delay, args.port_base, args.log, args.blackout,
-          args.mute).run()
+    Radio(args.n, args.seed, args.loss, args.delay, args.port_base, args.log,
+          args.blackout).run()
 
 
 if __name__ == "__main__":

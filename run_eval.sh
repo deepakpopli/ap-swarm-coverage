@@ -4,22 +4,19 @@
 # plots and one animation into results/<set>/.
 #
 #   ./run_eval.sh                          # gazebo, seeds 1..12, 50 m, 180 s: set gazebo_50m
-#   BACKEND=sitl SEEDS="1 2 3 4 5" ./run_eval.sh
+#   SEEDS="1 2 3 4 5" ./run_eval.sh
 #
-# Environment: BACKEND (gazebo | sitl), SEEDS, SWARM_ALT (cruise altitude, m), MISSION_S (s),
-# FORCE=1 (fly finished runs again). Set name: <backend>_<alt>m. Raw runs go to runs/<set>/
-# (git-ignored). Locking, retries and the thermal guard: tools/run_lib.sh.
+# Environment: SEEDS, FORCE=1 (fly finished runs again). Raw runs go to runs/gazebo_50m/
+# (git-ignored). Locking and retries: tools/run_lib.sh.
 set -u
 cd "$(dirname "$0")" || exit 1
 source tools/run_lib.sh
 
-BACKEND=${BACKEND:-gazebo}
+BACKEND=gazebo
 SEEDS=${SEEDS:-$(seq -s ' ' 1 12)}
-export SWARM_ALT=${SWARM_ALT:-50}
-MISSION_S=${MISSION_S:-180}
+MISSION_S=180
 FORCE=${FORCE:-0}
-case $BACKEND in gazebo | sitl) ;; *) echo "BACKEND must be gazebo or sitl"; exit 2 ;; esac
-SET="${BACKEND}_${SWARM_ALT}m"
+SET=gazebo_50m
 RUNS=runs/$SET
 RESULTS=results/$SET
 FIRST_SEED=${SEEDS%% *}

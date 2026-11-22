@@ -7,12 +7,10 @@ Both backends report the same area ENU positions:
   gazebo: the home of every arducopter is the area origin, the world puts model id - 1 at its
           start point, and the JSON backend reports positions relative to home.
 
-Every child runs under `nice -n 19`, gets SIGKILL when this process dies (PR_SET_PDEATHSIG,
-so call start() from the main thread) and has its PID in run/pids/ so tools/thermal_guard.sh
-can pause it.
+Every child runs under `nice -n 19` and gets SIGKILL when this process dies (PR_SET_PDEATHSIG,
+so call start() from the main thread).
 """
 import ctypes
-import glob
 import os
 import re
 import signal
@@ -23,26 +21,11 @@ from typing import Optional
 from sim import gazebo_world
 from swarm import config
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PID_DIR = os.path.join(ROOT, "run", "pids")
 ARDUPILOT = os.path.expanduser(os.environ.get("ARDUPILOT_HOME", "~/ardupilot"))
 ARDUCOPTER = os.path.join(ARDUPILOT, "build/sitl/bin/arducopter")
 DEFAULT_PARAMS = os.path.join(ARDUPILOT, "Tools/autotest/default_params")
 AP_GAZEBO = gazebo_world.AP_GAZEBO
 PR_SET_PDEATHSIG = 1
-
-
-def register_pid(name: str, pid: int) -> None:
-    """Write run/pids/<name>.pid so the thermal guard can pause this process."""
-    os.makedirs(PID_DIR, exist_ok=True)
-    with open(os.path.join(PID_DIR, f"{name}.pid"), "w") as f:
-        f.write(str(pid))
-
-
-def unregister_pids(prefix: str) -> None:
-    """Remove every run/pids/<prefix>*.pid."""
-    for path in glob.glob(os.path.join(PID_DIR, f"{prefix}*.pid")):
-        os.remove(path)
 
 
 def _die_with_parent() -> None:
@@ -85,7 +68,6 @@ class Fleet:
             holder = _port_holder(self.port(agent_id))
             if holder:
                 raise RuntimeError(f"port {self.port(agent_id)} is busy: {holder}")
-        unregister_pids("fleet_")     # left over if an earlier runner was killed
         os.makedirs(self.run_dir, exist_ok=True)
         if self.backend == "gazebo":
             self._start_gazebo()
@@ -105,7 +87,6 @@ class Fleet:
         sdf = gazebo_world.generate(gz_dir, positions, config.ORIGIN_LLA)
         self.gz = start_process(["gz", "sim", "-s", "-r", "-v", "2", sdf],
                          os.path.join(self.run_dir, "gz.log"), env=self.env)
-        register_pid("fleet_gz", self.gz.pid)
 
     def _start_autopilot(self, agent_id: int) -> None:
         instance = agent_id - 1
@@ -124,7 +105,6 @@ class Fleet:
                "--home", home, "--defaults", params]
         process = start_process(cmd, os.path.join(work_dir, "sitl.log"), cwd=work_dir)
         self.autopilots[agent_id] = process
-        register_pid(f"fleet_sitl{agent_id}", process.pid)
 
     def kill_vehicle(self, agent_id: int) -> bool:
         """SIGKILL the agent's arducopter (sudden autopilot loss). True if a model was removed.
@@ -136,7 +116,6 @@ class Fleet:
         process = self.autopilots.pop(agent_id)
         process.kill()
         process.wait()
-        unregister_pids(f"fleet_sitl{agent_id}")
         if self.backend == "sitl":
             return False
         reply = self._gz(["service", "-s", "/world/swarm/remove", "--reqtype", "gz.msgs.Entity",
@@ -165,7 +144,7 @@ class Fleet:
         return result.stdout
 
     def stop(self) -> None:
-        """SIGTERM every child, SIGKILL what is left after a few seconds, unregister PIDs."""
+        """SIGTERM every child, SIGKILL what is left after a few seconds."""
         children = list(self.autopilots.values()) + ([self.gz] if self.gz else [])
         for process in children:
             process.terminate()
@@ -177,4 +156,3 @@ class Fleet:
                 process.wait()
         self.autopilots = {}
         self.gz = None
-        unregister_pids("fleet_")
