@@ -17,18 +17,16 @@ class VehicleState:
     guided: bool                      # True while the autopilot is armed and in GUIDED mode
 
 
-LANE_YAW_MIN_MS = 2.0   # slower than this, or not mostly north-south: keep the heading
+YAW_MIN_MS = 2.0   # slower than this: keep the heading (a hover has no direction)
 
 
-def lane_yaw(vx: float, vy: float, last: float) -> float:
-    """Nose along the lane: north (0) or south (pi), else keep the last yaw (rad).
-
-    Lanes run north-south and the footprint is the same turned by 180 deg, so facing the way
-    we fly costs no coverage. Sideways hops between lanes keep the heading: turning 90 deg
-    would put the footprint's short side across the track."""
-    if abs(vy) >= LANE_YAW_MIN_MS and abs(vy) > 2.0 * abs(vx):
-        return 0.0 if vy > 0 else math.pi
-    return last
+def travel_yaw(vx: float, vy: float, last: float) -> float:
+    """Nose where we fly, like ArduPilot's own WP_YAW_BEHAVIOR default; slow: keep the last yaw.
+    Yaw in rad, 0 = north, clockwise. On the lanes it is north or south and the footprint is the
+    same turned by 180 deg; on the short hops between lanes the footprint turns with the nose."""
+    if math.hypot(vx, vy) < YAW_MIN_MS:
+        return last
+    return math.atan2(vx, vy) % (2 * math.pi)
 
 
 class Vehicle(Protocol):

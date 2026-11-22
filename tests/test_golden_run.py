@@ -23,9 +23,9 @@ SILENT_ID, SILENT_AT_S = 2, 150.0     # this agent stops ticking (and so sending
 FILES = ["agent_1.csv", "agent_2.csv", "agent_3.csv", "agent_1.events.jsonl",
          "agent_2.events.jsonl", "agent_3.events.jsonl", "ground.jsonl", "sent"]
 GOLDEN = {
-    "agent_1.csv": "d04f3fe589efeb1ae81037ba4553ec438c201ba8fc11eff6b95e8d0a4ebd3302",
-    "agent_2.csv": "44de5176080aae69bd2017dabdd76b79573ea76d3c88622deab74b04abe6bd84",
-    "agent_3.csv": "4b462b5f4d295ca0a476b7f6b0fa9f7d87967bbb39dabc514032b29cd586e8d3",
+    "agent_1.csv": "4f79b5cec9038108e5fc7c0295e508e9d994eaaf446a13c1fbfde528bab7bbb8",
+    "agent_2.csv": "6046f6c15e8b4aa7abb9729963bacacde6bb2aa5277c2fe807864a00a199e7ee",
+    "agent_3.csv": "8a0b7416270ed29b3ee8ded60f5d06f3d25c9b12df32447e71168958980a4752",
     "agent_1.events.jsonl": "4bcc6647f9b256fcc705e233268a87e71e88a42aa56d8e31fbdbaa127d4bd1fc",
     "agent_2.events.jsonl": "3d9946af80e282a8264044896f2e9bc77a3818247824503d38539fb431eb4889",
     "agent_3.events.jsonl": "3f30156905f109f01591a5e4313ebf9e9381b0fa991145a0dbc40f83d3839a70",

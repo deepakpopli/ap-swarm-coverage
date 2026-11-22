@@ -14,7 +14,7 @@ import time
 from collections import deque
 
 from swarm import config
-from swarm.vehicle_api import VehicleState, lane_yaw
+from swarm.vehicle_api import VehicleState, travel_yaw
 
 T_LEAD_S = 1.4       # lead of the target; MavVehicle's lead_s() is 1.05-1.63 s by speed
 REACT_S = 0.25       # measured: speed starts to fall 0.2-0.3 s after a zero setpoint
@@ -32,7 +32,7 @@ class FakeVehicle:
         self.t = clock()
         self.pos = list(start)
         self.vel = [0.0, 0.0, 0.0]
-        self.yaw = 0.0                 # rad, 0 = north (lane_yaw)
+        self.yaw = 0.0                 # rad, 0 = north (travel_yaw)
         self.target = tuple(start)
         self.pending = deque()   # (time the autopilot acts on it, (vx, vy, z))
         self.link_ok = True      # tests set these two to simulate failures
@@ -70,7 +70,7 @@ class FakeVehicle:
     def send_setpoint(self, vx: float, vy: float, z: float) -> None:
         with self.lock:
             self.pending.append((self.t + REACT_S, (vx, vy, z)))
-            self.yaw = lane_yaw(vx, vy, self.yaw)   # turns at once: the footprint is the same
+            self.yaw = travel_yaw(vx, vy, self.yaw)   # turns at once
 
     def _advance(self, dt: float) -> None:
         while dt > 1e-9:
