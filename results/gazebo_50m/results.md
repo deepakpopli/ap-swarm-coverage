@@ -1,6 +1,6 @@
 # gazebo_50m
 
-12 runs, backend gazebo, N = 3. Cells: median [min, max] over runs; a reference of one run is a single value. Definitions: REPORT.md section 11.
+12 runs, backend gazebo, N = 3. Cells: median [min, max] over runs; a reference of one run is a single value. Definitions: "How to read this" below and analysis/metrics.py.
 
 ## How to read this
 

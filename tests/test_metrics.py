@@ -323,6 +323,14 @@ class ReportTest(unittest.TestCase):
             self.assertIn("2 of 2 runs recovered", text)
             self.assertTrue(os.path.exists(os.path.join(out, "runs", "seed_2.json")))
 
+    def test_a_run_without_start_is_refused_clearly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = loss_run(1)
+            run.meta.update(t0_wall=None, outcome="invalid: agent_2 died unexpectedly (exit 2)")
+            write_run_dir(os.path.join(tmp, "r"), run)
+            with self.assertRaisesRegex(logs.NoStart, "no start"):
+                metrics.analyse(os.path.join(tmp, "r"))
+
     def test_fake_runs_are_refused_under_results(self):
         results_dir = os.path.join(report.REPO, "results", "_never_written")
         with self.assertRaises(SystemExit):

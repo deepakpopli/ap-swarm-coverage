@@ -7,7 +7,7 @@ python -m analysis.report --out results/<set> --name "<label>" RUN_DIR...
 --baseline: no-loss runs with N agents. Their mean coverage is the fixed level that recovery and
 deficit are also measured against (besides each run's own P, which flatters a low start).
 Every cell is median [min, max] over the runs; a reference set of one run prints its single
-value. Definitions: REPORT.md section 11.
+value. Definitions: how_to_read() and analysis/metrics.py.
 """
 import argparse
 import csv
@@ -23,7 +23,7 @@ from analysis import metrics
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 METRICS = [   # (key = path in metrics.json, label, unit, digits)
-    # the task's "worst revisit gap": longest time any cell went unseen (REPORT.md section 11)
+    # the task's "worst revisit gap": longest time any cell went unseen
     ("unseen.whole.worst_s", "Worst revisit gap (longest unseen), whole mission [0, end]",
      "s", 1),
     ("unseen.before.worst_s", "Worst revisit gap (longest unseen), before the loss [0, L)",
@@ -467,11 +467,17 @@ def per_run_table(runs):
 
 def render(name, runs, summary, refs=(), baselines=()):
     backends = sorted({m["backend"] for m in runs})
+    has_loss = bool(summary["loss.before_pct"]["n"])
     lines = [f"# {name}", "",
              f"{len(runs)} runs, backend {', '.join(backends)}, N = {runs[0]['n']}. "
              "Cells: median [min, max] over runs; a reference of one run is a single value. "
-             "Definitions: REPORT.md section 11.", ""]
-    if summary["loss.before_pct"]["n"]:
+             "Definitions: " + ("\"How to read this\" below and " if has_loss else "")
+             + "analysis/metrics.py.", ""]
+    commits = sorted({m.get("git_commit") or "not recorded" for m in runs + list(refs)
+                      + list(baselines)})
+    short = [c[:12] + ("-dirty" if c.endswith("-dirty") else "") for c in commits]
+    lines += [f"Code: commit {', '.join(short)} (from each run's meta.json).", ""]
+    if has_loss:
         lines += how_to_read(summary, refs, baselines) + phase_table(summary) + [""]
         lines += per_victim_table(runs) + [""]
     lines += ["## All metrics", "", "| Metric | Unit | Median [min, max] | n |",

@@ -69,9 +69,16 @@ def read_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
+class NoStart(ValueError):
+    """The run never reached its START, so it has no mission clock to measure on."""
+
+
 def load_run(run_dir):
     with open(os.path.join(run_dir, "meta.json")) as f:
         meta = json.load(f)
+    if meta["t0_wall"] is None:
+        raise NoStart(f"{run_dir}: the run has no start (outcome: {meta['outcome']}), "
+                      "nothing to measure")
     agents = {}
     for path in glob.glob(os.path.join(run_dir, "agent_*.csv")):
         agent_id = int(os.path.basename(path)[len("agent_"):-len(".csv")])

@@ -1,7 +1,7 @@
 """Metrics of one run, from each agent's logged position (its autopilot's EKF estimate) and the
 camera footprint.
 
-Definitions: REPORT.md section 11. Usage: python -m analysis.metrics RUN_DIR
+Definitions: the functions below. Usage: python -m analysis.metrics RUN_DIR
 Writes RUN_DIR/metrics.json and RUN_DIR/coverage.csv (coverage in %, once per second).
 """
 import csv
@@ -13,7 +13,7 @@ import sys
 
 import numpy as np
 
-from analysis.logs import load_run
+from analysis.logs import NoStart, load_run
 from swarm import config, sensor
 
 CELL_M = 2.0               # grid cell; the 50 m footprint is 24 cells long, so edges barely matter
@@ -431,7 +431,7 @@ def compute(run):
     meta = run.meta
     m = {"run": run.name, "mission": meta["mission"], "scenario": meta["scenario"],
          "seed": meta["seed"], "n": meta["n"], "backend": meta["backend"],
-         "victim": run.victim, "end_s": run.end_s,
+         "git_commit": meta.get("git_commit"), "victim": run.victim, "end_s": run.end_s,
          "coverage": coverage_block(ticks, coverage, run.end_s),
          "unseen": unseen_blocks(run, seen),
          "loss": None, "revisit": None, "mission_b": None, "mission_c": None}
@@ -471,6 +471,9 @@ def read_coverage_csv(run_dir):
 
 
 if __name__ == "__main__":
-    result = analyse(sys.argv[1])
+    try:
+        result = analyse(sys.argv[1])
+    except NoStart as error:
+        sys.exit(str(error))
     print(f"{result['run']}: coverage {result['coverage']['mean_pct']:.1f} %,"
           f" min separation {result['safety']['min_separation_m']:.1f} m")
