@@ -17,8 +17,9 @@ the same.
 
 So: state goes out at 5 Hz and doubles as the heartbeat, with two levels.
 
-- suspect after 2 s (10 losses in a row, about 1 in 10 million): the safety filter stops
-  trusting its position and keeps further away
+- suspect after 2 s (10 losses in a row, about 1 in 10 million): just a flag on the ground.
+  The safety filter doesn't wait for it, it keeps further away from a neighbour the older
+  its last message is, from the first missed one
 - lost after 12 s (about 60 in a row, never happens by chance): the allocator gives its lanes
   away
 
@@ -34,7 +35,12 @@ checks the image with OpenCV. Not there: call it lost early instead of waiting 1
 it's only quiet, leave its lanes alone.
 
 It has to come from pixels, not from Gazebo's true positions, otherwise it's just reading the
-other drone's state a different way. Being tried now, numbers to follow.
+other drone's state a different way.
+
+Tried it. On dead drones it was 2 right and 2 wrong. One "seen" was its own propeller arm in
+the picture, the camera sits inside the frame. Another was the horizon edge. A wrong "seen" is
+worse than nothing, it keeps a dead drone's lanes unflown. So it's off main until the camera
+is moved and it's tested on many runs.
 
 ## mavlink for everything
 
@@ -59,11 +65,13 @@ infeasible reports and start are a small dialect in `swarm/swarm.xml`, generated
 
 ## Why 3 drones and not 4 or 5
 
-My first plan was 5: four drones on one lane each and one spare. When one dies the spare just
-takes its lane. Works, but then nothing degrades, and the whole question of the task is whether
+My first plan was 5: four drones on one lane each and one spare. I thought when one dies the
+spare just takes its lane and nothing degrades, and the whole question of the task is whether
 the swarm degrades gracefully. So I went with 3, the minimum allowed and the hardest case: 4
 lanes split 1+1+2, and after a loss the two survivors have to cover the whole field between
 them.
 
 More drones is still the right answer for a real deployment, so I flew 4 and 5 too to see how
-much margin each extra drone buys (numbers to follow).
+much margin each extra drone buys. 3 seeds each: with 4 coverage after the loss is 97.7 %,
+with 5 it's 100 %. The worst revisit gap still goes to 100-110 s though, because the
+survivors shift lanes.
