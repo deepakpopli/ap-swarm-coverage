@@ -224,3 +224,11 @@ def test_cruiser_passes_under_a_forgotten_deaf_agent(seed):
     assert d_min >= config.D_MIN_M
     assert closest_xy < 2.0                                # it really flew through x, y
     assert cruiser.at_goal()
+
+
+def test_lane_yaw_faces_along_the_lane_and_keeps_it_on_hops():
+    from swarm.vehicle_api import lane_yaw
+    assert lane_yaw(0.0, 11.5, math.pi) == 0.0          # flying north: nose north
+    assert lane_yaw(0.5, -11.5, 0.0) == math.pi         # flying south: nose south
+    assert lane_yaw(11.5, 0.0, math.pi) == math.pi      # hop east between lanes: keep it
+    assert lane_yaw(0.0, 1.0, math.pi) == math.pi       # slow: keep it

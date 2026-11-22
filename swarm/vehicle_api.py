@@ -2,6 +2,7 @@
 
 Implementations: swarm/mav_vehicle.py (pymavlink, real SITL) and sim/fake_vehicle.py (tests).
 """
+import math
 from dataclasses import dataclass
 from typing import Dict, Optional, Protocol, Tuple
 
@@ -14,6 +15,20 @@ class VehicleState:
     yaw: float                        # rad, 0 = north, clockwise
     link_ok: bool                     # False once the autopilot is silent or disconnected
     guided: bool                      # True while the autopilot is armed and in GUIDED mode
+
+
+LANE_YAW_MIN_MS = 2.0   # slower than this, or not mostly north-south: keep the heading
+
+
+def lane_yaw(vx: float, vy: float, last: float) -> float:
+    """Nose along the lane: north (0) or south (pi), else keep the last yaw (rad).
+
+    Lanes run north-south and the footprint is the same turned by 180 deg, so facing the way
+    we fly costs no coverage. Sideways hops between lanes keep the heading: turning 90 deg
+    would put the footprint's short side across the track."""
+    if abs(vy) >= LANE_YAW_MIN_MS and abs(vy) > 2.0 * abs(vx):
+        return 0.0 if vy > 0 else math.pi
+    return last
 
 
 class Vehicle(Protocol):

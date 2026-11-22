@@ -22,7 +22,7 @@ from typing import Callable, Dict, Optional
 from pymavlink.dialects.v20 import ardupilotmega as mavlink
 
 from swarm import config
-from swarm.vehicle_api import VehicleState
+from swarm.vehicle_api import VehicleState, lane_yaw
 
 LAG_S = 0.15             # s, vehicle behind the autopilot's shaped position (see lead_s)
 ALT_STEP_M = 5.0         # m, largest altitude change put into one target
@@ -91,6 +91,7 @@ class MavVehicle:
         self.pos = None
         self.vel = (0.0, 0.0, 0.0)
         self.yaw = 0.0
+        self.yaw_cmd = 0.0            # rad, the yaw we ask for (lane_yaw)
         self.t_pos = 0.0              # wall time the last position was received
         self.params = {}              # parameter name -> value echoed by the autopilot
         self.acks = {}                # command id -> MAV_RESULT of its COMMAND_ACK
@@ -245,11 +246,12 @@ class MavVehicle:
         return readback
 
     def send_setpoint(self, vx: float, vy: float, z: float) -> None:
-        """Position-only target lead_s ahead along (vx, vy) ENU m/s, altitude z m. Yaw north."""
+        """Position target lead_s ahead along (vx, vy) ENU m/s, altitude z m, nose along the lane."""
         x_m, y_m, z_m = self.pos
         t_lead_s = lead_s(math.hypot(vx, vy))
         lat, lon = config.enu_to_lla(x_m + vx * t_lead_s, y_m + vy * t_lead_s)
         z_target_m = z_m + max(-ALT_STEP_M, min(ALT_STEP_M, z - z_m))
+        self.yaw_cmd = lane_yaw(vx, vy, self.yaw_cmd)
         self.mav.set_position_target_global_int_send(
             0, self.agent_id, 1, mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, POSITION_ONLY,
-            round(lat * 1e7), round(lon * 1e7), z_target_m, 0, 0, 0, 0, 0, 0, 0, 0)
+            round(lat * 1e7), round(lon * 1e7), z_target_m, 0, 0, 0, 0, 0, 0, self.yaw_cmd, 0)
