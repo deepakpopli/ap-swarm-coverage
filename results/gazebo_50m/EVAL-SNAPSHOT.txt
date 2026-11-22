@@ -1,4 +1,1 @@
-frozen 2026-11-22 03:36:42 (a copy of this repo)
-HEAD 3c154f8d8baa783116b3ac34d51794c4f954770e
-code sha256 (tracked+untracked, sorted):
-dd608d20505c4692b8b3077497fad2a25e16b0775d866124808708a6d30bbeb8  -
+evaluated on commit 53dd76d, clean checkout
