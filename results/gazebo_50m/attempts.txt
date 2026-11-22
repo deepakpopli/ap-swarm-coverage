@@ -1,0 +1,16 @@
+evaluation gazebo_50m, 2026-11-22 04:50:42, mission 180 s, seeds: 1 2 3 4 5 6 7 8 9 10 11 12
+  seed_1: ok on attempt 1
+  seed_2: ok on attempt 1
+  seed_3: ok on attempt 1
+  seed_4: ok on attempt 1
+  seed_5: ok on attempt 1
+  seed_6: ok on attempt 1
+  seed_7: ok on attempt 1
+  seed_8: ok on attempt 1
+  seed_9: ok on attempt 1
+  seed_10: ok on attempt 1
+  seed_11: ok on attempt 1
+  seed_12: ok on attempt 1
+  baseline_n3: ok on attempt 1
+  ref_n2: ok on attempt 1
+  analysis: ok -> results/gazebo_50m/
