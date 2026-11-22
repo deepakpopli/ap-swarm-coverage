@@ -1,0 +1,141 @@
+{
+ "run": "seed_2",
+ "mission": "A",
+ "scenario": null,
+ "seed": 2,
+ "n": 4,
+ "backend": "gazebo",
+ "victim": 1,
+ "end_s": 180.0,
+ "coverage": {
+  "mean_pct": 98.4402946593002,
+  "end_of_run_pct": 97.69218637992832,
+  "end_of_run_min_pct": 95.74666666666667
+ },
+ "unseen": {
+  "whole": {
+   "phase_s": [
+    0.0,
+    180.0
+   ],
+   "worst_s": 104.12399983406067,
+   "cells_over_60s_pct": 29.893333333333334,
+   "cells_over_90s_pct": 5.288888888888889
+  },
+  "before": {
+   "phase_s": [
+    0.0,
+    88.69590830802917
+   ],
+   "worst_s": 49.25,
+   "cells_over_60s_pct": 0.0,
+   "cells_over_90s_pct": 0.0
+  },
+  "after": {
+   "phase_s": [
+    88.69590830802917,
+    180.0
+   ],
+   "worst_s": 104.12399983406067,
+   "cells_over_60s_pct": 29.893333333333334,
+   "cells_over_90s_pct": 5.288888888888889
+  }
+ },
+ "loss": {
+  "loss_s": 88.69590830802917,
+  "lost_declared_s": 100.796,
+  "before_pct": 100.0,
+  "before_min_pct": 100.0,
+  "after_mean_pct": 97.74000000000001,
+  "after_min_pct": 95.74666666666667,
+  "share_pct": 75.0,
+  "after_over_share": 1.3032000000000001,
+  "recovery_s": 0.0,
+  "recovery_threshold_pct": 90.0,
+  "recovery_to_share_s": 0.0,
+  "recovery_to_share_threshold_pct": 67.5,
+  "dip_pct": 92.72,
+  "dip_after_loss_s": 47.304091691970825,
+  "deficit_pct_s": 282.30666666666656,
+  "milestones_s": {
+   "lost_declared": 12.100091691970832,
+   "assignment_received": 13.312510251998901,
+   "on_new_loop": 12.307510137557983,
+   "recovered": 0.0
+  }
+ },
+ "revisit": {
+  "before": {
+   "phase_s": [
+    0.0,
+    88.69590830802917
+   ],
+   "worst_completed_s": 49.200000047683716,
+   "worst_open_s": 48.6874897480011,
+   "no_completed_gap_pct": 0.0
+  },
+  "after": {
+   "phase_s": [
+    100.796,
+    180.0
+   ],
+   "worst_completed_s": 64.80000019073486,
+   "worst_open_s": 64.73558139801025,
+   "no_completed_gap_pct": 0.0
+  }
+ },
+ "mission_b": null,
+ "mission_c": null,
+ "churn": {
+  "before_per_agent_min": 0.0,
+  "after_per_agent_min": 0.6571447006167012,
+  "replans_by_trigger": {
+   "lost": 1
+  },
+  "replans_warmup_by_trigger": {},
+  "extra_changes_after_loss": 0,
+  "epoch_mismatch": {}
+ },
+ "safety": {
+  "min_separation_m": 10.0,
+  "min_separation_from_10s_m": 74.33741609228588,
+  "below_d_min_s": 0.0,
+  "infeasible_accepted": 0,
+  "infeasible_ignored": 0,
+  "per_agent": {
+   "1": {
+    "brake_s": 0.0,
+    "deaf_s": 0.0
+   },
+   "2": {
+    "brake_s": 0.09999990463256836,
+    "deaf_s": 0.0
+   },
+   "3": {
+    "brake_s": 0.40000009536743164,
+    "deaf_s": 0.0
+   },
+   "4": {
+    "brake_s": 0.0,
+    "deaf_s": 0.0
+   }
+  },
+  "brake_s": 0.5,
+  "deaf_s": 0.0
+ },
+ "control": {
+  "min_rate_hz": 19.999888861389532,
+  "max_p99_period_s": 0.051000118255615234,
+  "max_period_s": 0.051000118255615234,
+  "max_ground_speed_ms": 11.5
+ },
+ "radio": {
+  "sent": 25072,
+  "delivered": 20083,
+  "dropped_loss": 4982,
+  "dropped_window": 0,
+  "delay_mean_s": 0.20016557347731173,
+  "delay_max_s": 0.20120024681091309,
+  "loss_pct": 19.87077217613274
+ }
+}

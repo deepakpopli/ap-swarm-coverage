@@ -1,0 +1,6 @@
+obstacle: ok on attempt 1
+swap: ok on attempt 1
+C_s1: ok on attempt 1
+agentdeath: ok on attempt 1
+groundloss: ok on attempt 1
+radiooutage: ok on attempt 1

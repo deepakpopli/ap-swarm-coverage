@@ -1,0 +1,2 @@
+{"look_id": 1, "target": 2, "result": "not_seen", "frames_found": 0, "frames_used": 5, "score": 1.38, "range_m": 96.9, "age_s": 2.0, "t_wall": 1795337124.375, "t_mission": 77.58, "observer": 1, "image": "looks/look_00077.6_1_to_2.png"}
+{"look_id": 1, "target": 2, "result": "seen", "frames_found": 2, "frames_used": 5, "score": 9.59, "range_m": 150.0, "age_s": 2.67, "t_wall": 1795337125.041, "t_mission": 78.25, "observer": 3, "image": "looks/look_00078.2_3_to_2.png"}
