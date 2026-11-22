@@ -65,10 +65,13 @@ class CoverageController:
         self.last_sent: Optional[float] = None
         self.last_now: Optional[float] = None
 
-    def on_assign(self, epoch: int, slots, loop_from: int, xy, vel) -> Optional[dict]:
+    def on_assign(self, epoch: int, slots, loop_from: int, xy, vel,
+                  replace: bool = False) -> Optional[dict]:
         """Apply an ASSIGN. Returns an event to log, or None for an old epoch. The same slots
-        under a newer epoch keep the active slot, its timer and its report."""
-        if self.epoch is not None and epoch <= self.epoch:
+        under a newer epoch keep the active slot, its timer and its report. replace: the same
+        epoch from a lower sender id wins the tie (two backups, swarm/backup.py)."""
+        if self.epoch is not None and (epoch < self.epoch or (epoch == self.epoch
+                                                               and not replace)):
             return None
         self.epoch = epoch
         self.infeasible = None

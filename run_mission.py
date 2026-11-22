@@ -4,7 +4,9 @@
     python run_mission.py --mission A|B|C|ref --backend gazebo|sitl|fake --n 3 --seed S --out DIR
                           [--scenario NAME] [--mission-s 180] [--zone xmin,ymin,xmax,ymax]
                           [--port-base P]
-Environment: SWARM_ALT (cruise altitude, m; default 50).
+Environment: SWARM_ALT (cruise altitude, m; default 50), SWARM_BACKUP=1 (the onboard backup
+allocator, see swarm/backup.py; the agents also get --mission-s and the zone; meta.json
+"backup": true).
 
 The runner is test equipment: it starts processes, injects faults at mission times and stops
 everything. It never sends anything to the swarm; it learns t0 by re-reading ground.jsonl.
@@ -179,6 +181,8 @@ class Mission:
                                             "delay": config.RADIO_DELAY_S, "seed": args.seed},
                      "outcome": "running", "tainted": False, "git_commit": git_commit(),
                      "wall_s": None}
+        if config.BACKUP:            # only then: meta.json of a core run stays as it was
+            self.meta["backup"] = True
 
     def save_meta(self):
         with open(os.path.join(self.out, "meta.json"), "w") as f:
@@ -207,9 +211,17 @@ class Mission:
 
     def start_agent(self, a):
         backend = "fake" if self.args.backend == "fake" else "mav"
-        self.start(f"agent_{a}", ["swarm.agent", "--id", str(a), "--n", str(self.args.n),
-                                  "--backend", backend, "--log-dir", self.out]
-                   + self.plan["agents"].get(a, []))
+        argv = ["swarm.agent", "--id", str(a), "--n", str(self.args.n), "--backend", backend,
+                "--log-dir", self.out] + self.plan["agents"].get(a, []) + self.backup_args()
+        self.start(f"agent_{a}", argv)
+
+    def backup_args(self):
+        """SWARM_BACKUP=1: what the ground knows that an agent's backup allocator needs too."""
+        if not config.BACKUP:
+            return []
+        zone = self.plan["priority_zone"]
+        return (["--mission-s", str(self.args.mission_s)]
+                + (["--priority-zone", ",".join(str(v) for v in zone)] if zone else []))
 
     def kill(self, name):
         self.may_exit.add(name)

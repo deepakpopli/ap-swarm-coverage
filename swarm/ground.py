@@ -9,11 +9,15 @@ window ahead, so coverage at t = 0 already comes from a full window.
 Liveness from STATE receive times: alive -> suspect (SUSPECT_S) -> lost (LOST_S); a status other
 than ready/cover/hold is lost at once; rejoin after REJOIN_S of steady contact.
 Re-plan on: lost, rejoin, accepted INFEASIBLE. Restart: see Ground.maybe_plan_first.
+SWARM_BACKUP=1 (config.BACKUP) adds one rule, for this ground and the agents' backup copies of it
+(swarm/backup.py): an agent reporting an epoch above ours re-plans with an epoch EPOCH_STRIDE
+above it ("overtake", Ground.overtake). Off, no agent can report one, and the rule is not run.
 
 ground.jsonl: one JSON object per line with "t_wall", "t_mission" (null before start), "event":
   ready       {agent}
   assign      {epoch, trigger, assignments: {id: {share, slots, loop_from}}, changed: [ids]};
-              trigger: start, restart, lost, rejoin, infeasible, swap
+              trigger: start, restart, lost, rejoin, infeasible, swap; with SWARM_BACKUP=1
+              also overtake, and "backup" for a backup's first plan
   start       {t0, late: [ids not on station]}
   liveness    {agent, from, to, status}
   infeasible  {agent, epoch, slot_xy, accepted, why}
@@ -107,6 +111,7 @@ class Ground:
         self.blacklist = {}              # (agent, slot_key) -> expiry wall time
         self.next_assign = 0.0
         self.next_start = 0.0
+        self.restart_trigger = "restart"  # a backup (swarm/backup.py) logs its first plan apart
 
     # ---- one tick
     def step(self, now) -> bool:
@@ -124,6 +129,8 @@ class Ground:
         if self.t0 is None:
             self.maybe_start(now)
         self.maybe_swap(now)
+        if config.BACKUP:
+            self.overtake(now)
         self.send_due(now)
         return self.t0 is None or now < self.t0 + self.mission_s
 
@@ -201,7 +208,7 @@ class Ground:
                     self.set_t0(self.previous_t0)
                 flying = [a for a, r in self.agents.items()
                           if r.status in FLYING and now - r.last_heard < config.SUSPECT_S]
-                self.plan_first(now, flying, "restart")
+                self.plan_first(now, flying, self.restart_trigger)
             return
         ready = [a for a, r in self.agents.items() if r.status == "ready"]
         if len(ready) == self.n or (ready and now >= self.first_ready + READY_DEADLINE_S):
@@ -240,6 +247,16 @@ class Ground:
             return
         self.swap_at = None
         self.replan(now, "swap", reverse=True)
+
+    # ---- SWARM_BACKUP=1
+    def overtake(self, now):
+        """An agent flies an epoch above ours, so another allocator planned it (a backup, or the
+        ground back from the dead): jump EPOCH_STRIDE above, so ours is the highest again. The
+        lower-ranked allocator stops once it hears us (swarm/backup.py), which ends the race."""
+        top = max(r.epoch for r in self.agents.values())
+        if top > self.epoch:
+            self.epoch = top + EPOCH_STRIDE - 1        # replan adds the last 1
+            self.replan(now, "overtake")
 
     # ---- liveness
     def update_liveness(self, now):

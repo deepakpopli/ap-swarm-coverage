@@ -10,9 +10,12 @@ MAV_COMP_ID_ONBOARD_COMPUTER, so it never looks like an autopilot.
     SWARM_START       ground -> all, repeated: t0, wall time of mission t = 0
     SWARM_ASSIGN      ground -> target_system, repeated at ASSIGN_HZ (also to a lost agent, with
                       no slots: it holds; see Ground.send_due). epoch increases on every re-plan.
-    SWARM_INFEASIBLE  agent -> ground, repeated until a newer epoch arrives: the agent could not
-                      reach this slot within SLOT_TIMEOUT_S.
+    SWARM_INFEASIBLE  agent -> the sender of its plan (the ground, or a backup), repeated until a
+                      newer epoch arrives: the agent could not reach this slot within
+                      SLOT_TIMEOUT_S.
 
+With SWARM_BACKUP=1 an agent may send ASSIGN and START too (swarm/backup.py). An agent keeps
+the ASSIGN with the highest epoch; equal epochs: the lower sender id, the ground counting as 0.
 The allocator sends assignments only, never velocities.
 
 Agent log (agent_<id>.csv), one row per control tick, the only input of the offline metrics:
@@ -74,6 +77,7 @@ def assign_slots(msg) -> list:
                                              msg.slot_y[:msg.slot_count])]
 
 
-def infeasible(epoch, slot, slot_xy):
-    return mav.MAVLink_swarm_infeasible_message(config.GROUND_ID, epoch, slot, dm(slot_xy[0]),
+def infeasible(epoch, slot, slot_xy, target=config.GROUND_ID):
+    """To whoever sent the plan: the ground, or an agent running the backup allocator."""
+    return mav.MAVLink_swarm_infeasible_message(target, epoch, slot, dm(slot_xy[0]),
                                                 dm(slot_xy[1]))

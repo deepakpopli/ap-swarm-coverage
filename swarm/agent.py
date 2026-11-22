@@ -16,6 +16,9 @@ neighbours never get a stale position with a fresh time stamp.
 Logs: agent_<id>.csv (protocol.AGENT_CSV_COLUMNS, a row per tick) and agent_<id>.events.jsonl
 (its "takeoff_done" event holds the autopilot parameters as read back).
 --obstacle: test hook, a static keep-out disc only this agent knows about (SafetyFilter).
+SWARM_BACKUP=1 (config.BACKUP) adds the onboard backup allocator (swarm/backup.py): the agent
+may run a Ground of its own when the ground is gone; its "assign" events then name the
+"sender". Off, nothing of it runs and the logs are as before.
 """
 import argparse
 import csv
@@ -52,6 +55,12 @@ class JsonlLog:
         self.file.close()
 
 
+def rank(sender: int) -> int:
+    """Tie order of plan senders: the ground first (a restarted ground must win a tie with the
+    backup it replaces), then agents by id."""
+    return 0 if sender == config.GROUND_ID else sender
+
+
 def _num(x: Optional[float], digits: int = 2) -> str:
     return "" if x is None else f"{x:.{digits}f}"
 
@@ -59,7 +68,8 @@ def _num(x: Optional[float], digits: int = 2) -> str:
 class Agent:
     """tick(now) holds all logic; run() calls it in real time, tests in simulated time."""
 
-    def __init__(self, agent_id: int, vehicle, link, log_dir: str):
+    def __init__(self, agent_id: int, vehicle, link, log_dir: str, n=None,
+                 mission_s=config.MISSION_S, priority_zone=None):
         self.id = agent_id
         self.vehicle = vehicle
         self.link = link
@@ -74,13 +84,22 @@ class Agent:
         self.not_guided_since: Optional[float] = None
         self.link_down_since: Optional[float] = None
         self.ticks = 0
+        self.last_now = None                         # wall time of the last tick
         os.makedirs(log_dir, exist_ok=True)
         self.csv_file = open(os.path.join(log_dir, f"agent_{agent_id}.csv"), "w", newline="")
         self.csv = csv.writer(self.csv_file)
         self.csv.writerow(protocol.AGENT_CSV_COLUMNS)
         self.events = JsonlLog(os.path.join(log_dir, f"agent_{agent_id}.events.jsonl"))
+        self.assigner = config.GROUND_ID             # sender of the plan we fly
+        self.backup = None
+        if config.BACKUP:                            # off: no election, no extra log
+            from swarm.backup import Backup
+            self.backup = Backup(agent_id, n, link, log_dir, self.events, mission_s,
+                                 priority_zone)
 
     def close(self) -> None:
+        if self.backup is not None:
+            self.backup.close(self.last_now or time.time())
         self.csv_file.close()
         self.events.close()
 
@@ -97,6 +116,7 @@ class Agent:
         if self.link_down_since is not None:
             self.events.write(now, "autopilot_link_back")
             self.link_down_since = None
+        self.last_now = now
         for msg in self.link.recv_all():
             self._on_message(msg, now, st)
         if self.ticks % STATE_EVERY == 0:
@@ -108,11 +128,15 @@ class Agent:
                 return False
         elif not self._failsafe(now, st):
             nominal, cmd = self._control(now, st)
+        if self.backup is not None:
+            self.backup.step(now, self.status, self.t0)
         self._log_row(now, st, nominal, cmd)
         return True
 
     def _on_message(self, msg, now: float, st) -> None:
         self.safety.heard(now)
+        if self.backup is not None:
+            self.backup.on_message(msg, now)
         kind = msg.get_type()
         if kind == "SWARM_STATE":
             self.safety.update_neighbour(msg.get_srcSystem(), (msg.x, msg.y, msg.z),
@@ -122,15 +146,28 @@ class Agent:
             self.t0 = msg.t0_usec / 1e6
             self.events.write(now, "start", t0=self.t0)
         elif kind == "SWARM_ASSIGN":
-            event = self.coverage.on_assign(msg.epoch, protocol.assign_slots(msg),
-                                            msg.loop_from, st.pos, st.vel)
-            if event is not None:
-                self.events.write(now, **event)
+            self._on_assign(msg, now, st)
+
+    def _on_assign(self, msg, now: float, st) -> None:
+        """Highest epoch wins; an equal epoch from a lower-ranked sender too (only backups tie)."""
+        sender = msg.get_srcSystem()
+        tie_won = msg.epoch == self.coverage.epoch and rank(sender) < rank(self.assigner)
+        event = self.coverage.on_assign(msg.epoch, protocol.assign_slots(msg), msg.loop_from,
+                                        st.pos, st.vel, replace=tie_won)
+        if event is None:
+            return
+        self.assigner = sender
+        if self.backup is not None:               # off: the assign event is as before
+            event["sender"] = sender
+        self.events.write(now, **event)
 
     def _send_state(self, st) -> None:
-        self.link.send(protocol.state(st.t, st.pos, st.vel,
-                                      -1 if self.coverage.epoch is None else self.coverage.epoch,
-                                      self.coverage.idx, self.status))
+        state = protocol.state(st.t, st.pos, st.vel,
+                               -1 if self.coverage.epoch is None else self.coverage.epoch,
+                               self.coverage.idx, self.status)
+        self.link.send(state)
+        if self.backup is not None:               # our own backup must know us too
+            self.backup.on_own(state)
 
     # ---- phases ---------------------------------------------------------------------------
     def _taking_off(self) -> bool:
@@ -195,7 +232,8 @@ class Agent:
             self.events.write(now, **event)
         body = self.coverage.infeasible_due(now)
         if body is not None:
-            self.link.send(protocol.infeasible(body["epoch"], body["slot"], body["slot_xy"]))
+            self.link.send(protocol.infeasible(body["epoch"], body["slot"], body["slot_xy"],
+                                               self.assigner))
         if not cmd.holding:
             self.status = "cover"
         elif self.coverage.epoch is None and "deaf" not in cmd.flags:
@@ -247,6 +285,10 @@ def main(argv=None) -> int:
     ap.add_argument("--port-base", type=int, default=0)
     ap.add_argument("--log-dir", default="run")
     ap.add_argument("--obstacle", default=None, help="test hook: x,y,radius in metres")
+    ap.add_argument("--mission-s", type=float, default=config.MISSION_S,
+                    help="SWARM_BACKUP=1: when the backup allocator's mission ends")
+    ap.add_argument("--priority-zone", default=None,
+                    help="SWARM_BACKUP=1: Mission B zone xmin,ymin,xmax,ymax for the backup")
     args = ap.parse_args(argv)
     if args.backend == "mav":
         from swarm.mav_vehicle import MavVehicle
@@ -261,7 +303,10 @@ def main(argv=None) -> int:
     def stop(signum, frame):                 # SIGTERM ends the loop like Ctrl-C
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
-    agent = Agent(args.id, vehicle, link, args.log_dir)
+    zone = None
+    if args.priority_zone:
+        zone = tuple(float(v) for v in args.priority_zone.split(","))
+    agent = Agent(args.id, vehicle, link, args.log_dir, args.n, args.mission_s, zone)
     if args.obstacle:
         x, y, radius_m = (float(v) for v in args.obstacle.split(","))
         agent.safety.add_obstacle(x, y, radius_m)

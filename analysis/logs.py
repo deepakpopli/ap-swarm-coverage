@@ -1,4 +1,9 @@
-"""Read one run directory: agent logs, ground events, meta.json and the radio totals."""
+"""Read one run directory: agent logs, ground events, meta.json and the radio totals.
+
+SWARM_BACKUP=1 runs also have agent_<id>.ground.jsonl, the ground events of an agent's backup
+allocator (swarm/backup.py): they join the ground's, in time order, each with "backup": <id>.
+Without those files the ground events are exactly ground.jsonl.
+"""
 import csv
 import glob
 import json
@@ -18,7 +23,7 @@ class Run:
         self.name = name
         self.meta = meta
         self.agents = agents          # {agent id: {column name: array or list}}
-        self.ground = ground          # ground.jsonl records, in file order
+        self.ground = ground          # ground.jsonl (+ backup) records, see read_ground
         self.radio = radio            # the radio's final "stats" record
         self.end_s = meta["mission_s"]
         self.victim = meta["kill_agent"]
@@ -69,6 +74,18 @@ def read_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
+def read_ground(run_dir):
+    """ground.jsonl, plus every backup log merged by t_wall (stable: file order on ties)."""
+    records = read_jsonl(os.path.join(run_dir, "ground.jsonl"))
+    paths = sorted(glob.glob(os.path.join(run_dir, "agent_*.ground.jsonl")))
+    if not paths:
+        return records
+    for path in paths:
+        agent_id = int(os.path.basename(path)[len("agent_"):-len(".ground.jsonl")])
+        records += [dict(r, backup=agent_id) for r in read_jsonl(path)]
+    return sorted(records, key=lambda r: r["t_wall"])
+
+
 def load_run(run_dir):
     with open(os.path.join(run_dir, "meta.json")) as f:
         meta = json.load(f)
@@ -76,7 +93,7 @@ def load_run(run_dir):
     for path in glob.glob(os.path.join(run_dir, "agent_*.csv")):
         agent_id = int(os.path.basename(path)[len("agent_"):-len(".csv")])
         agents[agent_id] = read_agent_log(path, meta["t0_wall"])
-    ground = read_jsonl(os.path.join(run_dir, "ground.jsonl"))
+    ground = read_ground(run_dir)
     stats = [r for r in read_jsonl(os.path.join(run_dir, "radio.jsonl")) if r["event"] == "stats"]
     name = os.path.basename(os.path.normpath(run_dir))
     return Run(name, meta, dict(sorted(agents.items())), ground, stats[-1])
