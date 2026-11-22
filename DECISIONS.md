@@ -53,3 +53,14 @@ and every packet has a CRC so a corrupted one is dropped instead of misread.
 GLOBAL_POSITION_INT on its own is not enough. No plan epoch, no active slot, no status, and
 its clock is time since boot, which the other drones can't use. So state, assignments,
 infeasible reports and start are a small dialect in `swarm/swarm.xml`, generated with mavgen.
+
+## Why 3 drones and not 4 or 5
+
+My first plan was 5: four drones on one lane each and one spare. When one dies the spare just
+takes its lane. Works, but then nothing degrades, and the whole question of the task is whether
+the swarm degrades gracefully. So I went with 3, the minimum allowed and the hardest case: 4
+lanes split 1+1+2, and after a loss the two survivors have to cover the whole field between
+them.
+
+More drones is still the right answer for a real deployment, so I flew 4 and 5 too to see how
+much margin each extra drone buys (numbers to follow).
