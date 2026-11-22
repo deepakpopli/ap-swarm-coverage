@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><link rel="icon" href="data:,"><title>swarm coverage: GCS view</title>
+<style>
+body{margin:0;background:#0d1117;color:#c9d1d9;font:13px system-ui,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:6px 12px;background:#161b22;border-bottom:1px solid #30363d}
+header b{font-size:15px} .observer{color:#d29922;border:1px solid #d29922;border-radius:4px;padding:2px 8px}
+main{display:flex;gap:12px;padding:10px}
+.col{display:flex;flex-direction:column;gap:8px} .side{width:440px}
+.box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px}
+.box h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;color:#8b949e;letter-spacing:.05em}
+select,input,button{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px;font:inherit}
+button{cursor:pointer} button.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+table{border-collapse:collapse;width:100%} td,th{padding:2px 6px;text-align:left;border-bottom:1px solid #21262d}
+th{color:#8b949e;font-weight:normal}
+#log{height:150px;overflow-y:auto;font:12px ui-monospace,monospace;white-space:pre-wrap}
+#tail{max-height:110px;overflow:auto;font:11px ui-monospace,monospace;white-space:pre-wrap;margin:4px 0 0;color:#8b949e}
+#slider{flex:1} .big{font-size:20px;color:#e6edf3} .dim{color:#8b949e}
+#map{border-radius:6px}
+.legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 3px 0 10px;vertical-align:-1px}
+</style></head><body>
+<header><b>swarm coverage: GCS view</b>
+<span class="observer">Observer only: reads log files, not part of the control loop</span>
+<span id="source" class="dim"></span></header>
+<main>
+<div class="col">
+  <canvas id="map" width="700" height="700"></canvas>
+  <div class="box row">
+    <button id="play">pause</button>
+    <button data-speed="1" class="on">1x</button><button data-speed="4">4x</button><button data-speed="10">10x</button>
+    <input id="slider" type="range" min="0" max="1" step="0.1" value="0">
+    <span id="clock" class="big"></span>
+  </div>
+  <div class="legend dim">ring:<span style="background:#d29922"></span>suspect<span style="background:#f85149"></span>lost
+  &nbsp; cell age:<span style="background:#96c6fa"></span>0 s<span style="background:#bdd5ef"></span>30 s<span style="background:#e4e4e4"></span>60 s+<span style="background:#fff"></span>never</div>
+</div>
+<div class="col side">
+  <div class="box"><h3>Start a mission</h3><div class="row">
+    <select id="mission"></select> seed <input id="seed" type="number" value="1" style="width:50px">
+    n <input id="n" type="number" value="3" min="1" max="8" style="width:40px">
+    <select id="backend"></select></div>
+    <div class="row" style="margin-top:6px"><button id="start">Start</button><button id="stop">Stop</button><span id="runstate" class="dim"></span></div><pre id="tail"></pre></div>
+  <div class="box"><h3>Run</h3><div class="row"><button id="live">Live</button>
+    <select id="runs" style="flex:1;min-width:0"><option value="">replay a run...</option></select></div></div>
+  <div class="box"><h3>Coverage (seen in the last 60 s)</h3>
+    <div class="row"><span id="pct" class="big"></span><span id="epoch"></span></div>
+    <canvas id="chart" width="420" height="120"></canvas><div id="zone" hidden></div></div>
+  <div class="box"><h3>Drones</h3><table id="drones"></table>
+    <div id="mind" style="margin-top:6px"></div><div id="radio" class="dim"></div></div>
+  <div class="box"><h3>Events</h3><div id="log"></div></div>
+</div>
+</main>
+<script src="geom.js"></script>
+<script src="app.js"></script>
+</body></html>
