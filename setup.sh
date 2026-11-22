@@ -31,7 +31,10 @@ clone_at() {   # $1 = url, $2 = directory, $3 = commit
 build() {
   echo ">> ArduCopter SITL in $ARDUPILOT_HOME (prerequisites: Tools/environment_install/)"
   clone_at https://github.com/ArduPilot/ardupilot.git "$ARDUPILOT_HOME" "$ARDUPILOT_COMMIT" \
-    && (cd "$ARDUPILOT_HOME" && ./waf configure --board sitl && nice -n 19 ./waf copter -j 4)
+    && (cd "$ARDUPILOT_HOME" && ./waf configure --board sitl && nice -n 19 ./waf copter -j 4) \
+    || echo ">> ArduCopter build failed. On a new machine install the prerequisites first:" \
+            "$ARDUPILOT_HOME/Tools/environment_install/install-prereqs-ubuntu.sh -y," \
+            "open a new shell, then ./setup.sh --build again"
   echo ">> ardupilot_gazebo in $ARDUPILOT_GAZEBO"
   clone_at https://github.com/ArduPilot/ardupilot_gazebo "$ARDUPILOT_GAZEBO" "$AP_GAZEBO_COMMIT" \
     && mkdir -p "$ARDUPILOT_GAZEBO/build" && (cd "$ARDUPILOT_GAZEBO/build" \
@@ -70,6 +73,9 @@ for package in $(sed -n 's/^dependencies = \[\(.*\)\]/\1/p' "$ROOT/pyproject.tom
     row MISSING "$package" "python3 -m pip install --user -r $ROOT/requirements.txt"
   fi
 done
+if ! python3 -c 'import pytest' 2> /dev/null; then   # the tests only, not run_eval.sh
+  printf '%-8s %-24s %s\n' NOTE pytest "for the tests: python3 -m pip install --user pytest"
+fi
 if command -v ffmpeg > /dev/null; then
   row OK ffmpeg "$(command -v ffmpeg)"
 else

@@ -1,4 +1,4 @@
-run/
+/run
 logs/
 __pycache__/
 *.pyc
