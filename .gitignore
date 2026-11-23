@@ -7,3 +7,5 @@ __pycache__/
 eeprom.bin
 mav.parm
 runs/
+.pytest_cache/
+.ruff_cache/
