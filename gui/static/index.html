@@ -43,6 +43,7 @@ th{color:#8b949e;font-weight:normal}
     <div class="row" style="margin-top:6px"><button id="start">Start</button><button id="stop">Stop</button><span id="runstate" class="dim"></span></div><pre id="tail"></pre></div>
   <div class="box"><h3>Run</h3><div class="row"><button id="live">Live</button>
     <select id="runs" style="flex:1;min-width:0"><option value="">replay a run...</option></select></div></div>
+  <div class="box" id="videobox"><h3>Drone cameras (live)</h3></div>
   <div class="box" id="zonebox" hidden><h3>Priority zone: whole zone last seen</h3>
     <div class="row"><span id="zoneage" class="huge"></span></div>
     <div class="bar"><div id="zonebar"></div></div><div id="zoneok"></div></div>
@@ -56,4 +57,5 @@ th{color:#8b949e;font-weight:normal}
 </main>
 <script src="geom.js"></script>
 <script src="app.js"></script>
+<script src="video.js"></script>
 </body></html>

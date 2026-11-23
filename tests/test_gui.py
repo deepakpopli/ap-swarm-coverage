@@ -146,3 +146,15 @@ def test_zone_age_series_is_the_stalest_zone_cell(tmp_path):
     ages = {t: age for t, _, _, age in model.series_points}
     assert ages[0.0] is None                       # only the south half seen yet
     assert ages[1.0] == 1.0 and ages[3.0] == 3.0   # all seen; the south half was seen at 990
+
+
+# ---- live drone video: the page plays what tools/mediamtx.yml serves
+def test_video_box_uses_the_mediamtx_webrtc_port_and_page_host():
+    static = os.path.dirname(GEOM_JS)
+    html = open(os.path.join(static, "index.html")).read()
+    video = open(os.path.join(static, "video.js")).read()
+    conf = open(os.path.join(server.ROOT, "tools", "mediamtx.yml")).read()
+    assert 'id="videobox"' in html and '<script src="video.js">' in html
+    port = int(video.split("WHEP_PORT = ")[1].split(";")[0])
+    assert f"webrtcAddress: :{port}\n" in conf and "rtspAddress: :8554\n" in conf
+    assert "location.hostname" in video and "localhost" not in video   # works from a VPN address
