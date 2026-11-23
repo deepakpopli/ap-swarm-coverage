@@ -208,11 +208,49 @@ def test_field_ground_has_trees_clear_of_the_zone_and_no_lanes(monkeypatch):
     assert demo_world.scenery_sdf() == ""          # the white field: nothing added
     monkeypatch.setattr(demo_world, "FIELD", True)
     trees = demo_world.trees()
-    assert trees == demo_world.trees() and 30 <= len(trees) <= 70
+    assert trees == demo_world.trees() and 30 <= len(trees) <= 80
     zx0, zy0, zx1, zy1 = demo_world.MIDDLE_ZONE      # 20 m clear round the priority zone
-    assert not any(zx0 - 20 < x < zx1 + 20 and zy0 - 20 < y < zy1 + 20 for _, x, y, _, _ in trees)
+    near_zone = [(x, y) for _, x, y, _, _ in trees] + [(x, y) for _, x, y, _ in demo_world.props()
+                                                       if not (zx0 < x < zx1 and zy0 < y < zy1)]
+    assert not any(zx0 - 20 < x < zx1 + 20 and zy0 - 20 < y < zy1 + 20 for x, y in near_zone)
     scenery = ET.fromstring("<world>" + demo_world.scenery_sdf() + "</world>")
-    assert len(scenery.findall("model/link/visual")) == 2 * len(trees)
-    assert scenery.find(".//collision") is None and len(scenery.findall("include")) == len(demo_world.CARS)
+    assert len(scenery.findall("model[@name='demo_trees']/link/visual")) == 2 * len(trees)
+    assert scenery.find(".//collision") is None
     overlay = ET.fromstring(demo_world.overlays_sdf([60.0, 120.0], zone=True))
     assert not [v for v in overlay.iter("visual") if v.get("name").startswith("lane_")]
+
+
+def test_field_has_the_asset_in_the_zone_and_light_scenery(monkeypatch):
+    monkeypatch.setattr(demo_world, "FIELD", True)
+    scenery = ET.fromstring("<world>" + demo_world.scenery_sdf() + "</world>")
+    includes = scenery.findall("include")
+    assert len(includes) <= 10 and len(includes) == len(demo_world.CARS) + 2
+    names = [e.findtext("name") for e in includes] + [m.get("name") for m in scenery.findall("model")]
+    names += [v.get("name") for v in scenery.iter("visual")]
+    assert len(names) == len(set(names))            # unique entity and visual names
+    assert sorted(n for n, *_ in demo_world.props()) == sorted(
+        [e.findtext("name") for e in includes] + ["cessna"] + [b[0] for b in demo_world.SHEDS])
+    # the Cessna and the ground station on the concrete in the middle of the zone
+    zx0, zy0, zx1, zy1 = demo_world.MIDDLE_ZONE
+    ax0, ay0, ax1, ay1 = demo_world.APRON
+    assert zx0 + 10 < ax0 and ax1 < zx1 - 10 and zy0 + 10 < ay0 and ay1 < zy1 - 10
+    for x, y in (demo_world.CESSNA[:2], demo_world.BASE_STATION[:2]):
+        assert ax0 < x < ax1 and ay0 < y < ay1
+    body = scenery.find(".//visual[@name='cessna_body']")
+    assert body.find("pose").text.split()[:2] == ["150.00", "150.00"]
+    assert "cessna c-172/3/files/meshes/body.dae" in body.findtext("geometry/mesh/uri")
+    # nothing taller than 25 m: the water tower (23.2 m) and the largest pine
+    assert max(h for *_, h in demo_world.props()) <= 25
+    pine = demo_world.TREE_MESH["pine"][4] * 5.08
+    assert pine <= 25
+    # the farmyard's boxes inside the yard
+    yx0, yy0, yx1, yy1 = demo_world.YARD
+    for _, x, y, sx, sy, _, _ in demo_world.SHEDS:
+        assert yx0 <= x - sx / 2 and x + sx / 2 <= yx1 and yy0 <= y - sy / 2 and y + sy / 2 <= yy1
+
+
+@needs_ap_gazebo
+def test_white_mode_world_has_no_scenery(tmp_path):
+    path = gazebo_world.generate(str(tmp_path), POSITIONS, (0.0, 0.0, 0.0), demo=True, demo_zone=True)
+    text = open(path).read()
+    assert "demo_trees" not in text and "demo_props" not in text and "fuel.gazebosim.org" not in text
