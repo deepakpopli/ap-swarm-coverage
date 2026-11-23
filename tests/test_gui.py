@@ -134,3 +134,15 @@ def test_a_run_root_may_itself_be_a_run(tmp_path):
     assert dash.checked_dir(str(run_dir)) == str(run_dir)
     with pytest.raises(ValueError):
         dash.checked_dir(str(tmp_path))
+
+
+def test_zone_age_series_is_the_stalest_zone_cell(tmp_path):
+    """Two passes over the zone: once all of it is seen, its age counts from the older pass."""
+    run_dir = make_run(tmp_path / "r")
+    (run_dir / "agent_1.csv").write_text("t_wall,x,y,z,yaw,status\n990.0,150,130,50,0,cover\n"
+                                         "991.0,150,170,50,0,cover\n994.0,0,0,50,0,cover\n")
+    model = RunModel(str(run_dir))
+    model.refresh()
+    ages = {t: age for t, _, _, age in model.series_points}
+    assert ages[0.0] is None                       # only the south half seen yet
+    assert ages[1.0] == 1.0 and ages[3.0] == 3.0   # all seen; the south half was seen at 990

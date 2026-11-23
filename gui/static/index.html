@@ -15,7 +15,8 @@ table{border-collapse:collapse;width:100%} td,th{padding:2px 6px;text-align:left
 th{color:#8b949e;font-weight:normal}
 #log{height:150px;overflow-y:auto;font:12px ui-monospace,monospace;white-space:pre-wrap}
 #tail{max-height:110px;overflow:auto;font:11px ui-monospace,monospace;white-space:pre-wrap;margin:4px 0 0;color:#8b949e}
-#slider{flex:1} .big{font-size:20px;color:#e6edf3} .dim{color:#8b949e}
+#slider{flex:1} .big{font-size:20px;color:#e6edf3} .dim{color:#8b949e} .huge{font-size:40px;font-weight:600}
+.bar{height:8px;background:#30363d;border-radius:4px;margin:4px 0 6px} .bar div{height:100%;border-radius:4px}
 #map{border-radius:6px}
 .legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 3px 0 10px;vertical-align:-1px}
 </style></head><body>
@@ -31,8 +32,8 @@ th{color:#8b949e;font-weight:normal}
     <input id="slider" type="range" min="0" max="1" step="0.1" value="0">
     <span id="clock" class="big"></span>
   </div>
-  <div class="legend dim">ring:<span style="background:#d29922"></span>suspect<span style="background:#f85149"></span>lost
-  &nbsp; cell age:<span style="background:#96c6fa"></span>0 s<span style="background:#bdd5ef"></span>30 s<span style="background:#e4e4e4"></span>60 s+<span style="background:#fff"></span>never</div>
+  <div class="legend dim">ring around a drone:<span style="background:#d29922"></span>no message for 2 s<span style="background:#f85149"></span>lost
+  &nbsp; ground last seen:<span style="background:#96c6fa"></span>just now<span style="background:#bdd5ef"></span>30 s ago<span style="background:#e4e4e4"></span>60 s+ ago<span style="background:#fff"></span>never</div>
 </div>
 <div class="col side">
   <div class="box"><h3>Start a mission</h3><div class="row">
@@ -42,9 +43,12 @@ th{color:#8b949e;font-weight:normal}
     <div class="row" style="margin-top:6px"><button id="start">Start</button><button id="stop">Stop</button><span id="runstate" class="dim"></span></div><pre id="tail"></pre></div>
   <div class="box"><h3>Run</h3><div class="row"><button id="live">Live</button>
     <select id="runs" style="flex:1;min-width:0"><option value="">replay a run...</option></select></div></div>
-  <div class="box"><h3>Coverage (seen in the last 60 s)</h3>
-    <div class="row"><span id="pct" class="big"></span><span id="epoch"></span></div>
-    <canvas id="chart" width="420" height="120"></canvas><div id="zone" hidden></div></div>
+  <div class="box" id="zonebox" hidden><h3>Priority zone: whole zone last seen</h3>
+    <div class="row"><span id="zoneage" class="huge"></span></div>
+    <div class="bar"><div id="zonebar"></div></div><div id="zoneok"></div></div>
+  <div class="box"><h3>Area coverage (seen in the last 60 s)</h3>
+    <div class="row"><span id="pct" class="big"></span></div>
+    <canvas id="chart" width="420" height="120"></canvas></div>
   <div class="box"><h3>Drones</h3><table id="drones"></table>
     <div id="mind" style="margin-top:6px"></div><div id="radio" class="dim"></div></div>
   <div class="box"><h3>Events</h3><div id="log"></div></div>

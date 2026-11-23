@@ -4,7 +4,10 @@ const $ = (id) => document.getElementById(id);
 const LIVENESS_COLOR = {alive: "#3fb950", suspect: "#d29922", lost: "#f85149", dead: "#8b949e"};
 const FIELD = {ground: "#f7f7f7", grid: "#d0d0d0", label: "#6e7681", border: "#f2c200", zone: "#e00000"};
 const droneColor = (id) => geo.colors[(id - 1) % geo.colors.length];   // gui/model.py DRONE_COLORS
-const [T, X, Y, Z, YAW, STATUS, EPOCH, SLOT, NBR_AGE] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
+const [T, X, Y, Z, YAW, STATUS, EPOCH, SLOT, NBR_AGE, NBR_DIST] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+const GROUND_WORDS = {alive: "OK", suspect: "no message 2 s+", lost: "lost"};
+const DOING_WORDS = {takeoff: "taking off", ready: "ready", hold: "holding", cover: "covering",
+  failsafe: "landing (failsafe)"};
 const MAP_MARGIN_PX = 28;
 
 let geo = null;                       // footprint and area numbers from swarm/sensor.py, config.py
@@ -164,7 +167,7 @@ function drawChart(r) {
   cctx.stroke();
   const mark = (tt, color, label, yPx) => { cctx.strokeStyle = cctx.fillStyle = color; cctx.beginPath();
     cctx.moveTo(cx(tt), 4); cctx.lineTo(cx(tt), chart.height - 14); cctx.stroke(); cctx.fillText(label, cx(tt) + 3, yPx); };
-  if (r.kill_t != null) mark(r.kill_t, "#f85149", "kill " + r.victim, 12);
+  if (r.kill_t != null) mark(r.kill_t, "#f85149", "drone " + r.victim + " fails", 12);
   const rec = lossLevels(r), level = (pct, dash) => { cctx.strokeStyle = "#8b949e"; cctx.setLineDash(dash);
     cctx.beginPath(); cctx.moveTo(cx(r.kill_t - geo.window_s), cy(pct)); cctx.lineTo(chart.width, cy(pct)); cctx.stroke(); cctx.setLineDash([]); };
   if (rec) { level(rec.before, [5, 3]); level(rec.share, [1, 3]); }
@@ -173,7 +176,7 @@ function drawChart(r) {
     cctx.fillStyle = "#3fb950"; cctx.beginPath(); cctx.arc(bx, by, 3.5, 0, 7); cctx.fill();
     cctx.fillText(`back +${Math.round(rec.back - r.kill_t)} s`, bx + 5, by + 12);
   }
-  r.events.filter((e) => e.event === "liveness" && e.to === "lost").forEach((e) => mark(e.t, "#d29922", "lost " + e.agent, 24));
+  r.events.filter((e) => e.event === "liveness" && e.to === "lost").forEach((e) => mark(e.t, "#d29922", "declared lost", 24));
   mark(t, "#e6edf3", "", 0);
 }
 
@@ -187,43 +190,72 @@ function lossLevels(r) {             // analysis/metrics.py's figures if the run
 function drawSide(r, past) {
   $("clock").textContent = fmtT(r, t);
   $("pct").textContent = heat ? heat.pct.toFixed(1) + " %" : "";
-  const a = assignFor(past);
-  $("epoch").innerHTML = a ? `&nbsp; epoch <b>${a.epoch}</b> trigger <b>${a.trigger}</b> changed [${a.changed}]` : "";
-  let html = "<tr><th>id</th><th>ground says</th><th>status</th><th>slot</th><th>epoch</th><th>nbr_age</th></tr>";
+  let html = "<tr><th>Drone</th><th>Ground sees it</th><th>Doing</th><th>Nearest drone</th></tr>";
   for (const [id, rows] of Object.entries(r.agents)) {
     const row = rowAt(rows, t), state = groundSays(id, past);
     if (!row) continue;
-    html += `<tr><td><b style="color:#fff;background:${droneColor(id)};padding:0 5px;border-radius:3px">${id}</b></td><td style="color:${LIVENESS_COLOR[state]}">${state}</td>` +
-      `<td>${killed(r, id) ? "dead" : row[STATUS]}</td><td>${row[SLOT] ?? ""}</td><td>${row[EPOCH] ?? ""}</td><td>${row[NBR_AGE] == null ? "" : row[NBR_AGE].toFixed(2) + " s"}</td></tr>`;
+    const doing = killed(r, id) ? "failed (test fault)" : DOING_WORDS[row[STATUS]] || row[STATUS];
+    html += `<tr><td><b style="color:#fff;background:${droneColor(id)};padding:0 5px;border-radius:3px">${id}</b></td>` +
+      `<td style="color:${LIVENESS_COLOR[state]}">${GROUND_WORDS[state] || state}</td><td>${doing}</td>` +
+      `<td>${row[NBR_DIST] == null || killed(r, id) ? "" : Math.round(row[NBR_DIST]) + " m"}</td></tr>`;
   }
   $("drones").innerHTML = html;
-  const zone = $("zone"), age = heat && heat.zone_age_s;   // the stalest 5 m cell in the zone
-  zone.hidden = !r.zone;
-  zone.textContent = age == null ? "zone not seen yet" : `zone last seen ${Math.round(age)} s ago`;
-  zone.style.color = age == null || age > geo.zone_limit_s ? LIVENESS_COLOR.lost : "";
+  drawZone(r);
   const s = rowAt(r.series, t), d = s && s[2];
-  $("mind").innerHTML = `min pairwise distance since t = 0: <b>${d == null ? "-" : d.toFixed(1) + " m"}</b> (limit ${geo.d_min_m} m)`;
+  $("mind").innerHTML = `closest two drones since the start: <b>${d == null ? "-" : d.toFixed(1) + " m"}</b> (must stay ${geo.d_min_m} m or more)`;
   const g = r.radio;
-  $("radio").textContent = g ? `radio measured: ground links ${g.ground.loss_pct ?? "-"} % lost, ${g.ground.delay_ms ?? "-"} ms; ` +
-    `agent links ${g.agents.loss_pct ?? "-"} % lost, ${g.agents.delay_ms ?? "-"} ms` : "radio stats: written at the end of the run";
+  $("radio").textContent = g ? `radio, measured: ground links ${g.ground.loss_pct ?? "-"} % lost, ${g.ground.delay_ms ?? "-"} ms delay; ` +
+    `drone to drone ${g.agents.loss_pct ?? "-"} % lost, ${g.agents.delay_ms ?? "-"} ms` : "radio: measured at the end of the run";
   drawLog(r, past);
 }
 
-function describe(e) {
-  if (e.event === "assign") return `assign epoch ${e.epoch} (${e.trigger}) changed [${e.changed}]`;
-  if (e.event === "liveness") return `agent ${e.agent} ${e.from} -> ${e.to} (${e.status})`;
-  if (e.event === "infeasible") return `infeasible agent ${e.agent} (${e.slot_xy}) ${e.accepted ? "accepted" : "ignored"}: ${e.why}`;
-  if (e.event === "blacklist") return e.pairs.length ? `blacklist ${e.pairs.map((p) => "agent " + p.agent + " at " + p.slot_key).join(", ")}` : "blacklist cleared";
-  if (e.event === "kill") return `KILL agent ${e.agent}`;
-  if (e.event === "start") return `start, t = 0 in 60 s${e.late && e.late.length ? ", late " + e.late : ""}`;
-  return e.event + (e.agent != null ? " agent " + e.agent : "");
+function drawZone(r) {               // the whole zone: the age of its stalest cell (gui/model.py)
+  $("zonebox").hidden = !r.zone;
+  if (!r.zone) return;
+  const limit = geo.zone_limit_s, s = rowAt(r.series, t), age = s ? s[3] : null;
+  const mission = r.series.filter((p) => r.t0 != null && p[0] >= r.t0 && p[0] <= t && p[3] != null);
+  const worst = mission.length ? Math.max(...mission.map((p) => p[3])) : null;
+  $("zoneage").textContent = age == null ? "not all seen yet" : `${Math.round(age)} s`;
+  $("zoneage").style.color = age == null || age > limit ? LIVENESS_COLOR.lost : LIVENESS_COLOR.alive;
+  $("zonebar").style.width = `${Math.min(100, 100 * (age ?? limit) / limit)}%`;
+  $("zonebar").style.background = age == null || age > limit ? LIVENESS_COLOR.lost : LIVENESS_COLOR.alive;
+  const ok = worst != null && worst <= limit;
+  $("zoneok").innerHTML = worst == null ? `covered within ${limit} s: <b>-</b> (from mission start)`
+    : `covered within ${limit} s: <b style="color:${ok ? LIVENESS_COLOR.alive : LIVENESS_COLOR.lost}">${ok ? "YES" : "NO"}</b>` +
+      ` &nbsp; longest wait since the start: ${Math.round(worst)} s`;
+}
+
+function describe(e, past) {
+  if (e.event === "assign") return describePlan(e, past);
+  if (e.event === "liveness") return e.to === "suspect" ? `drone ${e.agent}: no message for 2 s`
+    : e.to === "lost" ? `drone ${e.agent} declared lost${e.status === "failsafe" ? " (it reported a failsafe)" : " (silent)"}`
+    : `drone ${e.agent} heard again`;
+  if (e.event === "infeasible") return `drone ${e.agent} can not reach its next point (${e.why}): ${e.accepted ? "re-plan" : "ignored"}`;
+  if (e.event === "blacklist") return e.pairs.length ? `points avoided: ${e.pairs.map((p) => "drone " + p.agent + " at " + p.slot_key).join(", ")}` : "no points avoided any more";
+  if (e.event === "kill") return `drone ${e.agent} fails (test fault)`;
+  if (e.event === "start") return `mission starts in 60 s${e.late && e.late.length ? " (late: " + e.late + ")" : ""}`;
+  if (e.event === "ready") return `drone ${e.agent} ready`;
+  return e.event + (e.agent != null ? " drone " + e.agent : "");
+}
+function describePlan(e, past) {      // the new split, in words: who left, who took over
+  const ids = Object.keys(e.assignments), list = (a) => a.length > 1 ? a.slice(0, -1).join(", ") + " and " + a[a.length - 1] : a.join("");
+  const before = past.filter((p) => p.event === "assign" && p.t < e.t).pop();
+  const gone = before ? Object.keys(before.assignments).filter((id) => !ids.includes(id)) : [];
+  const back = before ? ids.filter((id) => !(id in before.assignments)) : [];
+  const changed = (e.changed || []).filter((id) => ids.includes(String(id)));
+  if (e.trigger === "start" || e.trigger === "restart") return `area split between drones ${list(ids)}`;
+  if (e.trigger === "lost") return `drone ${list(gone)} lost: drone${changed.length > 1 ? "s" : ""} ${list(changed)} took over its area`;
+  if (e.trigger === "rejoin") return `drone ${list(back)} back: area split again between drones ${list(ids)}`;
+  if (e.trigger === "infeasible") return `new route around a blocked point for drone${changed.length > 1 ? "s" : ""} ${list(changed)}`;
+  if (e.trigger === "swap") return `drones ${list(changed)} swap areas (test)`;
+  return `new plan (${e.trigger}) for drones ${list(changed)}`;
 }
 function drawLog(r, past) {
   const items = r.kill_t != null && t >= r.kill_t ? [...past, {event: "kill", agent: r.victim, t: r.kill_t}] : past;
   if (items.length === logCount) return;   // rebuild only when an entry appears or goes
   logCount = items.length;
   items.sort((p, q) => p.t - q.t);
-  $("log").textContent = items.map((e) => `${fmtT(r, e.t).padStart(9)}  ${describe(e)}`).join("\n");
+  $("log").textContent = items.map((e) => `${fmtT(r, e.t).padStart(9)}  ${describe(e, items)}`).join("\n");
   $("log").scrollTop = 1e9;
 }
 

@@ -107,7 +107,7 @@ class RunModel:
         self.radio = None
         self.view = Coverage()       # follows the browser's time
         self.series = Coverage()     # runs ahead once, for the coverage-over-time plot
-        self.series_points = []      # [t, coverage %, min pairwise distance so far]
+        self.series_points = []      # [t, coverage %, min pairwise distance so far, zone age]
         self.last_pos = {}           # agent id -> (t_wall, x, y, z) for the separation
         self.min_dist_m = None
         self.latest_wall = None
@@ -193,7 +193,8 @@ class RunModel:
             self.series.advance(t_next, self.track_separation)
             self.series_points.append([t_next - self.base_wall,
                                        round(self.series.fresh_pct(t_next), 1),
-                                       None if self.min_dist_m is None else round(self.min_dist_m, 1)])
+                                       None if self.min_dist_m is None else round(self.min_dist_m, 1),
+                                       self.zone_age_s(self.series, t_next)])
             t_next += 1.0
 
     # ---- what the browser gets
@@ -237,20 +238,21 @@ class RunModel:
         keys = ("loss_s", "before_pct", "share_pct", "recovery_s")
         return {k: loss.get(k) for k in keys} if loss.get("before_pct") is not None else None
 
-    def zone_age_s(self, t_wall):
-        """Seconds since the stalest cell of the priority zone was seen; None: no zone or never."""
+    def zone_age_s(self, coverage, t_wall):
+        """Seconds since the whole priority zone was last seen: the age of its stalest cell, so
+        no part of the zone is older. None: no zone, or not all of it seen yet."""
         zone = self.meta.get("priority_zone")
         if not zone:
             return None
         x0, y0, x1, y1 = zone
         inside = (CELL_X_M >= x0) & (CELL_X_M <= x1) & (CELL_Y_M >= y0) & (CELL_Y_M <= y1)
-        oldest = self.view.last_t[inside].min()
+        oldest = coverage.last_t[inside].min()
         return None if np.isinf(oldest) else round(t_wall - oldest, 1)
 
     def heat(self, t_rel):
         t_wall = self.base_wall + t_rel
         self.view.advance(t_wall)
-        return {"zone_age_s": self.zone_age_s(t_wall),
+        return {"zone_age_s": self.zone_age_s(self.view, t_wall),
                 "t": t_rel, "cols": len(COLUMN_X_M), "rows": len(ROW_Y_M), "cell_m": CELL_M,
                 "age_s": self.view.ages_s(t_wall), "pct": round(self.view.fresh_pct(t_wall), 1)}
 
