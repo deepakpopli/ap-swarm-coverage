@@ -5,7 +5,7 @@ Off by default: without SWARM_DEMO the world and model files are the evaluation'
   colour (DRONE_COLORS: blue, dark green, black), with a faint blur disc on each prop.
 - overlays_sdf(): one static model with visuals only (no collision, no inertial): a white
   ground visual, the yellow 300 x 300 m border, subtle lane lines and, with SWARM_DEMO_ZONE=1,
-  the red border of the Mission B priority zone. Part of the world file: it cannot lag.
+  the Mission B priority zone border (red). Part of the world file: it cannot lag.
 
 SWARM_DEMO_PHYSICS=1 with SWARM_DEMO_SCALE=s: the drone really is s x the iris, so the props
 you see are its rotors, turning as fast as the autopilot commands. Froude scaling (same shape,
@@ -58,7 +58,7 @@ SCALED_GAINS = {
     "PSC_D_POS_P": (1.0, -0.5), "PSC_D_VEL_P": (5.0, -0.5), "PSC_D_ACC_I": (0.1, -0.5),
 }
 # drone 1 blue, 2 dark green, 3 black on the white field; nothing else is coloured but the
-# yellow border and the red zone. tools/gz_markers.py draws each footprint in the same colour.
+# yellow border and the priority zone (red). tools/gz_markers.py draws each footprint in the same colour.
 DRONE_COLORS = ["#1f5fd6", "#0b6b2a", "#111111", "#e06000", "#5a1a8a"]
 BORDER_RGB = (1.0, 0.85, 0.0)           # yellow
 ZONE_RGB = (1.0, 0.0, 0.0)              # red
@@ -272,7 +272,7 @@ def _rectangle(prefix: str, x0, y0, x1, y1, width, z, colour) -> list:
 
 
 def overlays_sdf(lane_xs_m: list, zone: bool = False) -> str:
-    """One static, visual-only model: ground visual, yellow border, lanes, optional red zone."""
+    """One static, visual-only model: ground visual, yellow border, lanes, optional priority zone."""
     xmin, xmax, ymin, ymax = config.AREA
     visuals = ['<visual name="ground"><pose>150 150 0.01 0 0 0</pose><geometry><plane>'
                "<normal>0 0 1</normal><size>4000 4000</size></plane></geometry>"

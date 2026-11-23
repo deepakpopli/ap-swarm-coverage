@@ -5,7 +5,7 @@ The world frame is ENU (x east, y north) anchored at `origin` (lat, lon, alt).
 Lock-step is always off: with lock_step=1 the world waits for every autopilot on every step,
 so one killed autopilot would freeze the world and every other vehicle with it.
 demo=True (SWARM_DEMO=1, live view only, sim/demo_world.py): a sun and sky, the white field,
-the yellow border and lanes; demo_zone=True (SWARM_DEMO_ZONE=1) also the red zone border;
+the yellow border and lanes; demo_zone=True (SWARM_DEMO_ZONE=1) also the priority zone border (red);
 with SWARM_DEMO_PHYSICS=1 and SWARM_DEMO_SCALE the drones are the Froude-scaled iris in their
 colours. Without demo the world and model files are the evaluation's.
 """
