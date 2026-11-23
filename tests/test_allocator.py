@@ -152,14 +152,14 @@ def test_zone_owner_kept_and_replaced_on_loss():
 
 # ---- Mission B with two agents: the butterfly
 
-def on_loop(asg, i):
-    """Mid-way along leg i of the agent's loop, at cruise toward its end: (xy, velocity, the slot
-    it heads to)."""
+def on_loop(asg, i, f=0.5):
+    """At fraction f (mid-way by default) of leg i of the agent's loop, at cruise toward its end:
+    (xy, velocity, the slot it heads to)."""
     loop = asg.slots[asg.loop_from:]
     a, b = loop[i], loop[(i + 1) % len(loop)]
     d = math.dist(a, b)
     v = [(b[0] - a[0]) / d * config.WP_SPD_MS, (b[1] - a[1]) / d * config.WP_SPD_MS]
-    return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], v, tuple(b)
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f], v, tuple(b)
 
 
 def after_loss(survivors, legs):
@@ -262,6 +262,22 @@ def test_phase_hold_brings_them_back_half_a_lap_apart(late):
         return max(abs(b - a) / 2 for a, b in zip(gaps, gaps[1:]))
     assert worst_error_s(fly(after, motion, before, 260.0, late=late)) > 3.0
     assert worst_error_s(fly(after, motion, before, 260.0, late=late, pace=True)) < 1.5
+
+
+def test_phase_hold_slows_harder_far_off_and_spares_the_next_over_the_zone():
+    """0.6 x cruise while far off the half lap, 0.8 x close to it; in the change-over (not
+    settled) the agent next over the zone is never slowed, the other one may be."""
+    _, after, _ = after_loss([2, 3], {2: 1, 3: 2})
+
+    def pace(legs_and_fractions, settled=True):
+        motion = {a: on_loop(after[a], *where) for a, where in legs_and_fractions.items()}
+        return allocator.butterfly_pace(after, MIDDLE_ZONE, motion, settled=settled)
+    far, near = {2: (0,), 3: (0,)}, {2: (0,), 3: (5, 0.95)}
+    assert pace(far) == {3: round(allocator.PACE_SLOWER * config.WP_SPD_MS, 2)}
+    assert pace(near) == {2: round(allocator.PACE_SLOW * config.WP_SPD_MS, 2)}
+    assert pace(far, settled=False) == {}        # drone 3 is the next over the zone here
+    other = {2: (0,), 3: (2,)}
+    assert pace(other) == pace(other, settled=False) != {}
 
 
 def test_butterfly_deterministic_and_kept():

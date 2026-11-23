@@ -514,15 +514,19 @@ def _butterfly_plans(ids, zone, motion, blacklist, previous):
 # in Gazebo it came out up to 8 s off and stayed off (zone gaps of 20 and 36 s instead of 2 x 27).
 # The phase hold: the agent whose next centre pass comes less than half a lap after the other's
 # flies slower until the two are half a lap apart again.
-PACE_SLOW = 0.8           # x cruise for the agent that is too close behind; 8 s back in ~40 s
-PACE_ON_S = 1.0           # phase error that starts the hold
-PACE_OFF_S = 0.3          # ... and that ends it
+PACE_SLOW = 0.8           # x cruise for the agent that is too close behind ...
+PACE_SLOWER = 0.6         # ... while it is more than PACE_FAR_S off: 11 s back in about 45 s
+PACE_FAR_S = 3.0
+PACE_ON_S = 1.5           # phase error that starts the hold (the ground's states are up to
+PACE_OFF_S = 0.5          # ~0.3 s old) and that ends it
 
 
-def butterfly_pace(assignments, zone, motion, holding=False) -> dict:
+def butterfly_pace(assignments, zone, motion, holding=False, settled=True) -> dict:
     """{agent: speed limit} for the phase hold, {} with nothing to correct or no butterfly.
-    assignments: the current plan; motion: {id: (xy, velocity, slot it heads to)}, both agents
-    on their loops. holding: a hold is on (it ends below PACE_OFF_S, not PACE_ON_S)."""
+    assignments: the current plan; motion: {id: (xy, velocity, slot it heads to)}. holding: a
+    hold is on (it ends below PACE_OFF_S, not PACE_ON_S). settled: both agents are on their
+    loops; before that (the change-over) the agent next over the zone is never slowed: its pass
+    is the zone's next look, while slowing the other one only fixes the half lap."""
     strips = _butterfly_strips(zone) if zone is not None and len(assignments) == 2 else None
     ids = [next((a for a, asg in assignments.items() if asg.share == strip.share), None)
            for strip in strips or []]
@@ -541,7 +545,11 @@ def butterfly_pace(assignments, zone, motion, holding=False) -> dict:
     error_s = (upcoming[0] - upcoming[1]) % lap_s - lap_s / 2   # < 0: west too soon after east
     if abs(error_s) < (PACE_OFF_S if holding else PACE_ON_S):
         return {}
-    return {ids[0] if error_s < 0 else ids[1]: round(PACE_SLOW * config.WP_SPD_MS, 2)}
+    k = 0 if error_s < 0 else 1
+    if not settled and upcoming[k] <= upcoming[1 - k]:
+        return {}
+    factor = PACE_SLOWER if abs(error_s) > PACE_FAR_S else PACE_SLOW
+    return {ids[k]: round(factor * config.WP_SPD_MS, 2)}
 
 
 # ---- active slots apart --------------------------------------------------------------------------

@@ -307,16 +307,18 @@ class Ground:
         self.next_assign = 0.0           # send the new plan now
 
     def update_pace(self, now):
-        """Once a second, with both butterfly agents on their loops: the phase hold's speed
+        """Once a second, with both butterfly agents heard steadily: the phase hold's speed
         limits (allocator.butterfly_pace), sent at once when they change."""
         if self.priority_zone is None or now < self.next_pace:
             return
         self.next_pace = now + 1.0
         pace = {}
-        if self.assignments and all(self.on_station(a) for a in self.assignments):
+        if self.assignments and all(self.agents[a].liveness == "alive" for a in self.assignments):
             motion = {a: (self.agents[a].xy, self.agents[a].vel, self.heading_slot(a))
                       for a in self.assignments}
-            pace = butterfly_pace(self.assignments, self.priority_zone, motion, bool(self.pace))
+            settled = all(self.on_station(a) for a in self.assignments)
+            pace = butterfly_pace(self.assignments, self.priority_zone, motion, bool(self.pace),
+                                  settled)
         if pace != self.pace:
             self.pace = pace
             self.log.write(now, "pace", epoch=self.epoch, speeds={str(a): v for a, v in pace.items()})
