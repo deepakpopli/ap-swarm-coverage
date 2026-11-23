@@ -216,7 +216,7 @@ With a 4 s timeout the same run declares it lost and re-plans, then re-plans aga
 ## Limitations and next steps
 
 - **Lane tracking.** The coverage controller flies at slots, not along the lane line. Tracking the lane would make footprint overlap more predictable.
-- **The ground is a single point of failure for re-planning.** While it is down, a lost drone's lanes stay unflown (75.1 % in `groundloss`). Next step, designed and in progress on a separate branch, not part of this submission: a leader-follower fallback. If the drones hear no ground for 10 s, the lowest-id live drone (its MAV_SYSID) runs the same ground code onboard and sends the plans over the radio. If it dies, the next lowest takes over. A returning ground takes back control with a higher plan epoch.
+- **The ground is a single point of failure for re-planning.** While it is down, a lost drone's lanes stay unflown (75.1 % in `groundloss`). Next step, designed and in progress (not part of this submission, not in this repo yet): a leader-follower fallback. If the drones hear no ground for 10 s, the lowest-id live drone (its MAV_SYSID) runs the same ground code onboard and sends the plans over the radio. If it dies, the next lowest takes over. A returning ground takes back control with a higher plan epoch.
 - **No EKF under Gazebo.** The EKF is the autopilot's position estimator. The JSON backend sets `AHRS_EKF_TYPE 10`: positions are the simulator's truth, so GPS faults and estimate errors are not exercised.
 - **The dead drone is removed from Gazebo**, so the others never meet a falling airframe.
 - **N = 3 only.** More drones would degrade more gently (DECISIONS.md). The allocator handles any N, but I flew only three.

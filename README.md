@@ -27,7 +27,8 @@ Live runs in Gazebo with the web view beside them. Click a picture to play it on
 | 0:00 the drones take up their loops. 0:17 three drones cover the area. 1:07 drone 1 is killed (SIGKILL, mission time 71.5 s). 1:20 the ground declares it lost (83.8 s) and the two survivors take over its lanes. From 1:30 coverage recovers. | 0:00 the drones take up their loops. 0:25 three drones cover the area; one owns the red 60 m x 60 m zone. 1:28 drone 3 is killed (63.2 s). 1:40 it is declared lost (75.4 s) and the two survivors switch to loops that both pass through the zone. The zone stays covered; the rest of the area settles lower, at about 79 %. |
 
 Each video says its playback speed in the top corner (real time to 1.5x). The required top-down
-animation of a Mission A run is `results/replay_representative.mp4`.
+animation of a Mission A run, under 60 s with the dropout, is `results/replay_representative.mp4` (47 s,
+seed 14, the median run).
 
 ## Architecture
 
@@ -51,6 +52,10 @@ starts everything, injects the fault and never sends anything to the swarm.
 
 The ground cuts the area into fixed north-south lanes and hands each drone a loop of slots over
 its share; on a loss it only changes who owns which lanes.
+
+![Allocator](docs/allocator.png)
+
+In pseudo-code:
 
 ```
 allocate(alive drones, positions, blacklist, previous plan, priority zone or none):
@@ -81,10 +86,14 @@ allocate(alive drones, positions, blacklist, previous plan, priority zone or non
 | Autopilot (the Mission A kill) | its agent stops sending at once; the ground declares it lost after 12 s of silence | the ground re-plans the survivors over the dead drone's lanes | lost 12.1 s after the kill |
 | Agent process | its autopilot lands after 3 s (heartbeat lost); the ground: lost after 12 s | the same re-plan | lost 12.1 s after the kill, coverage after 95.5 % |
 | Payload | the drone lands and reports failsafe; the ground: lost at once | re-plan right away | lost 1.3 to 1.5 s after the failure |
-| Ground station | nobody needs it to fly | the drones keep their last plan and stay safe; no re-plan in this version (a leader-follower fallback is in progress on a separate branch) | with a drone also lost: coverage 75.1 % after |
+| Ground station | nobody needs it to fly | the drones keep their last plan and stay safe; no re-plan in this version (a leader-follower fallback is my next step; in progress, not in this repo yet) | with a drone also lost: coverage 75.1 % after |
 | Radio | each drone is deaf after 3 s of hearing nobody | it stops and holds at its own altitude; no re-plan | 10 s outage: 7.2 s deaf, nobody declared lost |
 
 The scenario runs behind these numbers are in `results/scenarios/` and REPORT.md section 2.
+
+### When a drone dies: the timeline
+
+![Loss timeline](docs/loss_timeline.png)
 
 ## Results (Mission A, evaluated)
 

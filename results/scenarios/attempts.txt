@@ -6,3 +6,4 @@ groundloss: ok on attempt 1
 radiooutage: ok on attempt 1
 C_s1: ok on attempt 1
 B_s1: ok on attempt 1 (2026-11-23, by hand: run_mission.py --mission B --seed 1)
+headon: ok on attempt 1 (2026-11-24, by hand: run_mission.py --mission A --backend gazebo --scenario headon --n 3 --seed 1; working tree before its commit, the flight code is c7aafad)
