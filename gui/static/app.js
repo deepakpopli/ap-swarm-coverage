@@ -9,6 +9,9 @@ const GROUND_WORDS = {alive: "OK", suspect: "no message 2 s+", lost: "lost"};
 const DOING_WORDS = {takeoff: "taking off", ready: "ready", hold: "holding", cover: "covering",
   failsafe: "landing (failsafe)"};
 const MAP_MARGIN_PX = 28;
+// live data comes every 0.5 s (gui/server.py LIVE_PERIOD_S): show it this far behind and play it
+// at real time, so drones glide instead of jumping 6 m twice a second
+const LIVE_LAG_S = 1.0;
 
 let geo = null;                       // footprint and area numbers from swarm/sensor.py, config.py
 let liveRun = emptyRun(), replayRun = emptyRun(), liveDir = null;
@@ -215,10 +218,11 @@ function drawZone(r) {               // the whole zone: the age of its stalest c
   const limit = geo.zone_limit_s, s = rowAt(r.series, t), age = s ? s[3] : null;
   const mission = r.series.filter((p) => r.t0 != null && p[0] >= r.t0 && p[0] <= t && p[3] != null);
   const worst = mission.length ? Math.max(...mission.map((p) => p[3])) : null;
-  $("zoneage").textContent = age == null ? "not all seen yet" : `${Math.round(age)} s`;
-  $("zoneage").style.color = age == null || age > limit ? LIVENESS_COLOR.lost : LIVENESS_COLOR.alive;
-  $("zonebar").style.width = `${Math.min(100, 100 * (age ?? limit) / limit)}%`;
-  $("zonebar").style.background = age == null || age > limit ? LIVENESS_COLOR.lost : LIVENESS_COLOR.alive;
+  // before the first full pass over the zone there is no age yet: a dash, not an alarm
+  $("zoneage").textContent = age == null ? "–" : `${Math.round(age)} s`;
+  $("zoneage").style.color = age == null ? "#8b949e" : age > limit ? LIVENESS_COLOR.lost : LIVENESS_COLOR.alive;
+  $("zonebar").style.width = `${age == null ? 0 : Math.min(100, 100 * age / limit)}%`;
+  $("zonebar").style.background = age != null && age > limit ? LIVENESS_COLOR.lost : LIVENESS_COLOR.alive;
   const ok = worst != null && worst <= limit;
   $("zoneok").innerHTML = worst == null ? `covered within ${limit} s: <b>-</b> (from mission start)`
     : `covered within ${limit} s: <b style="color:${ok ? LIVENESS_COLOR.alive : LIVENESS_COLOR.lost}">${ok ? "YES" : "NO"}</b>` +
@@ -278,7 +282,7 @@ function wantHeat(dir) {             // the heatmap comes from Python (gui/model
 function frame(nowMs) {
   const r = run(), [tMin, tMax] = tRange(r), dt = Math.min(0.2, (nowMs - lastFrameMs) / 1000);
   lastFrameMs = nowMs;
-  if (mode === "live" && follow) t = tMax;
+  if (mode === "live" && follow) t = t < tMax - 2 * LIVE_LAG_S ? tMax - LIVE_LAG_S : Math.min(tMax, t + dt);
   else if (playing) t = Math.min(tMax, t + dt * speed);
   t = Math.max(tMin, t);
   const slider = $("slider");
