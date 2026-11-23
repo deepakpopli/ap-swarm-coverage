@@ -1,7 +1,7 @@
 """Figures for a set of runs, sized to be read inside a README.
 
 python -m analysis.plots --out results/<set> RUN_DIR... [--ref RUN_DIR...] [--baseline RUN_DIR...]
-Set figures: coverage_vs_time, before_after, recovery_steps.
+Set figures: coverage_vs_time, before_after, recovery_steps, by_drone.
 One-run figures (from the first RUN_DIR): age_maps, assignments, separation.
 """
 import argparse
@@ -25,6 +25,8 @@ ACCENT_2 = "#eb6834"       # the second reference line
 CRITICAL = "#e34948"       # the loss and the 8 m limit
 STALE = "#f2c14e"          # cells not seen for 60 s or more
 AGENT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#6250d6", "#e87ba4"]
+DRONE_COLORS = ["#2a78d6", "#1baf7a", "#eb6834"]   # drones 1, 2 as in Gazebo (blue, green); 3 is
+                                                   # black there, too grey for a series: orange
 
 plt.rcParams.update({
     "figure.dpi": 110, "savefig.dpi": 150, "font.size": 10, "axes.edgecolor": INK_2,
@@ -79,7 +81,7 @@ def plot_coverage(runs, refs, baselines, out_dir):
     ax.axhline(median_of(runs, "loss.share_pct"), color=ACCENT_2, lw=1.2, ls="--",
                label="(N-1)/N x P")
     ax.axvline(0.0, color=CRITICAL, lw=1.2)
-    ax.text(1, 56.5, "agent lost", color=CRITICAL, fontsize=8)
+    ax.text(1, 56.5, "drone lost", color=CRITICAL, fontsize=8)
     declared = median_of(runs, "loss.milestones_s.lost_declared")
     if declared is not None:
         ax.axvline(declared, color=INK_2, lw=1, ls="--")
@@ -170,6 +172,59 @@ def plot_recovery_steps(runs, out_dir):
     save(fig, out_dir, "recovery_steps.png")
 
 
+KILL_TIME_RAMP = ["#86b6ef", "#3987e5", "#1c5cab", "#0d366b"]   # one hue, light = early
+
+
+def kill_time_color(loss_s):
+    """Fault time 60 .. 90 s on the blue ramp: light early, dark late."""
+    k = (min(max(loss_s, 60.0), 90.0) - 60.0) / 30.0 * (len(KILL_TIME_RAMP) - 1)
+    return KILL_TIME_RAMP[int(round(k))]
+
+
+def plot_by_drone(runs, out_dir):
+    """Which drone failed and when: its runs' coverage over the mission, then the lowest
+    coverage and the coverage 60 s on against the time of the fault, one line per drone."""
+    drones = sorted({r["m"]["victim"] for r in runs})
+    fig = plt.figure(figsize=(11, 7.2))
+    grid = fig.add_gridspec(2, len(drones), height_ratios=[1, 1.05])
+    for col, drone in enumerate(drones):
+        ax = fig.add_subplot(grid[0, col])
+        mine = sorted((r for r in runs if r["m"]["victim"] == drone),
+                      key=lambda r: r["m"]["loss"]["loss_s"])
+        for r in mine:
+            loss_s, color = r["m"]["loss"]["loss_s"], kill_time_color(r["m"]["loss"]["loss_s"])
+            ax.plot(r["t"], r["cov"], color=color, lw=1.4, label=f"fails at {loss_s:.0f} s")
+            ax.plot(loss_s, np.interp(loss_s, r["t"], r["cov"]), "v", color=color, ms=8,
+                    mec="white", mew=1.5)
+        ax.set_xlim(0, max(r["m"]["end_s"] for r in runs))
+        ax.set_ylim(55, 102)
+        ax.set_title(f"Drone {drone} fails ({len(mine)} run{'s' if len(mine) > 1 else ''})")
+        ax.set_xlabel("mission time (s)")
+        if col == 0:
+            ax.set_ylabel("area seen in the last 60 s (%)")
+        ax.legend(fontsize=7, loc="lower left")
+    ax = fig.add_subplot(grid[1, :])
+    for drone in drones:
+        color = DRONE_COLORS[(drone - 1) % len(DRONE_COLORS)]
+        mine = sorted((r for r in runs if r["m"]["victim"] == drone),
+                      key=lambda r: r["m"]["loss"]["loss_s"])
+        at = [r["m"]["loss"]["loss_s"] for r in mine]
+        dip = [r["m"]["loss"]["dip_pct"] for r in mine]
+        after = [r["m"]["loss"]["after_mean_pct"] for r in mine]
+        ax.plot(at, after, "-o", color=color, lw=2, ms=8, mec="white", mew=1.5)
+        ax.plot(at, dip, "--v", color=color, lw=1.2, ms=8, mec="white", mew=1.5)
+        ax.annotate(f"drone {drone}", (at[-1], after[-1]), xytext=(8, 0),
+                    textcoords="offset points", va="center", fontsize=9, color=INK)
+    ax.plot([], [], "-o", color=INK_2, label="mean coverage from 60 s after the fault to the end")
+    ax.plot([], [], "--v", color=INK_2, label="lowest coverage after the fault")
+    ax.set_xlabel("time of the fault (mission s)")
+    ax.set_ylabel("area seen in the last 60 s (%)")
+    ax.set_title("Coverage after the fault, by drone and by when it fails")
+    ax.legend(fontsize=8, loc="lower left")
+    ax.set_xlim(57, 97)
+    save(fig, out_dir, "by_drone.png")
+
+
 # ------------------------------------------------------------------- one-run figures
 
 def plot_age_maps(run, out_dir):
@@ -188,7 +243,7 @@ def plot_age_maps(run, out_dir):
     axes[0].set_ylabel("north (m)")
     bar = fig.colorbar(image, ax=list(axes), extend="max", shrink=0.85)
     bar.set_label("s since last seen (yellow: 60+ or never)")
-    fig.suptitle(f"Run {run.name}: agent {run.victim} lost at {run.loss_s:.1f} s", x=0.01,
+    fig.suptitle(f"Run {run.name}: drone {run.victim} lost at {run.loss_s:.1f} s", x=0.01,
                  ha="left", fontweight="bold", fontsize=11)
     fig.savefig(os.path.join(out_dir, "age_maps.png"), bbox_inches="tight")
     plt.close(fig)
@@ -214,13 +269,14 @@ def plot_assignments(run, out_dir):
     """Each agent's share (east and north extent) over time: flat bands = no oscillation."""
     steps = assignment_steps(run)
     fig, axes = plt.subplots(2, 1, figsize=(8.5, 5.6), sharex=True)
-    for color, agent_id in zip(AGENT_COLORS, run.agents):
+    for agent_id in run.agents:
+        color = DRONE_COLORS[(agent_id - 1) % len(DRONE_COLORS)]
         for k, (start, shares) in enumerate(steps):
             if agent_id not in shares:
                 continue
             end = steps[k + 1][0] if k + 1 < len(steps) else run.end_s
             xmin, xmax, ymin, ymax = shares[agent_id]
-            label = f"agent {agent_id}" if k == 0 else None
+            label = f"drone {agent_id}" if k == 0 else None
             axes[0].fill_between([start, end], xmin, xmax, color=color, alpha=0.35, lw=0,
                                  label=label)
             axes[1].plot([start, end], [ymin, ymin], color=color, lw=2)   # shares often span
@@ -237,14 +293,13 @@ def plot_assignments(run, out_dir):
         axes[0].plot(e["t_mission"], e["slot_xy"][0], "v", color=INK, ms=7)
         axes[1].plot(e["t_mission"], e["slot_xy"][1], "v", color=INK, ms=7)
     for e in run.events("assign")[1:]:
-        axes[0].text(assigned_from(e), config.AREA[1], f" {e['trigger']} (epoch "
-                     f"{e['epoch']})", fontsize=7, color=INK_2, rotation=90, va="top")
+        axes[0].text(assigned_from(e), config.AREA[1], f" new plan: {e['trigger']}", fontsize=7, color=INK_2, rotation=90, va="top")
     axes[0].set_ylabel("share, east (m)")
     axes[1].set_ylabel("share, north (m)")
     axes[1].set_xlabel("mission time (s). Red: loss; red dashed: declared lost; dotted: re-plan;"
                        " triangle: infeasible report")
     axes[0].legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.0, 1.0))
-    axes[0].set_title(f"Run {run.name}: each agent's share over time")
+    axes[0].set_title(f"Run {run.name}: each drone's share over time")
     axes[1].set_xlim(0, run.end_s)
     save(fig, out_dir, "assignments.png")
 
@@ -255,7 +310,7 @@ def plot_separation(run, out_dir):
     times, pairs = metrics.separation_series(run)
     fig, ax = plt.subplots(figsize=(8.5, 3.8))
     for color, ((a, b), distance) in zip(AGENT_COLORS, pairs.items()):
-        ax.plot(times, distance, color=color, lw=1.2, label=f"agents {a}-{b}")
+        ax.plot(times, distance, color=color, lw=1.2, label=f"drones {a}-{b}")
     for agent_id, log in run.agents.items():
         filtered = np.array(["filtered" in flags.split("|") for flags in log["flags"]], dtype=bool)
         filtered &= metrics.mission_rows(run, agent_id)
@@ -295,6 +350,7 @@ def main():
         plot_coverage(runs, refs, baselines, args.out)
         plot_before_after(runs, refs, args.out)
         plot_recovery_steps(runs, args.out)
+        plot_by_drone(runs, args.out)
         plot_age_maps(first, args.out)
     plot_assignments(first, args.out)
     plot_separation(first, args.out)
