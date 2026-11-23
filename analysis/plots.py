@@ -204,6 +204,7 @@ def plot_by_drone(runs, out_dir):
             ax.set_ylabel("area seen in the last 60 s (%)")
         ax.legend(fontsize=7, loc="lower left")
     ax = fig.add_subplot(grid[1, :])
+    labels = []                                    # (y, text, colour) at the right end
     for drone in drones:
         color = DRONE_COLORS[(drone - 1) % len(DRONE_COLORS)]
         mine = sorted((r for r in runs if r["m"]["victim"] == drone),
@@ -213,8 +214,13 @@ def plot_by_drone(runs, out_dir):
         after = [r["m"]["loss"]["after_mean_pct"] for r in mine]
         ax.plot(at, after, "-o", color=color, lw=2, ms=8, mec="white", mew=1.5)
         ax.plot(at, dip, "--v", color=color, lw=1.2, ms=8, mec="white", mew=1.5)
-        ax.annotate(f"drone {drone}", (at[-1], after[-1]), xytext=(8, 0),
-                    textcoords="offset points", va="center", fontsize=9, color=INK)
+        labels.append([after[-1], f"drone {drone}", at[-1]])
+    labels.sort()
+    for below, above in zip(labels, labels[1:]):  # keep the labels 1.5 points apart
+        above[0] = max(above[0], below[0] + 1.5)
+    for y, text, x in labels:
+        ax.annotate(text, (x, y), xytext=(10, 0), textcoords="offset points", va="center",
+                    fontsize=9, color=INK)
     ax.plot([], [], "-o", color=INK_2, label="mean coverage from 60 s after the fault to the end")
     ax.plot([], [], "--v", color=INK_2, label="lowest coverage after the fault")
     ax.set_xlabel("time of the fault (mission s)")
