@@ -340,3 +340,11 @@ class ReportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_longest_untouched_counts_any_zone_cell():
+    zone = np.zeros(8, dtype=bool)
+    zone[:4] = True
+    seen = [(-5.0, np.array([0])), (10.0, np.array([5])), (20.0, np.array([1, 6]))]
+    assert metrics.longest_untouched(seen, zone, 30.0) == 25.0      # -5 -> 20; 10 is outside
+    assert metrics.longest_untouched([], zone, 30.0) == 30.0

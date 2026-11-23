@@ -388,12 +388,21 @@ def unseen_blocks(run, sightings_list):
     return out
 
 
+def longest_untouched(sightings_list, zone, end_s):
+    """The longest time no part of the zone was seen, from t = 0 (a weaker reading than
+    longest_unseen, which asks it of every cell: one drone over a corner resets this one)."""
+    touched = [t for t, cells in sightings_list if t < end_s and zone[cells].any()]
+    times = [t for t in touched if t < 0][-1:] + [t for t in touched if t >= 0] + [end_s]
+    return float(max(b - a for a, b in zip(times, times[1:]))) if len(times) > 1 else end_s
+
+
 def priority_zone_block(run, sightings_list, ticks):
     xmin, ymin, xmax, ymax = run.meta["priority_zone"]
     zone = (CELL_X_M >= xmin) & (CELL_X_M <= xmax) & (CELL_Y_M >= ymin) & (CELL_Y_M <= ymax)
     fresh = percent_fresh(sightings_list, ticks, config.PRIORITY_REVISIT_S, zone)
     return {"zone": [xmin, ymin, xmax, ymax],
             "longest_unseen_s": float(longest_unseen(sightings_list, run.end_s)[zone].max()),
+            "longest_untouched_s": longest_untouched(sightings_list, zone, run.end_s),
             "limit_s": config.PRIORITY_REVISIT_S,
             "whole_zone_fresh_pct": 100.0 * float(np.mean(fresh == 100.0))}
 
