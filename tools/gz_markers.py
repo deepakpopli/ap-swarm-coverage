@@ -24,7 +24,6 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gz.msgs10.empty_pb2 import Empty
 from gz.msgs10.boolean_pb2 import Boolean
 from gz.msgs10.marker_pb2 import Marker
 from gz.msgs10.marker_v_pb2 import Marker_V
