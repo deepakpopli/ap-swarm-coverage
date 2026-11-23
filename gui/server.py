@@ -324,13 +324,14 @@ def default_run_roots():
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port", type=int, default=8800)
+    ap.add_argument("--host", default="127.0.0.1", help="e.g. a VPN address to watch from elsewhere")
     ap.add_argument("--runs", nargs="*", help="directories searched for run directories")
     args = ap.parse_args(argv)
     os.makedirs(os.path.join(ROOT, "run", "dash"), exist_ok=True)
     Handler.dash = Dashboard(args.runs or default_run_roots())
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True     # an open SSE stream must not block Ctrl-C
-    print(f"gui: http://localhost:{args.port}  (observer only: reads log files)")
+    print(f"gui: http://{args.host}:{args.port}  (observer only: reads log files)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
