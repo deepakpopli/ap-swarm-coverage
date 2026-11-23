@@ -32,8 +32,9 @@ from gz.transport13 import Node
 
 from sim import demo_world
 from swarm import config, sensor
+from swarm.allocator import area_lanes
 
-# exactly the colours of the drone bodies (sim/demo_world.py: dark blue, black, dark green)
+# exactly the colours of the drone bodies (sim/demo_world.py: blue, dark green, black)
 COLOURS = [demo_world.linear(demo_world.rgb(h)) for h in demo_world.DRONE_COLORS]
 DEMO = os.environ.get("SWARM_DEMO", "0") == "1"   # the world already has ground, border, lanes
 FOOTPRINT_W_M = float(os.environ.get("SWARM_FOOTPRINT_W", "0"))   # > 0: footprint edges as bars
@@ -117,10 +118,7 @@ def draw_static() -> None:
         return
     draw_ground(x0, x1, y0, y1)
     line_strip("area", 0, [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)], (0.1, 0.1, 0.1))
-    across_m, along_m = sensor.lane_footprint(config.ALT_CRUISE_M)
-    n_lanes = -(-int(x1 - x0) // int(across_m))            # ceil
-    for k in range(n_lanes):
-        x = x0 + (x1 - x0) * (k + 0.5) / n_lanes
+    for k, x in enumerate(area_lanes()):
         line_strip("lane", k, [(x, y0), (x, y1)], (0.55, 0.55, 0.55))
 
 
