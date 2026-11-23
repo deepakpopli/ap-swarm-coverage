@@ -14,14 +14,17 @@ const MAP_MARGIN_PX = 28;
 const LIVE_LAG_S = 1.0;
 
 let geo = null;                       // footprint and area numbers from swarm/sensor.py, config.py
-let liveRun = emptyRun(), replayRun = emptyRun(), liveDir = null;
+let liveRun = emptyRun(), replayRun = emptyRun(), liveDir = null, liveWriting = false;
 let mode = "live", follow = true, playing = true, speed = 1, t = 0, lastFrameMs = 0;
 let heat = null, heatBusy = false, logCount = -1;
 let cover = "shade", mosaic = null, mosaicBusy = false;   // coverage view: shade or photos
 const query = new URLSearchParams(location.search);   // ?run=DIR&t=MISSION_S&paused=1
+// playback controls only for a replay (?run=); a live or idle view has nothing to play
+if (query.get("run")) document.getElementById("playctl").hidden = false;
 
 function emptyRun() { return {agents: {}, events: [], series: [], t0: null, end_t: 0}; }
 function run() { return mode === "live" ? liveRun : replayRun; }
+function idle() { return mode === "live" && !liveDir; }   // no run being written since the page opened
 
 function merge(target, delta) {
   for (const [id, rows] of Object.entries(delta.agents)) (target.agents[id] ||= []).push(...rows);
@@ -199,9 +202,9 @@ function lossLevels(r) {             // analysis/metrics.py's figures if the run
 }
 
 function drawSide(r, past) {
-  $("clock").textContent = fmtT(r, t);
-  $("pct").textContent = heat ? heat.pct.toFixed(1) + " %" : "";
-  let html = "<tr><th>Drone</th><th>Ground sees it</th><th>Doing</th><th>Nearest drone</th></tr>";
+  $("clock").textContent = idle() ? "" : fmtT(r, t);
+  $("pct").textContent = heat ? heat.pct.toFixed(1) + " %" : "–";
+  let html = Object.keys(r.agents).length ? "<tr><th>Drone</th><th>Ground sees it</th><th>Doing</th><th>Nearest drone</th></tr>" : "";
   for (const [id, rows] of Object.entries(r.agents)) {
     const row = rowAt(rows, t), state = groundSays(id, past);
     if (!row) continue;
@@ -212,6 +215,7 @@ function drawSide(r, past) {
   }
   $("drones").innerHTML = html;
   drawZone(r);
+  if (idle()) { $("mind").textContent = $("radio").textContent = ""; drawLog(r, past); return; }
   const s = rowAt(r.series, t), d = s && s[2];
   $("mind").innerHTML = `closest two drones since the start: <b>${d == null ? "-" : d.toFixed(1) + " m"}</b> (must stay ${geo.d_min_m} m or more)`;
   const g = r.radio;
@@ -330,7 +334,13 @@ function openReplay(dir, missionS) {
 }
 function openLive() {
   mode = "live"; follow = true; heat = null; mosaic = null; logCount = -1;
-  $("live").classList.add("on"); $("runs").value = ""; $("source").textContent = "live: " + (liveDir ? shortDir(liveDir) : "no mission running");
+  $("live").classList.add("on"); $("runs").value = ""; showSource();
+}
+function showSource() {               // the one line that says what the page shows
+  const outcome = liveRun.outcome && liveRun.outcome !== "running" ? ` (${liveRun.outcome})` : "";
+  $("source").textContent = !liveDir ? "idle: no mission running; start one with ./demo.sh"
+    : liveWriting ? "live: " + shortDir(liveDir) : `finished${outcome}: ` + shortDir(liveDir);
+  $("source").style.color = !liveDir || liveWriting ? "#e6edf3" : "#d29922";
 }
 
 function onLive(msg) {
@@ -340,6 +350,8 @@ function onLive(msg) {
   if (st.live_dir !== liveDir) { liveDir = st.live_dir; liveRun = emptyRun(); mosaic = null; if (mode === "live") openLive(); }
   if (msg.run) merge(liveRun, msg.run);
   if (msg.heat && mode === "live" && follow) heat = msg.heat;
+  liveWriting = !!st.writing;
+  if (mode === "live") showSource();
 }
 
 function post(path, body) {
@@ -365,9 +377,8 @@ function setup(info) {
   new EventSource("/api/live").onmessage = (m) => onLive(JSON.parse(m.data));
   const q = query;
   if (q.get("paused")) $("play").click();
-  if (q.get("run")) openReplay(q.get("run"), q.get("t") == null ? null : +q.get("t"));
-  else if (info.live || !info.runs.length) openLive();    // cold: the run being written now ...
-  else openReplay(info.runs[0], 1e9);                     // ... else the newest one, at its end
+  if (q.get("run")) openReplay(q.get("run"), q.get("t") == null ? null : +q.get("t"));   // developers
+  else openLive();                  // the run being written now, else idle: never an old run
   requestAnimationFrame(frame);
 }
 fetch("/api/runs").then((r) => r.json()).then(setup);

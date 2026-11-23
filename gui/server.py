@@ -3,7 +3,7 @@
     python3 -m gui --port 8800 --runs runs
 
 It only reads log files; it is not part of the control loop. Opened without ?run= it shows the
-newest run, live while one is being written.
+run being written now, else nothing (idle); a run that ends while the page is open stays shown.
 """
 import argparse
 import json
@@ -301,7 +301,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        cursor, run_dir, checked = None, None, 0.0
+        cursor, run_dir, checked, writing = None, None, 0.0, False
         while True:
             status = self.dash.runner.status()
             if time.time() - checked > 2.0:          # the run roots are walked every 2 s only
@@ -309,7 +309,8 @@ class Handler(BaseHTTPRequestHandler):
                 newer = self.dash.live_dir()
                 if newer and newer != run_dir:       # a new live run; a finished one stays shown
                     run_dir, cursor = newer, None
-            status["live_dir"] = run_dir
+                writing = newer is not None
+            status["live_dir"], status["writing"] = run_dir, writing   # writing: still growing
             message = {"status": status}
             if run_dir and os.path.isdir(run_dir):
                 model = self.dash.model(run_dir)

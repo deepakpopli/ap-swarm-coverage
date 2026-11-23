@@ -43,7 +43,7 @@
   function stop(p, retry) {
     clearTimeout(p.timer);
     if (p.pc) { p.pc.close(); p.pc = null; }
-    p.video.srcObject = null; p.msg.hidden = false; p.msg.textContent = p.on ? "no video" : "live only";
+    p.video.srcObject = null; p.msg.hidden = false; p.msg.textContent = p.on ? "no video" : offText();
     if (retry && p.on) p.timer = setTimeout(() => connect(p), RETRY_MS);
   }
 
@@ -69,11 +69,15 @@
     }
   }
 
-  function setLive(on) {             // app.js keeps `mode`: "live" or "replay"
+  function offText() {               // app.js keeps `mode` ("live" or "replay"), `liveDir`, `liveWriting`
+    if (typeof mode === "undefined") return "no mission running";
+    return mode === "replay" ? "live only" : liveDir ? "mission finished" : "no mission running";
+  }
+
+  function setLive(on) {
     for (const p of players) {
-      if (p.on === on) continue;
-      p.on = on;
-      if (on) connect(p); else stop(p, false);
+      if (p.on !== on) { p.on = on; if (on) connect(p); else stop(p, false); }
+      if (!on) p.msg.textContent = offText();
     }
   }
 
@@ -86,6 +90,6 @@
   setInterval(() => {
     if (typeof geo !== "undefined" && geo && geo.colors)
       players.forEach((p) => (p.label.style.background = geo.colors[(p.id - 1) % geo.colors.length]));
-    setLive(typeof mode !== "undefined" && mode === "live");
+    setLive(typeof mode !== "undefined" && mode === "live" && liveWriting);   // only while a run is written
   }, 1000);
 })();
