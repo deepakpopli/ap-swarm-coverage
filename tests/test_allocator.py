@@ -1,11 +1,14 @@
-"""Tests for swarm/allocator.py. Pure functions: no sockets, no clock."""
+"""Tests for swarm/allocator.py. Pure functions: no sockets, no clock (a flight test runs the fake
+vehicle on a simulated one)."""
 import math
 import signal
 
 import pytest
 
-from swarm import allocator, config, sensor
+from sim.fake_vehicle import FakeVehicle
+from swarm import allocator, config, protocol, sensor
 from swarm.allocator import allocate, slot_key
+from swarm.coverage import CoverageController
 
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)   # xmin, ymin, xmax, ymax
 CORNER_ZONE = (0.0, 0.0, 60.0, 60.0)
@@ -146,13 +149,131 @@ def test_priority_zone(at_alt, zone, owner, lane_x):
 
 
 def test_zone_owner_kept_and_replaced_on_loss():
+    """Where the butterfly does not fit (a corner zone), two agents keep one zone owner."""
+    before = allocate([1, 2, 3], starts(3), set(), priority_zone=CORNER_ZONE)
+    after = allocate([1, 3], starts(3), set(), previous=before, priority_zone=CORNER_ZONE)
+    assert after[1] is before[1]                        # the owner keeps its lane
+    assert len(after[3].slots) > len(before[3].slots)   # the other flies the rest alone
+    near_zone = {2: (30.0, 100.0), 3: (250.0, 0.0)}
+    lost = allocate([2, 3], near_zone, set(), previous=before, priority_zone=CORNER_ZONE)
+    assert lane_of(lost[2]) == lane_of(before[1])       # the nearest survivor takes the zone
+
+
+# ---- Mission B with two agents: the butterfly
+
+def on_loop(asg, i):
+    """Mid-way along leg i of the agent's loop, at cruise toward its end: (xy, velocity, the slot
+    it heads to)."""
+    loop = asg.slots[asg.loop_from:]
+    a, b = loop[i], loop[(i + 1) % len(loop)]
+    d = math.dist(a, b)
+    v = [(b[0] - a[0]) / d * config.WP_SPD_MS, (b[1] - a[1]) / d * config.WP_SPD_MS]
+    return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], v, tuple(b)
+
+
+def after_loss(survivors, legs):
+    """The three-agent Mission B plan, then a re-plan for the survivors, each mid-way along leg
+    legs[a] of its loop. Returns (before, after, motion)."""
     before = allocate([1, 2, 3], starts(3), set(), priority_zone=MIDDLE_ZONE)
-    after = allocate([2, 3], starts(3), set(), previous=before, priority_zone=MIDDLE_ZONE)
-    assert after[2] is before[2]                        # the owner keeps its lane
-    assert len(after[3].slots) > len(before[3].slots)   # the other flies all four lanes
-    near_zone = {1: (150.0, 100.0), 3: (250.0, 0.0)}
-    lost = allocate([1, 3], near_zone, set(), previous=before, priority_zone=MIDDLE_ZONE)
-    assert lane_of(lost[1]) == lane_of(before[2])       # the nearest survivor takes the zone
+    motion = {a: on_loop(before[a], legs[a]) for a in survivors}
+    after = allocate(survivors, {a: m[0] for a, m in motion.items()}, set(), before,
+                     MIDDLE_ZONE, velocities={a: m[1] for a, m in motion.items()},
+                     heading={a: m[2] for a, m in motion.items()})
+    return before, after, motion
+
+
+def fly(plans, motion, before, seconds, dt=0.05):
+    """Fly each agent on its old plan, give it the new one ON_TIME_S later (fake vehicle and
+    coverage controller, simulated clock). Returns [(t, agent)] of its centre-lane passes:
+    northbound over the zone centre with a footprint spanning the zone."""
+    t = [0.0]
+    agents = {}
+    for a, (xy, vel, heading) in motion.items():
+        vehicle = FakeVehicle(a, (xy[0], xy[1], config.ALT_CRUISE_M), clock=lambda: t[0])
+        vehicle.vel = [vel[0], vel[1], 0.0]
+        control = CoverageController()
+        control.on_assign(1, before[a].slots, before[a].loop_from, xy, vel)
+        control.idx = [tuple(p) for p in before[a].slots].index(heading)
+        agents[a] = (vehicle, control)
+    zone_x, zone_y = 150.0, 150.0
+    passes, last_y = [], {}
+    while t[0] < seconds:
+        for a, (vehicle, control) in agents.items():
+            st = vehicle.state()
+            if t[0] >= allocator.ON_TIME_S and control.epoch == 1:
+                control.on_assign(2, plans[a].slots, plans[a].loop_from, st.pos[:2], st.vel[:2])
+            out = control.step(t[0], st.pos[:2], False)
+            vehicle.send_setpoint(out.vx, out.vy, config.ALT_CRUISE_M)
+            reach_m = allocator.SWATH_M / 2 - 30.0
+            if last_y.get(a, zone_y) < zone_y <= st.pos[1] and abs(st.pos[0] - zone_x) <= reach_m:
+                passes.append((t[0], a))
+            last_y[a] = st.pos[1]
+        t[0] += dt
+        for vehicle, _ in agents.values():
+            vehicle.poll()
+    return passes
+
+
+@pytest.mark.parametrize("survivors, legs", [([2, 3], {2: 1, 3: 2}),   # agent 1 lost
+                                             ([1, 3], {1: 0, 3: 4}),   # the zone owner lost
+                                             ([1, 2], {1: 6, 2: 5})])  # agent 3 lost
+def test_butterfly_after_a_loss(survivors, legs):
+    """Two survivors fly two-lane loops, north on a centre lane through the zone and south on a
+    wing lane one swath out; the western one west; slots fit in SWARM_ASSIGN, legs bounded."""
+    _, after, motion = after_loss(survivors, legs)
+    west, east = sorted(survivors, key=lambda a: motion[a][0][0])
+    half_swath = allocator.SWATH_M / 2
+    for a, side in ((west, -1), (east, 1)):
+        asg = after[a]
+        loop = asg.slots[asg.loop_from:]
+        centre = 150.0 + side * allocator.BUTTERFLY_OFFSET_M
+        assert sorted({x for x, _ in loop}) == sorted({centre, centre + side * allocator.SWATH_M,
+                                                       centre + side * half_swath})
+        assert centre - half_swath <= MIDDLE_ZONE[0] and MIDDLE_ZONE[2] <= centre + half_swath
+        assert all(q[1] > p[1] for p, q in zip(loop, loop[1:] + loop[:1])
+                   if p[0] == q[0] == centre)                   # the centre lane runs north
+        assert len(asg.slots) <= protocol.MAX_SLOTS
+        points = [motion[a][0]] + asg.slots + [asg.slots[asg.loop_from]]
+        assert all(math.dist(p, q) <= config.SLOT_SPACING_M for p, q in zip(points, points[1:]))
+
+
+@pytest.mark.parametrize("survivors, legs", [([2, 3], {2: 1, 3: 2}), ([1, 3], {1: 0, 3: 4}),
+                                             ([1, 2], {1: 6, 2: 5}), ([1, 3], {1: 2, 3: 7})])
+def test_butterfly_phase(survivors, legs):
+    """Flown, the two centre-lane passes alternate half a lap apart, within PHASE_BUDGET_S."""
+    before, after, motion = after_loss(survivors, legs)
+    passes = fly(after, motion, before, 200.0)
+    steady = [p for p in passes if p[0] > 60.0]
+    assert all(a != b for (_, a), (_, b) in zip(steady, steady[1:]))   # they alternate
+    spacing = [b - a for (a, _), (b, _) in zip(steady, steady[1:])]
+    assert max(spacing) - min(spacing) <= 2 * allocator.PHASE_BUDGET_S
+
+
+def test_butterfly_deterministic_and_kept():
+    """The same inputs give the same plans; a re-plan keeps both butterfly plans (no churn); a
+    blacklisted point re-plans only that agent, on its own side."""
+    _, after, motion = after_loss([1, 3], {1: 0, 3: 4})
+    assert after_loss([1, 3], {1: 0, 3: 4})[1] == after
+    positions = {a: m[0] for a, m in motion.items()}
+    kept = allocate([1, 3], positions, set(), after, MIDDLE_ZONE)
+    assert kept[1] is after[1] and kept[3] is after[3]
+    bad = {(3, slot_key(after[3].slots[-1]))}
+    moved = allocate([1, 3], positions, bad, after, MIDDLE_ZONE)
+    assert moved[1] is after[1] and moved[3].share == after[3].share
+    assert slot_key(after[3].slots[-1]) not in {slot_key(p) for p in moved[3].slots}
+
+
+def test_butterfly_only_for_two_agents_in_mission_b():
+    """Mission A and three-agent Mission B keep their plans; a zone the butterfly cannot fit
+    (a corner) keeps one zone owner."""
+    shares = {tuple(s.share) for s in allocator._butterfly_strips(MIDDLE_ZONE)}
+    assert allocator._butterfly_strips(CORNER_ZONE) is None
+    for ids in ([1, 2], [1, 2, 3]):
+        assert not shares & {tuple(asg.share) for asg in allocate(ids, starts(3), set()).values()}
+    three = allocate([1, 2, 3], starts(3), set(), priority_zone=MIDDLE_ZONE)
+    assert not shares & {tuple(asg.share) for asg in three.values()}
+    two = allocate([1, 2], starts(2), set(), priority_zone=MIDDLE_ZONE)
+    assert {tuple(asg.share) for asg in two.values()} == shares
 
 
 def test_many_blacklisted_points_on_the_zone_lane_end():

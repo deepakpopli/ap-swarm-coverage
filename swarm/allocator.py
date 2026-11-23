@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass
 
 from swarm import config, sensor
-from swarm.coverage import TURN_PASS_DEG, start_slot
+from swarm.coverage import A_SLOW_MS2, TURN_PASS_DEG, V_TURN_MIN_MS, start_slot
 
 # Camera footprint at cruise in whole metres; read at call time so a test can patch them.
 SWATH_M, ALONG_M = sensor.lane_footprint(config.ALT_CRUISE_M)
@@ -26,6 +26,20 @@ TURN180_S = 3.65          # a lane-end reversal (one-lane out-and-back)
 TURN_S = 6.0
 REVISIT_MARGIN_S = 2.0
 REACH_M = (config.PRIORITY_REVISIT_S - REVISIT_MARGIN_S - TURN_S) * config.WP_SPD_MS / 2
+
+# Mission B with two agents (the butterfly): each centre lane this far from the zone centre;
+# the half-lap phase may be PHASE_BUDGET_S off; an agent can join its loop every ENTRY_STEP_M,
+# so the phase can be chosen to PHASE_STEP_S. A 7 s budget: lanes 171 m, a 54 s lap (5 s gives
+# 194 m and 58 s, but the zone then went over 30 s in a third of the fake-backend runs).
+BUTTERFLY_OFFSET_M = config.D_MIN_M
+PHASE_BUDGET_S = 7.0
+PHASE_STEP_S = 1.0
+ENTRY_STEP_M = PHASE_STEP_S * config.WP_SPD_MS
+ACCEL_MS2 = 2.6           # measured ArduCopter speed-up: 0 -> 95 % of 10 m/s in 3.5-4.2 s
+# A plan reaches its agent this long after the state it was planned from (half a state period
+# old, two radio delays); LATE_S if one ASSIGN is lost.
+ON_TIME_S = 2 * config.RADIO_DELAY_S + 0.5 / config.STATE_HZ
+LATE_S = ON_TIME_S + 1 / config.ASSIGN_HZ
 
 # Simultaneously active slots this far apart: both agents within SLOT_REACH_M while D_MIN_M apart.
 ACTIVE_GAP_M = config.D_MIN_M + 2 * config.SLOT_REACH_M
@@ -280,6 +294,218 @@ def _zone_owner(ids, xy, zone, strip, previous):
     return min(ids, key=lambda a: math.dist(xy[a], centre))
 
 
+# ---- Mission B with two agents: the butterfly --------------------------------------------------
+# Each agent flies a two-lane loop: north on a centre lane through the zone, across, south on a
+# wing lane one swath further out, back. Either centre lane's footprint spans the zone; both are
+# flown northbound half a lap apart, so the zone is seen twice a lap.
+
+def _butterfly_strips(zone):
+    """(west, east) strips, lane_xs = [centre, wing]; lane ends centred on the zone, for a lap
+    that revisits it within PRIORITY_REVISIT_S - PHASE_BUDGET_S (half a lap, less the time a
+    pass sees a point). None if a footprint leaves the area or a centre lane misses the zone."""
+    x0, x1, y0, y1 = config.AREA
+    zone_x, zone_y = (zone[0] + zone[2]) / 2, (zone[1] + zone[3]) / 2
+    lap_s = 2 * (config.PRIORITY_REVISIT_S - PHASE_BUDGET_S + ALONG_M / config.WP_SPD_MS)
+    lane_m = (lap_s - 4 * TURN90_S) * config.WP_SPD_MS / 2 - SWATH_M
+    y_south, y_north = zone_y - lane_m / 2, zone_y + lane_m / 2
+    strips = []
+    for side in (-1, 1):
+        centre = zone_x + side * BUTTERFLY_OFFSET_M
+        wing = centre + side * SWATH_M
+        if (not x0 + SWATH_M / 2 <= wing <= x1 - SWATH_M / 2
+                or centre - SWATH_M / 2 > zone[0] or centre + SWATH_M / 2 < zone[2]
+                or y_south < y0 + _end_inset() or y_north > y1 - _end_inset()
+                or y_south > zone[1] or y_north < zone[3]):
+            return None
+        strips.append(_Strip(_lanes_strip([centre, wing]).share, [centre, wing], y_south, y_north))
+    return strips
+
+
+def _legs(asg, start, xy, vel):
+    """[(p, q, s)]: the legs flown from xy, moving at vel, at cruise: to slots[start], on through
+    the transit and twice round the loop. s: when the agent leaves p, its turn there included."""
+    def nxt(i):
+        return i + 1 if i + 1 < len(asg.slots) else asg.loop_from
+    points, i = [xy, asg.slots[start]], start
+    for _ in range(max(0, asg.loop_from - start) + 2 * (len(asg.slots) - asg.loop_from)):
+        i = nxt(i)
+        points.append(asg.slots[i])
+    legs, s = [], 0.0
+    before = (xy[0] - vel[0], xy[1] - vel[1])
+    for p, q in zip(points, points[1:]):
+        s += _turn_s(before, p, q)
+        legs.append((p, q, s))
+        s += math.dist(p, q) / config.WP_SPD_MS
+        before = p
+    return legs
+
+
+def _passes(legs, zone) -> list:
+    """[(s, x, northbound)]: when the legs fly over the zone centre on a lane whose footprint
+    spans the zone, straight on it since the zone's edge (a whole pass)."""
+    zone_x, zone_y = (zone[0] + zone[2]) / 2, (zone[1] + zone[3]) / 2
+    reach_m = SWATH_M / 2 - (zone[2] - zone[0]) / 2
+    out, run = [], None              # run: (x, direction, y it began at)
+    for p, q, s in legs:
+        if p[0] != q[0] or p[1] == q[1] or abs(p[0] - zone_x) > reach_m:
+            run = None
+            continue
+        d = 1 if q[1] > p[1] else -1
+        if run is None or run[:2] != (p[0], d):
+            run = (p[0], d, p[1])
+        edge = zone[1] if d > 0 else zone[3]
+        if (run[2] - edge) * d <= 0 and (p[1] - zone_y) * d <= 0 < (q[1] - zone_y) * d:
+            out.append((s + abs(zone_y - p[1]) / config.WP_SPD_MS, p[0], d > 0))
+    return out
+
+
+def _turn_s(a, b, c) -> float:
+    """Time lost turning at b from a->b to b->c: the CoverageController slows to its corner
+    speed at A_SLOW_MS2, the vehicle speeds up again at ACCEL_MS2. By angle, unlike the two
+    measured costs of _corner_cost_s: a phase depends on every turn of a transit."""
+    u, w = (b[0] - a[0], b[1] - a[1]), (c[0] - b[0], c[1] - b[1])
+    nu, nw = math.hypot(*u), math.hypot(*w)
+    if nu < 1e-6 or nw < 1e-6:
+        return 0.0
+    cos = (u[0] * w[0] + u[1] * w[1]) / (nu * nw)
+    if cos >= math.cos(math.radians(TURN_PASS_DEG)):
+        return 0.0
+    lost_ms = config.WP_SPD_MS - max(V_TURN_MIN_MS, config.WP_SPD_MS * cos)
+    return lost_ms ** 2 / (2 * config.WP_SPD_MS) * (1 / A_SLOW_MS2 + 1 / ACCEL_MS2)
+
+
+def _after(old, heading, vel):
+    """The slot after `heading` in the agent's old plan (the one flown into along vel where a
+    point repeats), or None."""
+    if old is None or heading is None:
+        return None
+    n = len(old.slots)
+    for i, p in enumerate(old.slots):
+        before = old.slots[i - 1] if i > 0 else old.slots[n - 1]
+        if (tuple(p) == tuple(heading)
+                and (p[0] - before[0]) * vel[0] + (p[1] - before[1]) * vel[1] >= 0):
+            return old.slots[i + 1 if i + 1 < n else old.loop_from]
+    return None
+
+
+def _entries(agent_id, strip, zone, motion, blacklist, previous):
+    """[(Assignment, [its _passes if it gets the plan ON_TIME_S, LATE_S after the state], s until
+    it is on the loop)], one per distinct outcome, for every ENTRY_STEP_M along the loop: a
+    transit ends there and the loop goes on from the next slot. start_slot starts a plan on the
+    slot the agent heads to, so a transit can begin there, or there and on the old plan's next
+    slot (reached before the plan arrives): the only ways to join behind a loop slot ahead. The
+    loop is _loop's, so corners keep their slow-down, less its blacklisted points (as _plan). The
+    previous plan only, if it is this strip's and has no blacklisted point."""
+    xy, vel, heading = motion
+    old = (previous or {}).get(agent_id)
+    after = _after(old, heading, vel)
+    bad = {key for a, key in blacklist if a == agent_id}
+
+    def heads_to(lag_s):
+        """The slot the agent heads to when the plan arrives lag_s late (None: unknown)."""
+        near_m = math.hypot(*vel) * lag_s + config.SLOT_REACH_M
+        return heading if heading is None or math.dist(xy, heading) > near_m else after
+    if old is not None and old.share == strip.share and not {slot_key(p) for p in old.slots} & bad:
+        plans = [old]
+    else:
+        prefixes = [[]] + [[_point(*p) for p in heads] for heads in ([heading], [heading, after])
+                           if None not in heads]
+        loop, plans = _loop(strip, True, True), []
+        if any(slot_key(p) in bad for p in loop):
+            loop = _close([p for p in loop if slot_key(p) not in bad], bad)
+        for j, (a, b) in enumerate(zip(loop, loop[1:] + loop[:1])):
+            leg_m = math.dist(a, b)
+            for k in range(math.ceil(leg_m / ENTRY_STEP_M)):
+                f = k * ENTRY_STEP_M / leg_m
+                entry = _point(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+                for prefix in prefixes:
+                    transit = prefix + _leg(prefix[-1] if prefix else xy, entry, set()) + [entry]
+                    slots = transit + loop[j + 1:] + loop[:j + 1]
+                    if not any(slot_key(p) in bad for p in slots):
+                        plans.append(Assignment(strip.share, slots, len(transit)))
+    out, seen = [], set()
+    for asg in plans:
+        passes = []
+        for lag_s in (ON_TIME_S, LATE_S):
+            at = (xy[0] + vel[0] * lag_s, xy[1] + vel[1] * lag_s)
+            first = start_slot(asg.slots, asg.loop_from, at, vel, heads_to(lag_s))
+            legs = _legs(asg, first, at, vel)
+            passes.append([(round(lag_s + s, 1), x, north) for s, x, north in _passes(legs, zone)])
+        start = start_slot(asg.slots, asg.loop_from, *motion)
+        on_s = round(_legs(asg, start, xy, vel)[max(0, asg.loop_from - start) + 1][2], 1)
+        outcome = (str(passes), on_s)
+        if outcome not in seen:
+            seen.add(outcome)
+            out.append((asg, passes, on_s))
+    return out
+
+
+def _since_seen_s(ids, zone, motion, previous) -> float:
+    """Seconds since the zone centre was last flown over, from the zone lane's out-and-back (the
+    agent flying it, LOST_S if it was lost; the zone owner of Mission B with three agents)."""
+    strip = _zone_strip(zone)
+    zone_y = (zone[1] + zone[3]) / 2
+    for a in ids:
+        if (previous or {}).get(a) is not None and previous[a].share == strip.share:
+            (_, y), (_, vy), _ = motion[a]
+            end = strip.y_north if vy < 0 else strip.y_south     # the end it came from
+            if (y - zone_y) * vy >= 0:                            # past the centre
+                return abs(y - zone_y) / config.WP_SPD_MS
+            return (abs(zone_y - end) + abs(y - end)) / config.WP_SPD_MS + TURN180_S
+    return config.LOST_S
+
+
+def _worst_gap_s(west, east, centres, since_s, lap_s):
+    """(longest zone gap, phase error) from two agents' _passes: the gap until the first pass
+    (since_s before now), between passes, and between centre-lane passes half a lap apart."""
+    last = [max((s for s, x, north in passes if x == centre and north), default=None)
+            for passes, centre in zip((west, east), centres)]
+    if None in last:              # blacklisted points broke a centre lane
+        return math.inf, math.inf
+    error_s = abs((last[0] - last[1]) % lap_s - lap_s / 2)
+    horizon_s = min(last)
+    times = sorted(s for s, _, _ in west + east if s <= horizon_s)
+    gaps = [since_s + times[0], lap_s / 2 + error_s] + [b - a for a, b in zip(times, times[1:])]
+    return max(gaps), error_s
+
+
+def _butterfly_plans(ids, zone, motion, blacklist, previous):
+    """Two agents on the butterfly, or None (it does not fit, or every entry is blacklisted).
+    Sides: the previous ones, else the western agent west (ties: lower id); no crossing. An
+    agent with its previous butterfly plan keeps it. Choice: no clash for _respace_transits to
+    move (it would drop an entry), the shortest predicted zone gap in whole PHASE_STEP_S (each
+    plan on time or late), the smallest phase error, both on their loops soonest; ties: the
+    first in loop order."""
+    strips = _butterfly_strips(zone)
+    if strips is None:
+        return None
+    loop = _loop(strips[0], True, True)
+    lap_s = _legs(Assignment([], loop, 0), 0, loop[-1], (0.0, 0.0))[len(loop)][2]
+    shares = [strip.share for strip in strips]
+    perm = sorted(ids, key=lambda a: (motion[a][0][0], a))
+    if any(old.share in shares and shares.index(old.share) != perm.index(a)
+           for a, old in (previous or {}).items() if a in ids):
+        perm = perm[::-1]
+    sides = [_entries(a, strip, zone, motion[a], blacklist, previous)
+             for a, strip in zip(perm, strips)]
+    centres = [_point(strip.lane_xs[0], 0)[0] for strip in strips]
+    since_s = _since_seen_s(ids, zone, motion, previous)
+    best_key, best = None, None
+    for (west, west_passes, west_on), (east, east_passes, east_on) in itertools.product(*sides):
+        moved = [asg for a, asg in zip(perm, (west, east)) if asg is not (previous or {}).get(a)]
+        clash = bool(moved) and _gap_m(_first_slots(west, motion[perm[0]]),
+                                       _first_slots(east, motion[perm[1]])) < ACTIVE_GAP_M
+        gaps, errors = zip(*(_worst_gap_s(w, e, centres, since_s, lap_s)
+                             for w in west_passes for e in east_passes))
+        if math.inf in gaps:
+            continue
+        key = (clash, round(max(gaps) / PHASE_STEP_S), round(max(errors), 1),
+               round(max(west_on, east_on), 1))
+        if best_key is None or key < best_key:
+            best_key, best = key, dict(zip(perm, (west, east)))
+    return best
+
+
 # ---- active slots apart --------------------------------------------------------------------------
 
 def _first_slots(asg, motion) -> list:
@@ -339,15 +565,21 @@ def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
     not be issued. previous: the last result; an agent whose share is unchanged and whose old
     plan has no blacklisted point keeps its old Assignment object (no churn).
     priority_zone: (xmin, ymin, xmax, ymax) for Mission B, else None. Its owner flies the zone
-    lane; the other agents share the rest of the area (_remainder_lanes) in lane groups.
+    lane; the other agents share the rest of the area (_remainder_lanes) in lane groups. Two
+    agents fly the butterfly instead, where it fits (_butterfly_plans).
     reverse: hand the groups out in reverse order (only the ground's "swap" test hook).
     velocities {id: (vx, vy)} and heading {id: slot xy} (missing: standing, unknown) predict
     where each agent's CoverageController starts (coverage.start_slot).
     """
     xy = {a: [positions[a][0], positions[a][1]] for a in agent_ids}
     ids = sorted(agent_ids)
+    motion = {a: (xy[a], (velocities or {}).get(a, (0.0, 0.0)), (heading or {}).get(a))
+              for a in xy}
     result, lanes = {}, None
-    if priority_zone is not None:
+    if priority_zone is not None and len(ids) == 2:
+        result = _butterfly_plans(ids, priority_zone, motion, blacklist, previous) or {}
+        ids = [] if result else ids
+    if priority_zone is not None and ids:
         strip = _zone_strip(priority_zone)
         owner = _zone_owner(ids, xy, priority_zone, strip, previous)
         result[owner] = _keep_or_plan(owner, xy[owner], strip, blacklist, previous)
@@ -355,6 +587,4 @@ def allocate(agent_ids, positions: dict, blacklist: set, previous: dict = None,
         lanes = _remainder_lanes(strip.share)
     if ids:
         result.update(_group_plans(ids, xy, blacklist, previous, reverse, lanes))
-    motion = {a: (xy[a], (velocities or {}).get(a, (0.0, 0.0)), (heading or {}).get(a))
-              for a in xy}
     return _respace_transits(dict(sorted(result.items())), previous, motion, blacklist)
