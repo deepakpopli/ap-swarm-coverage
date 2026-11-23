@@ -91,9 +91,9 @@ METRICS = [   # (key = path in metrics.json, label, unit, digits)
     ("control.max_p99_period_s", "Setpoint period p99, worst agent", "s", 3),
     ("control.max_period_s", "Setpoint period max, worst agent", "s", 3),
     ("control.max_ground_speed_ms",
-     "Max ground speed, logged velocity (vx, vy; autopilot EKF estimate)", "m/s", 2),
+     "Max ground speed, logged velocity (vx, vy; as the autopilot reports it)", "m/s", 2),
     ("extra.max_speed_position_ms",
-     "Max ground speed, position differences over 1 s (EKF positions)", "m/s", 2),
+     "Max ground speed, position differences over 1 s (reported positions)", "m/s", 2),
     ("radio.loss_pct", "Radio: loss rate", "%", 1),
     ("radio.delay_mean_s", "Radio: mean delay", "s", 3),
     ("radio.delay_max_s", "Radio: max delay", "s", 3),
@@ -487,8 +487,9 @@ def render(name, runs, summary, refs=(), baselines=()):
             lines.append(f"| {label} | {unit} | {cell(summary[key], digits)} "
                          f"| {summary[key]['n']} |")
     mismatched = [m["run"] for m in runs if m["churn"]["epoch_mismatch"]]
-    lines += ["", "Both speeds are the autopilots' EKF estimates (logged velocity and logged "
-              "position), not simulator truth.",
+    lines += ["", "Both speeds are what the autopilots report (logged velocity and position). Under "
+              "Gazebo that is the simulator's own state: its JSON backend sets AHRS_EKF_TYPE 10 "
+              "(no EKF), so a GPS fault there changes nothing.",
               "", "Re-plans by trigger, all runs: " + trigger_sum(runs, "replans_by_trigger")
               + "; in the warm-up: " + trigger_sum(runs, "replans_warmup_by_trigger") + ".",
               "Agents' epoch columns vs ground re-plans: "

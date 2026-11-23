@@ -1,4 +1,4 @@
-"""Metrics of one run, from each agent's logged position (its autopilot's EKF estimate) and the
+"""Metrics of one run, from each agent's logged position (as its autopilot reports it) and the
 camera footprint.
 
 Definitions: the functions below. Usage: python -m analysis.metrics RUN_DIR
