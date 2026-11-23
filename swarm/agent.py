@@ -127,7 +127,7 @@ class Agent:
         elif kind == "SWARM_START" and msg.t0_usec / 1e6 != self.t0:
             self.t0 = msg.t0_usec / 1e6
             self.events.write(now, "start", t0=self.t0)
-        elif kind == "SWARM_ASSIGN":
+        elif kind == "SWARM_ASSIGN" and msg.target_system == self.id:   # a shared radio hears all
             event = self.coverage.on_assign(msg.epoch, protocol.assign_slots(msg),
                                             msg.loop_from, st.pos, st.vel,
                                             protocol.assign_speed_ms(msg))

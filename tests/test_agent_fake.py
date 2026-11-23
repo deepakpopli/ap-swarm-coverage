@@ -167,3 +167,15 @@ def test_real_time_loop_ticks_at_20_hz(tmp_path):
     periods = [b - a for a, b in zip(t_wall, t_wall[1:])]
     assert sum(periods) / len(periods) == pytest.approx(TICK_S, abs=0.002)
     assert max(periods) < 2.5 * TICK_S
+
+
+def test_an_assign_for_another_drone_is_ignored(tmp_path):
+    """On a shared radio every agent hears every ASSIGN; only its own may change its plan."""
+    rig = Rig(tmp_path)
+    rig.run_until("ready")
+    other = protocol.assign(2, 5, [0, 300, 0, 300], [[10.0, 100.0]], 0)
+    rig.agent._on_message(other, rig.clock(), rig.vehicle.state())
+    assert rig.agent.coverage.epoch is None
+    mine = protocol.assign(1, 5, [0, 300, 0, 300], [[10.0, 100.0]], 0)
+    rig.agent._on_message(mine, rig.clock(), rig.vehicle.state())
+    assert rig.agent.coverage.epoch == 5
