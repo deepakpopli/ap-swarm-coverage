@@ -3,6 +3,7 @@ Off by default: without SWARM_DEMO the world and model files are the evaluation'
 
 - body_model(): a per-drone copy of iris_with_standoffs, DRONE_SCALE x the iris in the drone's
   colour (DRONE_COLORS: blue, dark green, black), with a faint blur disc on each prop.
+- scenery_sdf(): with SWARM_DEMO_GROUND=field, trees and parked cars around the field.
 - overlays_sdf(): one static model with visuals only (no collision, no inertial): a white
   ground visual, the yellow 300 x 300 m border, subtle lane lines and, with SWARM_DEMO_ZONE=1,
   the Mission B priority zone border (red). Part of the world file: it cannot lag.
@@ -16,6 +17,7 @@ motors, physical_params() the autopilot. Without SWARM_DEMO_PHYSICS (or with sca
 drones are the stock iris.
 """
 import os
+import random
 import shutil
 import xml.etree.ElementTree as ET
 
@@ -64,20 +66,27 @@ BORDER_RGB = (1.0, 0.85, 0.0)           # yellow
 ZONE_RGB = (1.0, 0.0, 0.0)              # red
 LANE_RGB = (0.70, 0.70, 0.70)
 GROUND_RGB = (0.97, 0.97, 0.97)         # white field, dark drones stand out
-# SWARM_DEMO_GROUND=field: farmland instead of the white field (a procedural texture, about 1 m a
-# pixel), and colours that stand out on dark green: bright drones, a white border.
+# SWARM_DEMO_GROUND=field: farmland instead of the white field (tools/field_texture.py, about 1 m
+# a pixel) with trees and parked cars around it, no lane lines, a thin tan border, and drone
+# colours that stand out on dark green by brightness.
 FIELD = os.environ.get("SWARM_DEMO_GROUND") == "field"
 FIELD_TEXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "field.jpg")
 if FIELD:     # no orange: compressed video turns it into the red of the zone
-    DRONE_COLORS = ["#ffd60a", "#22d3ee", "#ff4fd8", "#ffffff", "#a3e635"]   # yellow, cyan, magenta
-    BORDER_RGB = (1.0, 1.0, 1.0)
-    ZONE_RGB = (1.0, 0.165, 0.12)
-    LANE_RGB = (1.0, 1.0, 1.0)
+    DRONE_COLORS = ["#3b7bff", "#ffd60a", "#ffffff", "#22d3ee", "#a3e635"]   # blue, yellow, white
+    BORDER_RGB = (0.36, 0.32, 0.24)     # light tan, like a field margin
+    ZONE_RGB = (0.80, 0.08, 0.05)
 BORDER_W_M = 1.0
 ZONE_W_M = 0.8
 LANE_W_M = 0.2
 if FIELD:
-    BORDER_W_M, ZONE_W_M, LANE_W_M = 2.0, 1.5, 0.8
+    ZONE_W_M = 1.2
+# the field's surroundings: trees and cars from Gazebo Fuel (in ~/.gz/fuel once downloaded).
+# The pine is 5 m tall and the oak 6.5 m as they come; beside a 6x drone they are scaled up.
+FUEL = "https://fuel.gazebosim.org/1.0/openrobotics/models"
+TREE_MESH = {"pine": ("pine tree/6", "pine_tree.dae", "branch_2_diffuse.png", 2.4, 3.4),
+             "oak": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 1.3, 1.9)}
+# parked beside the track south of the field (tools/field_texture.py draws it at y about -38)
+CARS = [("suv", 118.0, -32.0, 5.0), ("pickup", 127.0, -31.5, -4.0), ("hatchback", 182.0, -43.0, 170.0)]
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)   # run_mission.py MIDDLE_ZONE (Mission B default)
 
 # Only rendering uses these (the window); the physics ignores them.
@@ -285,6 +294,45 @@ def _rectangle(prefix: str, x0, y0, x1, y1, width, z, colour) -> list:
             _bar(f"{prefix}_e", x1, y0, x1, y1, width, z, colour)]
 
 
+def trees() -> list:
+    """(kind, x, y, yaw deg, scale) of every tree, the same on every run: hedgerows north, east
+    and (thinner) west of the field and three copses, none on the field or south of it, where
+    the track, the cars and the overview camera are."""
+    rng = random.Random(7)
+    spots = [(x, 338.0) for x in range(-30, 340, 24)] + [(338.0, y) for y in range(-10, 320, 26)]
+    spots += [(-34.0, y) for y in range(40, 330, 48)]
+    for cx, cy, n in ((385.0, 385.0, 7), (400.0, -95.0, 6), (-100.0, 300.0, 6)):
+        spots += [(cx + rng.uniform(-28, 28), cy + rng.uniform(-28, 28)) for _ in range(n)]
+    out = []
+    for x, y in spots:
+        kind = "oak" if rng.random() < 0.4 else "pine"
+        out.append((kind, x + rng.uniform(-4, 4), y + rng.uniform(-4, 4), rng.uniform(0, 360),
+                    rng.uniform(*TREE_MESH[kind][3:])))
+    return out
+
+
+def scenery_sdf() -> str:
+    """The trees as one static model of visuals only (nothing to collide with, and an <include>
+    cannot scale) and the parked cars as Fuel includes. Empty without SWARM_DEMO_GROUND=field."""
+    if not FIELD:
+        return ""
+    visuals = []
+    for k, (kind, x, y, yaw, s) in enumerate(trees()):
+        model, mesh, leaves, _, _ = TREE_MESH[kind]
+        for part, texture, two in (("Branch", leaves, "true"), ("Bark", "bark_diffuse.png", "false")):
+            visuals.append(
+                f'<visual name="tree_{k}_{part}"><pose degrees="true">{x:.1f} {y:.1f} 0 0 0 {yaw:.0f}</pose>'
+                f"<geometry><mesh><uri>{FUEL}/{model}/files/meshes/{mesh}</uri><submesh><name>{part}"
+                f"</name></submesh><scale>{s:.2f} {s:.2f} {s:.2f}</scale></mesh></geometry>"
+                f"<material><double_sided>{two}</double_sided><diffuse>1 1 1</diffuse><pbr><metal>"
+                f"<albedo_map>{FUEL}/{model}/files/materials/textures/{texture}</albedo_map>"
+                "</metal></pbr></material></visual>")
+    cars = [f'    <include><uri>{FUEL}/{name}</uri><name>parked_{name}</name>'
+            f'<pose degrees="true">{x} {y} 0 0 0 {yaw}</pose></include>' for name, x, y, yaw in CARS]
+    return ('    <model name="demo_trees"><static>1</static><link name="link">\n      '
+            + "\n      ".join(visuals) + "\n    </link></model>\n" + "\n".join(cars) + "\n")
+
+
 def overlays_sdf(lane_xs_m: list, zone: bool = False) -> str:
     """One static, visual-only model: ground visual, yellow border, lanes, optional priority zone."""
     xmin, xmax, ymin, ymax = config.AREA
@@ -298,7 +346,7 @@ def overlays_sdf(lane_xs_m: list, zone: bool = False) -> str:
                f"<normal>0 0 1</normal><size>{size_m} {size_m}</size></plane></geometry>"
                f"{ground}</visual>"]
     visuals += _rectangle("border", xmin, ymin, xmax, ymax, BORDER_W_M, 0.05, BORDER_RGB)
-    for k, x in enumerate(lane_xs_m):
+    for k, x in enumerate([] if FIELD else lane_xs_m):     # no lane lines on farmland
         visuals.append(_bar(f"lane_{k}", x, ymin, x, ymax, LANE_W_M, 0.03, LANE_RGB, 0.2))
     if zone:
         zx0, zy0, zx1, zy1 = MIDDLE_ZONE

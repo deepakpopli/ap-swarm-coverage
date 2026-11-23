@@ -96,7 +96,8 @@ def generate(out_dir: str, positions: list, origin: tuple, demo: bool = False,
         ground = '    <model name="ground">'
         text = text.replace(ground, demo_world.SUN_AND_SKY + "\n" + ground)
         text = text.replace("</collision></link></model>\n", "</collision></link></model>\n"
-                            + demo_world.overlays_sdf(area_lanes(), demo_zone) + "\n")
+                            + demo_world.overlays_sdf(area_lanes(), demo_zone) + "\n"
+                            + demo_world.scenery_sdf())
     with open(path, "w") as f:
         f.write(text)
     return path

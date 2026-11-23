@@ -21,7 +21,7 @@ NEVER = -1                     # heat value of a cell never seen
 SEND_EVERY = 2                 # 20 Hz rows -> 10 Hz to the browser; enough for drawing
 DRONE_COLORS = ("#1f5fd6", "#0b6b2a", "#111111")   # blue, dark green, black
 if os.environ.get("SWARM_DEMO_GROUND") == "field":   # the live view's bright drones, darker for a light map
-    DRONE_COLORS = ("#b58900", "#0891b2", "#c026d3")
+    DRONE_COLORS = ("#1d4ed8", "#b58900", "#64748b")   # blue, yellow, white (as grey)
 
 COLUMN_X_M = np.arange(config.AREA[0] + CELL_M / 2, config.AREA[1], CELL_M)
 ROW_Y_M = np.arange(config.AREA[2] + CELL_M / 2, config.AREA[3], CELL_M)
