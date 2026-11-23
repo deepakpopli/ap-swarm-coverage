@@ -60,7 +60,7 @@ def test_physical_drone_is_the_iris_froude_scaled():
         assert float(twin.find("inertial/inertia/izz").text) == pytest.approx(
             float(link.find("inertial/inertia/izz").text) * s ** 5)
     rotor = big.find("link[@name='rotor_0']")
-    assert rotor.find("pose").text.split()[:3] == ["0.78", "-1.32", "0.138"]
+    assert rotor.find("pose").text.split()[:3] == ["0.7902", "-1.3248", "0.138"]
     # the prop you see is the rotor: no extra links or plugins, a blur disc on the rotor
     assert len(big.findall("link")) == len(stock.findall("link"))
     assert big.find("plugin") is None
@@ -160,3 +160,45 @@ def test_blades_stay_inside_their_blur_disc_on_the_hub():
         assert (x, y) == (0, 0)                          # on the hub, the joint axis
         assert z == pytest.approx(6 * demo_world.PROP_LIFT_M)   # level with the blades
         assert float(disc.find("geometry/cylinder/radius").text) >= 6 * tip
+
+
+def mesh_xyz(dae_path):
+    """Vertices of a COLLADA mesh in model units: positions x their node's matrix."""
+    root, ns = ET.parse(dae_path).getroot(), "{http://www.collada.org/2005/11/COLLADASchema}"
+    for node in root.iter(ns + "node"):
+        if node.find(ns + "instance_geometry") is not None:
+            m = [float(x) for x in node.find(ns + "matrix").text.split()]
+    v = [float(x) for a in root.iter(ns + "float_array") if "positions" in a.get("id", "")
+         for x in a.text.split()]
+    return [tuple(sum(m[4 * r + c] * p[c] for c in range(3)) + m[4 * r + 3] for r in range(3))
+            for p in zip(v[0::3], v[1::3], v[2::3])]
+
+
+def centre(points):
+    return tuple((min(c) + max(c)) / 2 for c in list(zip(*points))[:2])
+
+
+@needs_ap_gazebo
+def test_each_prop_hub_sits_on_its_motor_shaft():
+    with open(STANDOFFS) as f:
+        stock = f.read()
+    meshes = os.path.join(os.path.dirname(STANDOFFS), "meshes")
+    body = mesh_xyz(os.path.join(meshes, "iris.dae"))
+    s = 6.0
+    model = ET.fromstring(demo_world.body_model(stock, demo_world.DRONE_COLORS[0], scale=s))
+    base = model.find(".//link[@name='base_link']/visual[@name='base_visual']")
+    bx, by = map(float, base.find("pose").text.split()[:2])
+    for link in model.iter("link"):
+        if not link.get("name").startswith("rotor_"):
+            continue
+        lx, ly = map(float, link.find("pose").text.split()[:2])
+        # the motor shaft: the top 1 cm of the motor under this rotor, in the scaled body
+        shaft = centre([p for p in body if p[2] > 0.022
+                        and math.hypot(p[0] * s + bx - lx, p[1] * s + by - ly) < 0.025 * s])
+        prop = link.find("visual")
+        px, py = map(float, prop.find("pose").text.split()[:2])
+        blades = mesh_xyz(os.path.join(meshes, prop.findtext("geometry/mesh/uri").split("/")[-1]))
+        hub = centre([p for p in blades if abs(p[2]) > 0.0045 and math.hypot(p[0], p[1]) < 0.012])
+        # the hub on the rotor axis (it spins about the link origin) and on the shaft, within 1 mm
+        assert math.hypot(px + hub[0] * s, py + hub[1] * s) < 0.001 * s
+        assert math.hypot(shaft[0] * s + bx - lx, shaft[1] * s + by - ly) < 0.001 * s

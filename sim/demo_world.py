@@ -28,6 +28,16 @@ BLUR_TRANSPARENCY = 0.75  # a screen recording strobes the blades, the faint dis
 # The stock iris puts the prop (rotor z 0.023 m, blade +-0.005 m) 2.5 mm into the motor bell
 # (top at z 0.0205 m in iris.dae). Unseen at 1x, 1.5 cm into the motor at 6x: lift it onto the bell.
 PROP_LIFT_M = 0.0205 + 0.005 - 0.023
+# iris.dae has its motor shafts at x 0.1251 / -0.1383, y -0.2191 / 0.2225 front, 0.2061 / -0.2027
+# rear: the mesh sits 6.6 mm aft and 1.7 mm left of the model origin, and the stock rotors
+# (x +-0.13, y +-0.22 front, +-0.20 rear) are up to 10 mm off their shafts. The prop meshes have
+# their hub off their origin too. Unseen at 1x, a prop beside its motor at 6x: centre the mesh,
+# put each rotor on its shaft (symmetric about the origin, so the centre of mass stays the
+# rotors' centre) and each prop's hub on its rotor axis.
+BODY_MESH_SHIFT_M = (0.0066, -0.0017)
+MOTOR_XY_M = {"rotor_0": (0.1317, -0.2208), "rotor_1": (-0.1317, 0.2044),
+              "rotor_2": (0.1317, 0.2208), "rotor_3": (-0.1317, -0.2044)}
+PROP_HUB_XY_M = {"iris_prop_ccw.dae": (-0.0044, -0.0004), "iris_prop_cw.dae": (-0.0007, 0.0001)}
 # autopilot gains as (stock value, power of s). Angular acceleration per unit of motor output
 # goes as 1/s and the loops must be t = s^1/2 slower: a rate P x t, its I x 1, its D x s; gains
 # in 1/s and filter corners x 1/t; angular acceleration limits x 1/s; time constants x t.
@@ -167,13 +177,22 @@ def body_model(sdf_text: str, colour_hex: str, scale: float = DRONE_SCALE) -> st
         _scale_pose(visual, scale)
         _scale_geometry(visual.find("geometry"), scale)
         _set_material(visual, colour)
+        if visual.findtext("geometry/mesh/uri", "").endswith("/iris.dae"):
+            if visual.find("pose") is None:    # the stock mesh visual has none (0 0 0)
+                ET.SubElement(visual, "pose")
+            x, y = BODY_MESH_SHIFT_M
+            visual.find("pose").text = f"{x * scale:g} {y * scale:g} 0 0 0 0"
     _scale_physics(model, scale)
     for link in model.findall("link"):
         if not link.get("name", "").startswith("rotor_"):
             continue
+        pose = link.find("pose").text.split()
+        pose[:2] = (f"{v * scale:g}" for v in MOTOR_XY_M[link.get("name")])
+        link.find("pose").text = " ".join(pose)
         # the prop you see is the rotor: it turns as fast as the motor does
         prop = link.find("visual")
-        prop.find("pose").text = f"0 0 {PROP_LIFT_M * scale:g} 0 0 0"
+        hx, hy = PROP_HUB_XY_M[prop.findtext("geometry/mesh/uri").rsplit("/", 1)[-1]]
+        prop.find("pose").text = f"{-hx * scale:g} {-hy * scale:g} {PROP_LIFT_M * scale:g} 0 0 0"
         _scale_geometry(prop.find("geometry"), scale)
         _set_material(prop, colour)
         _blur_disc(link, colour, scale)
