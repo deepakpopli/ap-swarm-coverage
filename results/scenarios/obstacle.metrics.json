@@ -5,12 +5,13 @@
  "seed": 1,
  "n": 3,
  "backend": "gazebo",
+ "git_commit": "8cb63fead1c35f349797ccfaa185a1a8aea310ce",
  "victim": null,
  "end_s": 240.0,
  "coverage": {
-  "mean_pct": 96.08182572614109,
-  "end_of_run_pct": 95.29376344086023,
-  "end_of_run_min_pct": 87.60444444444444
+  "mean_pct": 96.96271092669431,
+  "end_of_run_pct": 97.27383512544803,
+  "end_of_run_min_pct": 95.03555555555555
  },
  "unseen": {
   "whole": {
@@ -18,8 +19,8 @@
     0.0,
     240.0
    ],
-   "worst_s": 81.0,
-   "cells_over_60s_pct": 52.6,
+   "worst_s": 83.10000014305115,
+   "cells_over_60s_pct": 52.13333333333333,
    "cells_over_90s_pct": 0.0
   }
  },
@@ -28,22 +29,22 @@
  "mission_b": null,
  "mission_c": null,
  "churn": {
-  "whole_per_agent_min": 0.0,
-  "replans_by_trigger": {},
-  "replans_warmup_by_trigger": {
+  "whole_per_agent_min": 0.08333333333333333,
+  "replans_by_trigger": {
    "infeasible": 1
   },
+  "replans_warmup_by_trigger": {},
   "epoch_mismatch": {}
  },
  "safety": {
   "min_separation_m": 9.98999999999998,
-  "min_separation_from_10s_m": 47.54063853525759,
+  "min_separation_from_10s_m": 49.31707316374457,
   "below_d_min_s": 0.0,
   "infeasible_accepted": 1,
   "infeasible_ignored": 0,
   "per_agent": {
    "1": {
-    "brake_s": 17.899999618530273,
+    "brake_s": 16.899999618530273,
     "deaf_s": 0.0
    },
    "2": {
@@ -55,22 +56,22 @@
     "deaf_s": 0.0
    }
   },
-  "brake_s": 17.899999618530273,
+  "brake_s": 16.899999618530273,
   "deaf_s": 0.0
  },
  "control": {
   "min_rate_hz": 19.99999999602553,
   "max_p99_period_s": 0.05000019073486328,
-  "max_period_s": 0.05000019073486328,
-  "max_ground_speed_ms": 11.5
+  "max_period_s": 0.05099987983703613,
+  "max_ground_speed_ms": 11.500017391291198
  },
  "radio": {
-  "sent": 18116,
-  "delivered": 14486,
+  "sent": 18118,
+  "delivered": 14488,
   "dropped_loss": 3623,
   "dropped_window": 0,
-  "delay_mean_s": 0.2001464282809643,
-  "delay_max_s": 0.2009139060974121,
-  "loss_pct": 19.99889600353279
+  "delay_mean_s": 0.20015715497886852,
+  "delay_max_s": 0.20103120803833008,
+  "loss_pct": 19.996688376200463
  }
 }

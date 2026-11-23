@@ -1,8 +1,8 @@
-obstacle: ok on attempt 1
 swap: ok on attempt 1
+obstacle: ok on attempt 1
 agentdeath: ok on attempt 1
+payloadfail: ok on attempt 2 (failed before: invalid: real-time factor 0.94 < 0.95 at the end)
 groundloss: ok on attempt 1
 radiooutage: ok on attempt 1
-C_s1: ok on attempt 1 (rerun 2026-11-23 on the final code)
-B_s1: ok on attempt 1 (2026-11-23)
-payloadfail: ok on attempt 1 (2026-11-23, after the failsafe-neighbour fix)
+C_s1: ok on attempt 1
+B_s1: ok on attempt 1 (2026-11-23, by hand: run_mission.py --mission B --seed 1)

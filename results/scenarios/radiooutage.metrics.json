@@ -5,12 +5,13 @@
  "seed": 1,
  "n": 3,
  "backend": "gazebo",
+ "git_commit": "8cb63fead1c35f349797ccfaa185a1a8aea310ce",
  "victim": null,
  "end_s": 180.0,
  "coverage": {
-  "mean_pct": 96.34399017802332,
-  "end_of_run_pct": 97.79741935483872,
-  "end_of_run_min_pct": 96.16
+  "mean_pct": 96.3870104358502,
+  "end_of_run_pct": 97.74078853046593,
+  "end_of_run_min_pct": 96.09333333333333
  },
  "unseen": {
   "whole": {
@@ -18,8 +19,8 @@
     0.0,
     180.0
    ],
-   "worst_s": 73.54999995231628,
-   "cells_over_60s_pct": 42.48444444444445,
+   "worst_s": 74.34999990463257,
+   "cells_over_60s_pct": 42.84,
    "cells_over_90s_pct": 0.0
   }
  },
@@ -35,40 +36,40 @@
  },
  "safety": {
   "min_separation_m": 9.98999999999998,
-  "min_separation_from_10s_m": 71.15641050859857,
+  "min_separation_from_10s_m": 71.21453023543053,
   "below_d_min_s": 0.0,
   "infeasible_accepted": 0,
   "infeasible_ignored": 0,
   "per_agent": {
    "1": {
     "brake_s": 0.0,
-    "deaf_s": 7.299999952316284
+    "deaf_s": 7.200000047683716
    },
    "2": {
     "brake_s": 0.0,
-    "deaf_s": 7.299999952316284
+    "deaf_s": 7.199999809265137
    },
    "3": {
     "brake_s": 0.0,
-    "deaf_s": 7.25
+    "deaf_s": 7.199999809265137
    }
   },
   "brake_s": 0.0,
-  "deaf_s": 21.84999990463257
+  "deaf_s": 21.59999966621399
  },
  "control": {
   "min_rate_hz": 19.99999999470034,
   "max_p99_period_s": 0.051000118255615234,
   "max_period_s": 0.051000118255615234,
-  "max_ground_speed_ms": 11.500017391291198
+  "max_ground_speed_ms": 11.5
  },
  "radio": {
   "sent": 5649,
   "delivered": 4512,
   "dropped_loss": 1129,
   "dropped_window": 0,
-  "delay_mean_s": 0.2001534992604391,
-  "delay_max_s": 0.20092225074768066,
+  "delay_mean_s": 0.20016662961413675,
+  "delay_max_s": 0.20079302787780762,
   "loss_pct": 19.985838201451585
  }
 }

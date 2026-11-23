@@ -1,17 +1,17 @@
 {
- "run": "payloadfail_s1",
+ "run": "payloadfail",
  "mission": "A",
  "scenario": "payloadfail",
  "seed": 1,
  "n": 3,
  "backend": "gazebo",
- "git_commit": "1dd0e9175ffa6eff86c6c2496f38ae49e8cf6839",
+ "git_commit": "8cb63fead1c35f349797ccfaa185a1a8aea310ce",
  "victim": 1,
  "end_s": 180.0,
  "coverage": {
-  "mean_pct": 95.98578268876611,
-  "end_of_run_pct": 95.16301075268818,
-  "end_of_run_min_pct": 90.64
+  "mean_pct": 96.09240024554941,
+  "end_of_run_pct": 95.61763440860216,
+  "end_of_run_min_pct": 91.43111111111111
  },
  "unseen": {
   "whole": {
@@ -19,49 +19,49 @@
     0.0,
     180.0
    ],
-   "worst_s": 108.25,
-   "cells_over_60s_pct": 75.86222222222221,
-   "cells_over_90s_pct": 3.6666666666666665
+   "worst_s": 107.9539999961853,
+   "cells_over_60s_pct": 74.82666666666667,
+   "cells_over_90s_pct": 3.8177777777777777
   },
   "before": {
    "phase_s": [
     0.0,
-    64.14381623268127
+    64.15146541595459
    ],
-   "worst_s": 67.44999980926514,
-   "cells_over_60s_pct": 37.41777777777778,
+   "worst_s": 67.5,
+   "cells_over_60s_pct": 37.413333333333334,
    "cells_over_90s_pct": 0.0
   },
   "after": {
    "phase_s": [
-    64.14381623268127,
+    64.15146541595459,
     180.0
    ],
-   "worst_s": 108.25,
-   "cells_over_60s_pct": 75.81777777777778,
-   "cells_over_90s_pct": 3.6666666666666665
+   "worst_s": 107.9539999961853,
+   "cells_over_60s_pct": 74.78222222222223,
+   "cells_over_90s_pct": 3.8177777777777777
   }
  },
  "loss": {
-  "loss_s": 64.14381623268127,
-  "lost_declared_s": 65.998,
-  "before_pct": 97.5777037037037,
-  "before_min_pct": 95.82222222222222,
-  "after_mean_pct": 95.22373015873016,
-  "after_min_pct": 90.64,
-  "share_pct": 65.0518024691358,
-  "after_over_share": 1.4638138613285867,
+  "loss_s": 64.15146541595459,
+  "lost_declared_s": 65.596,
+  "before_pct": 97.59222222222223,
+  "before_min_pct": 95.77333333333333,
+  "after_mean_pct": 95.66293650793651,
+  "after_min_pct": 91.43111111111111,
+  "share_pct": 65.06148148148148,
+  "after_over_share": 1.4703467294264603,
   "recovery_s": 0.0,
-  "recovery_threshold_pct": 87.81993333333334,
+  "recovery_threshold_pct": 87.83300000000001,
   "recovery_to_share_s": 0.0,
-  "recovery_to_share_threshold_pct": 58.54662222222222,
-  "dip_pct": 90.64,
-  "dip_after_loss_s": 115.85618376731873,
-  "deficit_pct_s": 312.5040740740741,
+  "recovery_to_share_threshold_pct": 58.55533333333333,
+  "dip_pct": 91.43111111111111,
+  "dip_after_loss_s": 115.84853458404541,
+  "deficit_pct_s": 298.46000000000106,
   "milestones_s": {
-   "lost_declared": 1.8541837673187302,
-   "assignment_received": 2.0965194702148438,
-   "on_new_loop": 2.0965194702148438,
+   "lost_declared": 1.4445345840454138,
+   "assignment_received": 2.694509983062744,
+   "on_new_loop": 1.6845099925994873,
    "recovered": 0.0
   }
  },
@@ -69,19 +69,19 @@
   "before": {
    "phase_s": [
     0.0,
-    64.14381623268127
+    64.15146541595459
    ],
-   "worst_completed_s": 57.90000009536743,
-   "worst_open_s": 61.003480672836304,
+   "worst_completed_s": 58.10000014305115,
+   "worst_open_s": 60.95548987388611,
    "no_completed_gap_pct": 0.0
   },
   "after": {
    "phase_s": [
-    65.998,
+    65.596,
     180.0
    ],
-   "worst_completed_s": 68.14999985694885,
-   "worst_open_s": 65.55966424942017,
+   "worst_completed_s": 67.59999990463257,
+   "worst_open_s": 65.15402460098267,
    "no_completed_gap_pct": 0.0
   }
  },
@@ -89,7 +89,7 @@
  "mission_c": null,
  "churn": {
   "before_per_agent_min": 0.0,
-  "after_per_agent_min": 0.2589417243386066,
+  "after_per_agent_min": 0.2589588216002482,
   "replans_by_trigger": {
    "lost": 1
   },
@@ -99,7 +99,7 @@
  },
  "safety": {
   "min_separation_m": 9.98999999999998,
-  "min_separation_from_10s_m": 75.01002368832988,
+  "min_separation_from_10s_m": 75.0100311235946,
   "below_d_min_s": 0.0,
   "infeasible_accepted": 0,
   "infeasible_ignored": 0,
@@ -122,17 +122,17 @@
  },
  "control": {
   "min_rate_hz": 19.99999999470034,
-  "max_p99_period_s": 0.051000118255615234,
-  "max_period_s": 0.051000118255615234,
-  "max_ground_speed_ms": 11.491918899818256
+  "max_p99_period_s": 0.05000019073486328,
+  "max_period_s": 0.05000019073486328,
+  "max_ground_speed_ms": 11.492506254077046
  },
  "radio": {
-  "sent": 15081,
-  "delivered": 12022,
-  "dropped_loss": 3052,
+  "sent": 15051,
+  "delivered": 11997,
+  "dropped_loss": 3047,
   "dropped_window": 0,
-  "delay_mean_s": 0.20015520173724727,
-  "delay_max_s": 0.20192933082580566,
-  "loss_pct": 20.23738478880711
+  "delay_mean_s": 0.20016106397020347,
+  "delay_max_s": 0.20099401473999023,
+  "loss_pct": 20.244502026443424
  }
 }

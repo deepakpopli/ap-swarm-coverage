@@ -5,12 +5,13 @@
  "seed": 1,
  "n": 3,
  "backend": "gazebo",
+ "git_commit": "8cb63fead1c35f349797ccfaa185a1a8aea310ce",
  "victim": 1,
  "end_s": 180.0,
  "coverage": {
-  "mean_pct": 95.89782688766115,
-  "end_of_run_pct": 95.3359139784946,
-  "end_of_run_min_pct": 91.07111111111111
+  "mean_pct": 96.02784530386741,
+  "end_of_run_pct": 95.37749103942652,
+  "end_of_run_min_pct": 91.08000000000001
  },
  "unseen": {
   "whole": {
@@ -18,49 +19,49 @@
     0.0,
     180.0
    ],
-   "worst_s": 106.80399990081787,
-   "cells_over_60s_pct": 76.4088888888889,
-   "cells_over_90s_pct": 4.044444444444444
+   "worst_s": 108.30099987983704,
+   "cells_over_60s_pct": 75.34666666666666,
+   "cells_over_90s_pct": 3.8
   },
   "before": {
    "phase_s": [
     0.0,
-    64.15867948532104
+    64.1115894317627
    ],
-   "worst_s": 66.64999985694885,
-   "cells_over_60s_pct": 37.937777777777775,
+   "worst_s": 67.5,
+   "cells_over_60s_pct": 37.39555555555555,
    "cells_over_90s_pct": 0.0
   },
   "after": {
    "phase_s": [
-    64.15867948532104,
+    64.1115894317627,
     180.0
    ],
-   "worst_s": 106.80399990081787,
-   "cells_over_60s_pct": 76.4,
-   "cells_over_90s_pct": 4.044444444444444
+   "worst_s": 108.30099987983704,
+   "cells_over_60s_pct": 75.32888888888888,
+   "cells_over_90s_pct": 3.8
   }
  },
  "loss": {
-  "loss_s": 64.15867948532104,
-  "lost_declared_s": 76.2,
-  "before_pct": 97.54814814814814,
-  "before_min_pct": 95.75555555555556,
-  "after_mean_pct": 95.43230158730158,
-  "after_min_pct": 91.07111111111111,
-  "share_pct": 65.0320987654321,
-  "after_over_share": 1.4674645813219356,
+  "loss_s": 64.1115894317627,
+  "lost_declared_s": 76.208,
+  "before_pct": 97.58999999999999,
+  "before_min_pct": 95.76444444444444,
+  "after_mean_pct": 95.45753968253969,
+  "after_min_pct": 91.08000000000001,
+  "share_pct": 65.05999999999999,
+  "after_over_share": 1.4672231737248649,
   "recovery_s": 0.0,
-  "recovery_threshold_pct": 87.79333333333334,
+  "recovery_threshold_pct": 87.83099999999999,
   "recovery_to_share_s": 0.0,
-  "recovery_to_share_threshold_pct": 58.528888888888886,
-  "dip_pct": 91.07111111111111,
-  "dip_after_loss_s": 115.84132051467896,
-  "deficit_pct_s": 331.05037037036993,
+  "recovery_to_share_threshold_pct": 58.55399999999999,
+  "dip_pct": 91.08000000000001,
+  "dip_after_loss_s": 115.8884105682373,
+  "deficit_pct_s": 308.5811111111101,
   "milestones_s": {
-   "lost_declared": 12.041320514678958,
-   "assignment_received": 14.278522253036499,
-   "on_new_loop": 12.284522294998169,
+   "lost_declared": 12.096410568237303,
+   "assignment_received": 14.324447870254517,
+   "on_new_loop": 12.331447839736938,
    "recovered": 0.0
   }
  },
@@ -68,19 +69,19 @@
   "before": {
    "phase_s": [
     0.0,
-    64.15867948532104
+    64.1115894317627
    ],
-   "worst_completed_s": 60.89999985694885,
-   "worst_open_s": 60.914477586746216,
+   "worst_completed_s": 58.05000019073486,
+   "worst_open_s": 60.91855216026306,
    "no_completed_gap_pct": 0.0
   },
   "after": {
    "phase_s": [
-    76.2,
+    76.208,
     180.0
    ],
-   "worst_completed_s": 66.90000009536743,
-   "worst_open_s": 65.01279807090759,
+   "worst_completed_s": 67.95000004768372,
+   "worst_open_s": 65.35696268081665,
    "no_completed_gap_pct": 0.0
   }
  },
@@ -88,7 +89,7 @@
  "mission_c": null,
  "churn": {
   "before_per_agent_min": 0.0,
-  "after_per_agent_min": 0.25897494837516566,
+  "after_per_agent_min": 0.2588697165911636,
   "replans_by_trigger": {
    "lost": 1
   },
@@ -98,7 +99,7 @@
  },
  "safety": {
   "min_separation_m": 9.98999999999998,
-  "min_separation_from_10s_m": 75.00039211100288,
+  "min_separation_from_10s_m": 74.98251806706989,
   "below_d_min_s": 0.0,
   "infeasible_accepted": 0,
   "infeasible_ignored": 0,
@@ -121,17 +122,17 @@
  },
  "control": {
   "min_rate_hz": 19.99999999470034,
-  "max_p99_period_s": 0.051000118255615234,
+  "max_p99_period_s": 0.05002018451690672,
   "max_period_s": 0.051000118255615234,
-  "max_ground_speed_ms": 11.492105986284672
+  "max_ground_speed_ms": 11.492301771185788
  },
  "radio": {
   "sent": 13299,
   "delivered": 10636,
   "dropped_loss": 2659,
   "dropped_window": 0,
-  "delay_mean_s": 0.2001657357292993,
-  "delay_max_s": 0.20101618766784668,
+  "delay_mean_s": 0.20017241436361863,
+  "delay_max_s": 0.20104265213012695,
   "loss_pct": 19.993984510113542
  }
 }
