@@ -75,7 +75,7 @@ FIELD_TEXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "field.
 if FIELD:     # no orange: compressed video turns it into the red of the zone
     DRONE_COLORS = ["#3b7bff", "#ffd60a", "#ffffff", "#22d3ee", "#a3e635"]   # blue, yellow, white
     BORDER_RGB = (0.36, 0.32, 0.24)     # light tan, like a field margin
-    ZONE_RGB = (0.80, 0.08, 0.05)
+    ZONE_RGB = (0.50, 0.0, 0.0)         # dark red: brighter reds look orange in the sun
 BORDER_W_M = 1.0
 ZONE_W_M = 0.8
 LANE_W_M = 0.2
