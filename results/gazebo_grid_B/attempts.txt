@@ -11,8 +11,8 @@ d1_t90: ok on attempt 1
 d2_t90: ok on attempt 1
 d3_t90: ok on attempt 1
 
-Flown on commit 7c9bb15 (a side branch, not in this history). Its swarm/ and run_mission.py are
-identical to 7576c18 here; only sim/demo_world.py and a comment in sim/gazebo_world.py differ
-(the live view's props, used only with SWARM_DEMO=1): git diff --stat 7c9bb15 7576c18.
+Flown on commit 7c9bb15, a side branch that is not in this history. Its flight code (swarm/,
+run_mission.py) is identical to 7576c18 here; in sim/ only the live view's props differed
+(sim/demo_world.py, used only with SWARM_DEMO=1). Since then d34268f made the phase hold firmer.
 Each run: run_mission.py --mission B --n 3 --seed 100+k --victim V --kill-at T --mission-s 180,
 k = 1..12 over T = 60, 70, 80, 90 (outer) and V = 1, 2, 3 (inner); the seed only moves the radio.

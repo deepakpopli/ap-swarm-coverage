@@ -1,5 +1,5 @@
 Mission A seeds 1-5 and Mission C seed 1, lost timeout 4 s (SWARM_LOST_S=4; the eval in gazebo_50m uses 12 s), gazebo, 2026-11-23
   seed_1 .. seed_5, C_s1: ok on attempt 1
 
-C_s1 names commit 7ee5b84, an earlier copy of 8cb63fe here (no code differs:
-git diff 7ee5b84 8cb63fe); the 4 s timeout is SWARM_LOST_S=4, as for the other runs.
+C_s1 names commit 7ee5b84, an earlier copy of 8cb63fe here with the same code (not in this
+history); the 4 s timeout is SWARM_LOST_S=4, as for the other runs.
