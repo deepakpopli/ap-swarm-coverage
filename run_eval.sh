@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The evaluation in one command, headless: Mission A on seeds 1..12 (N = 3, 180 s), one no-loss
+# The evaluation in one command, headless: Mission A on 14 seeds (N = 3, 180 s), one no-loss
 # N = 3 baseline and one no-loss N = 2 reference, one run at a time; then metrics, report,
 # plots and one animation into results/<set>/.
 #
-#   ./run_eval.sh                          # gazebo, seeds 1..12, 50 m, 180 s: set gazebo_50m
+#   ./run_eval.sh                          # gazebo, the 14 seeds below, 50 m, 180 s: gazebo_50m
 #   SEEDS="1 2 3 4 5" ./run_eval.sh
 #
 # Environment: SEEDS, FORCE=1 (fly finished runs again). Raw runs go to runs/gazebo_50m/
@@ -13,7 +13,9 @@ cd "$(dirname "$0")" || exit 1
 source tools/run_lib.sh
 
 BACKEND=gazebo
-SEEDS=${SEEDS:-$(seq -s ' ' 1 12)}
+# 1..12, then 16 and 17 rather than 13..15: four or five runs for every drone (13, 14 and 15
+# draw drones 3, 3 and 1 again)
+SEEDS=${SEEDS:-1 2 3 4 5 6 7 8 9 10 11 12 16 17}
 MISSION_S=180
 FORCE=${FORCE:-0}
 SET=gazebo_50m
