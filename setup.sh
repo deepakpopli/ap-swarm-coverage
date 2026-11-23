@@ -76,6 +76,9 @@ done
 if ! python3 -c 'import pytest' 2> /dev/null; then   # the tests only, not run_eval.sh
   printf '%-8s %-24s %s\n' NOTE pytest "for the tests: python3 -m pip install --user pytest"
 fi
+if ! command -v "${MEDIAMTX:-mediamtx}" > /dev/null; then   # live drone video only
+  printf '%-8s %-24s %s\n' NOTE mediamtx "live video only: github.com/bluenviron/mediamtx/releases (PATH or MEDIAMTX=)"
+fi
 if command -v ffmpeg > /dev/null; then
   row OK ffmpeg "$(command -v ffmpeg)"
 else

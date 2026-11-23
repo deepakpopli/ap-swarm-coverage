@@ -1,0 +1,43 @@
+# MediaMTX for the live drone cameras (tools/show_gazebo.sh with SWARM_DEMO_CAMERA=1).
+# In: RTSP on :8554, published from this machine only (rtsp://127.0.0.1:8554/droneN).
+# Out: WebRTC on :8889 for the web view (http://HOST:8889/droneN/whep). No recording.
+logLevel: warn
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: [127.0.0.1, "::1"]
+    permissions:
+      - action: publish
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+
+rtsp: true
+rtspTransports: [tcp, udp]
+rtspAddress: :8554
+rtmp: false
+hls: false
+srt: false
+moq: false
+api: false
+metrics: false
+pprof: false
+playback: false
+
+webrtc: true
+webrtcAddress: :8889
+webrtcAllowOrigins: ["*"]
+webrtcLocalUDPAddress: :8189
+# no STUN: the host candidates are the IPs of every interface (LAN, VPN), which a viewer on the
+# same LAN or VPN reaches directly
+webrtcIPsFromInterfaces: true
+webrtcAdditionalHosts: []
+webrtcICEServers2: []
+
+pathDefaults:
+  record: false
+paths:
+  all_others:
