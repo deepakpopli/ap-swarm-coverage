@@ -158,8 +158,8 @@ def recovery_milestones(run, recovery_s):
     received = []
     on_loop = []
     for agent_id, log in run.agents.items():
-        if agent_id == run.victim:
-            continue
+        if agent_id == run.victim or str(agent_id) not in replan["assignments"]:
+            continue                     # the victim, or a drone lost before this re-plan
         loop_from = replan["assignments"][str(agent_id)]["loop_from"]
         received.append(first_time(log["t"], log["epoch"] >= replan["epoch"]))
         flying_loop = (log["epoch"] == replan["epoch"]) & (log["slot"] >= loop_from)
@@ -192,14 +192,15 @@ def loss_block(run, ticks, coverage):
     milestones = None
     if lost_declared_s is not None:
         milestones = recovery_milestones(run, recovery_s)
+    after_mean = float(np.mean(after)) if after.size else None   # None: the run ends too soon
     return {"loss_s": loss_s,
             "lost_declared_s": lost_declared_s,
             "before_pct": before_pct,
             "before_min_pct": float(np.min(before)),
-            "after_mean_pct": float(np.mean(after)),
-            "after_min_pct": float(np.min(after)),
+            "after_mean_pct": after_mean,
+            "after_min_pct": float(np.min(after)) if after.size else None,
             "share_pct": share_pct,
-            "after_over_share": float(np.mean(after)) / share_pct,
+            "after_over_share": None if after_mean is None else after_mean / share_pct,
             "recovery_s": recovery_s,
             "recovery_threshold_pct": RECOVERED * before_pct,
             "recovery_to_share_s": recovery_time(ticks, coverage, loss_s, RECOVERED * share_pct),

@@ -208,6 +208,14 @@ class LossTest(unittest.TestCase):
         self.assertEqual(loss["recovery_to_share_s"], 29.5)  # 0.9 x 60 = 54: back at t = 130
 
 
+    def test_a_loss_too_late_for_the_after_window(self):
+        run = make_run({1: agent_log(track(0, 1, 0, 0))}, n=3, kill_agent=3,
+                       kill_wall=T0_WALL + 170.0)
+        loss = metrics.loss_block(run, self.ticks, self.coverage_with_dip(0, 0))
+        self.assertIsNone(loss["after_mean_pct"])           # 170 + 60 s is after the end
+        self.assertIsNone(loss["after_over_share"])
+
+
 class ChurnTest(unittest.TestCase):
     def test_counting(self):
         ground = [assign(None, 1, "initial", [1, 2, 3]),     # before the start: not counted
@@ -302,6 +310,14 @@ def loss_run(seed):
     run = make_run(agents, ground, seed=seed, kill_agent=3, kill_wall=T0_WALL + 80.0)
     run.name = f"seed_{seed}"
     return run
+
+
+def test_milestones_skip_a_drone_lost_before_the_re_plan():
+    """Two losses: the first re-plan's survivors only; no KeyError for the earlier victim."""
+    run = loss_run(1)
+    run.agents[4] = run.agents[3]       # a drone that is in no assignment of the re-plan
+    m = metrics.recovery_milestones(run, None)
+    assert m["assignment_received"] == 13.0
 
 
 class ReportTest(unittest.TestCase):
