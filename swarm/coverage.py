@@ -5,7 +5,7 @@ only before sharp turns. A slot not reached SLOT_TIMEOUT_S after it became activ
 INFEASIBLE (re-sent every second until a newer epoch); then the agent holds. The timer pauses
 only while deaf (a blackout says nothing about the slot), not while the safety filter blocks
 us: a slot we are kept from is what the ground must hear about. No separate "blocked" detector:
-one tried on the real stack never beat the slot timer (REPORT.md section 8).
+one tried on the real stack never beat the slot timer.
 """
 import math
 from dataclasses import dataclass, field

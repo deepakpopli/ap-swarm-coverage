@@ -1,6 +1,6 @@
 """Coverage allocator: which agent flies which slots. Pure and deterministic (sorted ids, ties
 by id). Fixed lanes over the whole area, cut into contiguous groups, one closed loop per agent:
-a membership change moves owners, never lanes. Rules and reasons: REPORT.md section 6.
+a membership change moves owners, never lanes.
 """
 import dataclasses
 import itertools
@@ -14,15 +14,15 @@ from swarm.coverage import A_SLOW_MS2, TURN_PASS_DEG, V_TURN_MIN_MS, start_slot
 SWATH_M, ALONG_M = sensor.lane_footprint(config.ALT_CRUISE_M)
 
 # 1 m below SLOT_SPACING_M so 0.1 m rounding cannot break it; under 10 s from a standing start
-# against the 15 s SLOT_TIMEOUT_S (REPORT.md section 6).
+# against the 15 s SLOT_TIMEOUT_S.
 LEG_M = config.SLOT_SPACING_M - 1.0
 
-# Measured corner costs, only to compare loop periods (REPORT.md section 6).
+# Measured corner costs, only to compare loop periods.
 TURN90_S = 2.45
 TURN180_S = 3.65          # a lane-end reversal (one-lane out-and-back)
 
 # Mission B: zone lane ends at most REACH_M from the zone centre keep its revisit under
-# PRIORITY_REVISIT_S; TURN_S bounds a full-speed reversal (REPORT.md section 6).
+# PRIORITY_REVISIT_S; TURN_S bounds a full-speed reversal.
 TURN_S = 6.0
 REVISIT_MARGIN_S = 2.0
 REACH_M = (config.PRIORITY_REVISIT_S - REVISIT_MARGIN_S - TURN_S) * config.WP_SPD_MS / 2

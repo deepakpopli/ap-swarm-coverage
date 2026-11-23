@@ -3,7 +3,7 @@
 Invariant: any two agents stay >= D_MIN_M apart in 3D, from the last STATE of each neighbour
 only. Per neighbour, either the altitude intervals are D_MIN_M apart, or we stay out of its
 keep-out disc (growing with the age of its sample) and close on it no faster than we can stop.
-Both agents of a pair apply the same rules, each taking half. Derivations: REPORT.md section 8.
+Both agents of a pair apply the same rules, each taking half.
 """
 import math
 from dataclasses import dataclass, field
@@ -19,7 +19,7 @@ OBSTACLE_ID = config.GROUND_ID   # never a neighbour's id, so free for the test 
 
 @dataclass(frozen=True)
 class SafetyParams:
-    """Each value and the measurement it covers: REPORT.md section 8."""
+    """Each value and what it covers."""
     margin_m: float = 1.0       # position error of both agents (estimate and sample timing)
     a_brake_ms2: float = 3.0    # braking we count on
     t_react_s: float = 0.4      # autopilot reaction + one 50 ms tick (in the braking model)

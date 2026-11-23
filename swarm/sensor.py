@@ -1,8 +1,7 @@
 """Ground footprint of the SIYI A8 mini camera, pointing straight down.
 
 A rectangle on flat ground: the wide side (horizontal field of view) lies across the track and
-the rectangle turns with the logged yaw. Sources, assumptions and the altitude choice:
-REPORT.md section 5.
+the rectangle turns with the logged yaw.
 """
 import math
 
