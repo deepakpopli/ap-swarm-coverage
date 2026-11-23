@@ -9,7 +9,7 @@ main{display:flex;gap:12px;padding:10px}
 .box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px}
 .box h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;color:#8b949e;letter-spacing:.05em}
 select,input,button{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px;font:inherit}
-button{cursor:pointer} button.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
+button{cursor:pointer} button:disabled{opacity:.4;cursor:default} button.on{background:#1f6feb;border-color:#1f6feb;color:#fff}
 .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 table{border-collapse:collapse;width:100%} td,th{padding:2px 6px;text-align:left;border-bottom:1px solid #21262d}
 th{color:#8b949e;font-weight:normal}
@@ -31,6 +31,7 @@ th{color:#8b949e;font-weight:normal}
     <button data-speed="1" class="on">1x</button><button data-speed="4">4x</button><button data-speed="10">10x</button>
     <input id="slider" type="range" min="0" max="1" step="0.1" value="0">
     <span id="clock" class="big"></span>
+    <span class="dim">coverage:</span><button id="cover-shade" class="on">shade</button><button id="cover-photos">photos</button>
   </div>
   <div class="legend dim">ring around a drone:<span style="background:#d29922"></span>no message for 2 s<span style="background:#f85149"></span>lost
   &nbsp; ground last seen:<span style="background:#96c6fa"></span>just now<span style="background:#bdd5ef"></span>30 s ago<span style="background:#e4e4e4"></span>60 s+ ago<span style="background:#fff"></span>never</div>

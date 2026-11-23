@@ -17,6 +17,7 @@ let geo = null;                       // footprint and area numbers from swarm/s
 let liveRun = emptyRun(), replayRun = emptyRun(), liveDir = null;
 let mode = "live", follow = true, playing = true, speed = 1, t = 0, lastFrameMs = 0;
 let heat = null, heatBusy = false, logCount = -1;
+let cover = "shade", mosaic = null, mosaicBusy = false;   // coverage view: shade or photos
 const query = new URLSearchParams(location.search);   // ?run=DIR&t=MISSION_S&paused=1
 
 function emptyRun() { return {agents: {}, events: [], series: [], t0: null, end_t: 0}; }
@@ -26,7 +27,7 @@ function merge(target, delta) {
   for (const [id, rows] of Object.entries(delta.agents)) (target.agents[id] ||= []).push(...rows);
   target.events.push(...delta.events);
   target.series.push(...delta.series);
-  for (const k of ["t0", "kill_t", "victim", "outcome", "mission", "seed", "radio", "end_t", "zone", "loss"])
+  for (const k of ["t0", "kill_t", "victim", "outcome", "mission", "seed", "radio", "end_t", "zone", "loss", "photos"])
     if (delta[k] != null) target[k] = delta[k];
 }
 
@@ -63,7 +64,7 @@ function px(x, y) { const s = scalePx(); return [MAP_MARGIN_PX + (x - geo.area[0
 
 function drawMap(r, past) {               // as the Gazebo top view: white field, yellow border
   mctx.fillStyle = FIELD.ground; mctx.fillRect(0, 0, map.width, map.height);
-  drawHeat();
+  if (cover === "photos" && r.photos) drawMosaic(); else drawHeat();
   drawGrid();
   drawRect(geo.area[0], geo.area[2], geo.area[1], geo.area[3], FIELD.border, 2.5);
   const zone = r.zone;                    // [x0, y0, x1, y1], from the run's meta.json
@@ -95,6 +96,13 @@ function drawHeat() {
   const [x0, y1] = px(geo.area[0], geo.area[3]), [x1, y0] = px(geo.area[1], geo.area[2]);
   mctx.imageSmoothingEnabled = false;
   mctx.drawImage(off, x0, y1, x1 - x0, y0 - y1);
+}
+
+function drawMosaic() {               // the camera frames on the ground, north up (gui/mosaic.py)
+  if (!mosaic) return;
+  const [lo, hi] = geo.mosaic_extent, [x0, y0] = px(lo, hi), [x1, y1] = px(hi, lo);
+  mctx.imageSmoothingEnabled = true;
+  mctx.drawImage(mosaic.img, x0, y0, x1 - x0, y1 - y0);
 }
 
 function drawGrid() {
@@ -279,6 +287,20 @@ function wantHeat(dir) {             // the heatmap comes from Python (gui/model
   fetch(`/api/heat?dir=${encodeURIComponent(dir)}&t=${t.toFixed(2)}`).then((r) => r.json())
     .then((h) => { if (!h.error) heat = h; }).finally(() => { heatBusy = false; });
 }
+function wantMosaic(dir, r) {         // live: about once a second; replay: when t moved
+  const step = mode === "live" && follow ? 1 : 0.4;
+  if (cover !== "photos" || !r.photos || mosaicBusy || !dir || (mosaic && Math.abs(mosaic.t - t) < step)) return;
+  mosaicBusy = true;
+  const tAsk = t;
+  fetch(`/api/mosaic?dir=${encodeURIComponent(dir)}&t=${tAsk.toFixed(2)}`)
+    .then((res) => (res.ok ? res.blob() : Promise.reject()))
+    .then((b) => createImageBitmap(b)).then((img) => { if (dir === (mode === "live" ? liveDir : $("runs").value)) mosaic = {t: tAsk, img}; })
+    .catch(() => {}).finally(() => { mosaicBusy = false; });
+}
+function setCover(c) {
+  cover = c;
+  $("cover-shade").classList.toggle("on", c === "shade"); $("cover-photos").classList.toggle("on", c === "photos");
+}
 function frame(nowMs) {
   const r = run(), [tMin, tMax] = tRange(r), dt = Math.min(0.2, (nowMs - lastFrameMs) / 1000);
   lastFrameMs = nowMs;
@@ -289,6 +311,9 @@ function frame(nowMs) {
   slider.min = tMin; slider.max = tMax; if (document.activeElement !== slider) slider.value = t;
   if (geo) {
     if (!(mode === "live" && follow)) wantHeat(mode === "live" ? liveDir : $("runs").value);
+    wantMosaic(mode === "live" ? liveDir : $("runs").value, r);
+    $("cover-photos").disabled = !r.photos;
+    $("cover-photos").title = r.photos ? "camera frames laid on the ground" : "no camera frames in this run (cam/)";
     const past = eventsUntil(r, t);
     drawMap(r, past); drawChart(r); drawSide(r, past);
   }
@@ -296,7 +321,7 @@ function frame(nowMs) {
 }
 
 function openReplay(dir, missionS) {
-  mode = "replay"; heat = null; logCount = -1; $("runs").value = dir;
+  mode = "replay"; heat = null; mosaic = null; logCount = -1; $("runs").value = dir;
   $("live").classList.remove("on"); $("source").textContent = "replay: " + shortDir(dir);
   fetch(`/api/run?dir=${encodeURIComponent(dir)}`).then((r) => r.json()).then((d) => {
     replayRun = emptyRun(); merge(replayRun, d);
@@ -304,7 +329,7 @@ function openReplay(dir, missionS) {
   });
 }
 function openLive() {
-  mode = "live"; follow = true; heat = null; logCount = -1;
+  mode = "live"; follow = true; heat = null; mosaic = null; logCount = -1;
   $("live").classList.add("on"); $("runs").value = ""; $("source").textContent = "live: " + (liveDir ? shortDir(liveDir) : "no mission running");
 }
 
@@ -312,7 +337,7 @@ function onLive(msg) {
   const st = msg.status;
   $("runstate").textContent = st.dir ? `${st.running ? "running" : "ended (exit " + st.exit + ")"}: ${shortDir(st.dir)}` : "idle";
   $("tail").textContent = st.tail;
-  if (st.live_dir !== liveDir) { liveDir = st.live_dir; liveRun = emptyRun(); if (mode === "live") openLive(); }
+  if (st.live_dir !== liveDir) { liveDir = st.live_dir; liveRun = emptyRun(); mosaic = null; if (mode === "live") openLive(); }
   if (msg.run) merge(liveRun, msg.run);
   if (msg.heat && mode === "live" && follow) heat = msg.heat;
 }
@@ -330,6 +355,8 @@ function setup(info) {
     .then((d) => { if (d.dir) openLive(); });
   $("stop").onclick = () => post("/api/stop");
   $("live").onclick = openLive;
+  $("cover-shade").onclick = () => setCover("shade");
+  $("cover-photos").onclick = () => setCover("photos");
   $("runs").onchange = () => $("runs").value ? openReplay($("runs").value) : openLive();
   $("play").onclick = () => { playing = !playing; $("play").textContent = playing ? "pause" : "play"; };
   $("slider").oninput = () => { t = +$("slider").value; follow = false; };
