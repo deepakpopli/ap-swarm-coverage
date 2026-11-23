@@ -7,12 +7,13 @@ so one killed autopilot would freeze the world and every other vehicle with it.
 demo=True (SWARM_DEMO=1, live view only, sim/demo_world.py): a sun and sky, the white field,
 the yellow border and lanes; demo_zone=True (SWARM_DEMO_ZONE=1) also the priority zone border (red);
 with SWARM_DEMO_PHYSICS=1 and SWARM_DEMO_SCALE the drones are the Froude-scaled iris in their
-colours. Without demo the world and model files are the evaluation's.
+colours; with SWARM_DEMO_CAMERA=1 each drone has a nadir camera (sim/demo_camera.py).
+Without demo the world and model files are the evaluation's.
 """
 import os
 import shutil
 
-from sim import demo_world
+from sim import demo_camera, demo_world
 
 AP_GAZEBO = os.path.expanduser(os.environ.get("ARDUPILOT_GAZEBO", "~/ardupilot_gazebo"))
 SPAWN_Z_M = 0.195        # iris landing-gear height, so it rests on the ground plane
@@ -46,9 +47,11 @@ INCLUDE = ('    <include><uri>model://{name}</uri><name>{name}</name>'
            '<pose degrees="true">{x:.3f} {y:.3f} {z} 0 0 90</pose></include>')
 
 
-def write_model(out_dir: str, name: str, fdm_port: int, demo_index: int = None) -> None:
+def write_model(out_dir: str, name: str, fdm_port: int, demo_index: int = None,
+                camera: int = None) -> None:
     """Copy iris_with_ardupilot to out_dir/models/<name> with its own FDM port, no lock-step.
-    demo_index (the live view, demo_world.physical()): the scaled body in that drone's colour."""
+    demo_index (the live view, demo_world.physical()): the scaled body in that drone's colour.
+    camera (the live view, SWARM_DEMO_CAMERA=1): drone number of its nadir camera."""
     target_dir = os.path.join(out_dir, "models", name)
     shutil.rmtree(target_dir, ignore_errors=True)
     shutil.copytree(os.path.join(AP_GAZEBO, "models", "iris_with_ardupilot"), target_dir)
@@ -62,6 +65,9 @@ def write_model(out_dir: str, name: str, fdm_port: int, demo_index: int = None) 
         uri = demo_world.write_body(out_dir, AP_GAZEBO, name, demo_index)
         sdf = sdf.replace("<uri>model://iris_with_standoffs</uri>", f"<uri>{uri}</uri>")
         sdf = demo_world.physical_plugins(sdf, demo_world.DRONE_SCALE)
+    if camera is not None:
+        scale = demo_world.DRONE_SCALE if demo_index is not None else 1.0
+        sdf = demo_camera.add_camera(sdf, camera, scale)
     with open(sdf_path, "w") as f:
         f.write(sdf)
 
@@ -86,7 +92,8 @@ def generate(out_dir: str, positions: list, origin: tuple, demo: bool = False,
     includes = []
     for i, (x, y) in enumerate(positions):
         name = f"iris_{i}"
-        write_model(out_dir, name, 9002 + 10 * i, i if physical_demo(demo) else None)
+        camera = i + 1 if demo and demo_camera.CAMERA else None
+        write_model(out_dir, name, 9002 + 10 * i, i if physical_demo(demo) else None, camera)
         includes.append(INCLUDE.format(name=name, x=x, y=y, z=spawn_z_m(demo)))
     lat, lon, alt = origin
     path = os.path.join(out_dir, "swarm.sdf")
@@ -98,6 +105,8 @@ def generate(out_dir: str, positions: list, origin: tuple, demo: bool = False,
         text = text.replace("</collision></link></model>\n", "</collision></link></model>\n"
                             + demo_world.overlays_sdf(area_lanes(), demo_zone) + "\n"
                             + demo_world.scenery_sdf())
+        if demo_camera.CAMERA:
+            text = demo_camera.add_sensors_plugin(text)
     with open(path, "w") as f:
         f.write(text)
     return path
