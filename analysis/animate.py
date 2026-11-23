@@ -229,8 +229,8 @@ def draw_side(fig, run, story):
     """Title, clock, legend and the caption lines; returns (clock, speed, caption texts)."""
     fig.text(SIDE_X, 0.945, "3 drones, one killed mid-mission", fontsize=17,
              fontweight="bold", color=INK)
-    fig.text(SIDE_X, 0.885, f"ArduPilot SITL + Gazebo, run {run.name}: the run closest to the\n"
-                            f"12-run medians, {run.meta['radio']['loss'] * 100:.0f} % radio loss",
+    fig.text(SIDE_X, 0.885, f"ArduPilot SITL + Gazebo, run {run.name}: the median run of the\n"
+                            f"evaluation, {run.meta['radio']['loss'] * 100:.0f} % radio loss",
              fontsize=11, color=INK_2, linespacing=1.2)
     clock = fig.text(SIDE_X, 0.815, "", fontsize=15, color=INK, family="DejaVu Sans Mono")
     speed = fig.text(0.04, 0.965, "", fontsize=12, color=INK_2)     # above the map
