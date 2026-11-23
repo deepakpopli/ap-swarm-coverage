@@ -46,7 +46,7 @@ def affine(frame, img_w, img_h, ox, oy):
 
 def paste_frame(canvas, frame, image):
     """Warp one frame onto the canvas (an RGB Image of SIZE_PX), inside its footprint only."""
-    if frame["z"] <= 1.0:
+    if frame["z"] <= 5.0:          # parked or taking off: the ground is inside the near clip
         return
     across, along = footprint_m(frame)
     corners = sensor_corners(frame, across, along)

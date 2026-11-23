@@ -9,12 +9,13 @@ cd "$(dirname "$0")/.." || exit 1
 ARGS=("$@"); [ ${#ARGS[@]} -eq 0 ] && ARGS=(--mission A --n 3 --seed 3)
 OUT=runs/show/$(date +%H%M%S)
 mkdir -p run
-# the drone cameras publish to MediaMTX (tools/mediamtx.yml); it stops with this script
-if [ "${SWARM_DEMO_CAMERA:-}" = 1 ]; then
+# the drone cameras publish to MediaMTX (tools/mediamtx.yml); it and the bridge stop with this script
+CAM_PID=
+if [ "${SWARM_DEMO:-}" = 1 ] && [ "${SWARM_DEMO_CAMERA:-}" = 1 ]; then
   if command -v "${MEDIAMTX:-mediamtx}" > /dev/null; then
     "${MEDIAMTX:-mediamtx}" tools/mediamtx.yml > run/show_mediamtx.out 2>&1 &
     MEDIAMTX_PID=$!
-    trap 'kill "$MEDIAMTX_PID" 2>/dev/null' EXIT
+    trap 'kill "$MEDIAMTX_PID" $CAM_PID 2>/dev/null' EXIT
   else
     echo "mediamtx not found (set MEDIAMTX=/path/to/mediamtx): no live video"
   fi
@@ -42,7 +43,6 @@ sleep 8
 step "starting the marker overlay"
 nice -n 19 python3 tools/gz_markers.py > "$OUT/show_markers.out" 2>&1 &
 MARKERS_PID=$!
-CAM_PID=
 if [ "$SWARM_DEMO" = 1 ] && [ "$SWARM_DEMO_CAMERA" = 1 ]; then
   step "starting the camera bridge"
   nice -n 19 python3 tools/cam_bridge.py --out "$OUT" > "$OUT/show_cam_bridge.out" 2>&1 &

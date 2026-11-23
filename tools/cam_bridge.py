@@ -44,8 +44,8 @@ RTSP_URL = "rtsp://127.0.0.1:8554/drone{n}"
 RETRY_S = 5.0              # MediaMTX not up (or the stream broke): try again after this
 SAVE_EVERY_S = 1.0
 JPEG_W, JPEG_H, JPEG_QUALITY = 480, 270, 70
-POSES_KEPT = 100           # per drone, a few seconds of poses to match a frame's sim time
-QUIET_EXIT_S = 20.0        # no frames for this long: the simulation has ended
+POSES_KEPT = 400           # per drone, about a second of poses to match a frame's sim time
+QUIET_EXIT_S = 20.0        # no frames for this long, once a camera was found: the run has ended
 CAM_TOPIC = re.compile(r"/swarm/cam/(\d+)")
 DRONE_NAME = re.compile(r"iris_(\d+)")
 
@@ -186,12 +186,13 @@ def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))                # stop the ffmpegs too
     cameras = {}
     try:
-        while time.time() - last_frame_wall[0] < QUIET_EXIT_S:
+        while not cameras or time.time() - last_frame_wall[0] < QUIET_EXIT_S:   # a slow world load waits
             for topic in node.topic_list():        # drones whose camera has come up
                 match = CAM_TOPIC.fullmatch(topic)
                 if match and int(match.group(1)) not in cameras:
                     n = int(match.group(1))
                     cameras[n] = Camera(n, cam_dir, log)
+                    last_frame_wall[0] = time.time()
                     node.subscribe(Image, topic, cameras[n].on_image)
                     print(f"drone {n}: {topic} -> {RTSP_URL.format(n=n)}", flush=True)
             time.sleep(2.0)
