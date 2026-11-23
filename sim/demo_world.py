@@ -64,9 +64,20 @@ BORDER_RGB = (1.0, 0.85, 0.0)           # yellow
 ZONE_RGB = (1.0, 0.0, 0.0)              # red
 LANE_RGB = (0.70, 0.70, 0.70)
 GROUND_RGB = (0.97, 0.97, 0.97)         # white field, dark drones stand out
+# SWARM_DEMO_GROUND=field: farmland instead of the white field (a procedural texture, about 1 m a
+# pixel), and colours that stand out on dark green: bright drones, a white border.
+FIELD = os.environ.get("SWARM_DEMO_GROUND") == "field"
+FIELD_TEXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "field.jpg")
+if FIELD:     # no orange: compressed video turns it into the red of the zone
+    DRONE_COLORS = ["#ffd60a", "#22d3ee", "#ff4fd8", "#ffffff", "#a3e635"]   # yellow, cyan, magenta
+    BORDER_RGB = (1.0, 1.0, 1.0)
+    ZONE_RGB = (1.0, 0.165, 0.12)
+    LANE_RGB = (1.0, 1.0, 1.0)
 BORDER_W_M = 1.0
 ZONE_W_M = 0.8
 LANE_W_M = 0.2
+if FIELD:
+    BORDER_W_M, ZONE_W_M, LANE_W_M = 2.0, 1.5, 0.8
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)   # run_mission.py MIDDLE_ZONE (Mission B default)
 
 # Only rendering uses these (the window); the physics ignores them.
@@ -79,6 +90,9 @@ SUN_AND_SKY = """    <light type="directional" name="sun">
       <ambient>0.35 0.37 0.4 1</ambient><background>0.62 0.75 0.9 1</background>
       <sky></sky><shadows>true</shadows><grid>false</grid>
     </scene>"""
+if FIELD:     # a softer sun and more fill: the bright drones do not blow out to white
+    SUN_AND_SKY = (SUN_AND_SKY.replace("<diffuse>1.0 0.97 0.9 1</diffuse>", "<diffuse>0.9 0.87 0.8 1</diffuse>")
+                   .replace("<ambient>0.35 0.37 0.4 1</ambient>", "<ambient>0.45 0.47 0.5 1</ambient>"))
 
 
 def physical() -> bool:
@@ -274,9 +288,15 @@ def _rectangle(prefix: str, x0, y0, x1, y1, width, z, colour) -> list:
 def overlays_sdf(lane_xs_m: list, zone: bool = False) -> str:
     """One static, visual-only model: ground visual, yellow border, lanes, optional priority zone."""
     xmin, xmax, ymin, ymax = config.AREA
+    ground = _material(GROUND_RGB, 0.0)
+    if FIELD:
+        ground = ("<material><diffuse>1 1 1 1</diffuse><specular>0.05 0.05 0.05 1</specular><pbr><metal>"
+                  f"<albedo_map>{FIELD_TEXTURE}</albedo_map><roughness>0.95</roughness>"
+                  "<metalness>0</metalness></metal></pbr></material>")
+    size_m = 2000 if FIELD else 4000          # the texture covers 2000 m at about 1 m a pixel
     visuals = ['<visual name="ground"><pose>150 150 0.01 0 0 0</pose><geometry><plane>'
-               "<normal>0 0 1</normal><size>4000 4000</size></plane></geometry>"
-               f"{_material(GROUND_RGB, 0.0)}</visual>"]
+               f"<normal>0 0 1</normal><size>{size_m} {size_m}</size></plane></geometry>"
+               f"{ground}</visual>"]
     visuals += _rectangle("border", xmin, ymin, xmax, ymax, BORDER_W_M, 0.05, BORDER_RGB)
     for k, x in enumerate(lane_xs_m):
         visuals.append(_bar(f"lane_{k}", x, ymin, x, ymax, LANE_W_M, 0.03, LANE_RGB, 0.2))
