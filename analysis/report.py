@@ -306,8 +306,8 @@ def how_to_read(s, refs, baselines):
     lines = ["## How to read this", "",
              "- Mission t = 0 is 60 s after every drone is on its coverage loop, so the 60 s "
              "coverage window is already full at t = 0 (no start-up ramp).",
-             "- The agent is killed at a seeded time L in [60, 90] s mission time; the mission "
-             "ends at 180 s.",
+             "- The agent is killed at time L in [60, 90] s mission time (seeded, or chosen "
+             "with --kill-at); the mission ends at 180 s.",
              "- coverage(t) = % of 2 m cells seen in (t - 60 s, t], every 1 s. Windows: "
              "before = [L - 60 s, L); dip = lowest coverage(t) on [L, end]; from L + 60 s = "
              "[L + 60 s, end] (the victim's last sightings have left the window); after "
@@ -407,10 +407,12 @@ def lanes_text(group):
 def victim_recovery_text(group):
     """Never-below count, then the recovery times of the runs that fell below."""
     dipped = [m for m in group if m["extra"]["dipped_below_0_9p"]]
-    times = ", ".join("not back" if m["loss"]["recovery_s"] is None
-                      else f"{m['loss']['recovery_s']:.1f}" for m in dipped)
+    back = [f"{m['loss']['recovery_s']:.1f} s" for m in dipped if m["loss"]["recovery_s"] is not None]
     text = f"{len(group) - len(dipped)} never below"
-    return text + (f"; {len(dipped)} below: {times} s" if dipped else "")
+    if dipped:
+        text += f"; {len(dipped)} below, " + (", ".join(back) if back else "none back")
+        text += f" ({len(dipped) - len(back)} not back)" if back and len(back) < len(dipped) else ""
+    return text
 
 
 def per_victim_table(runs):
