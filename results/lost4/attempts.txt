@@ -1,0 +1,2 @@
+Mission A seeds 1-5 and Mission C seed 1, lost timeout 4 s (SWARM_LOST_S=4; the eval in gazebo_50m uses 12 s), gazebo, 2026-11-23
+  seed_1 .. seed_5, C_s1: ok on attempt 1

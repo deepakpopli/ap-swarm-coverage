@@ -1,0 +1,88 @@
+{
+ "run": "C_s1",
+ "mission": "C",
+ "scenario": null,
+ "seed": 1,
+ "n": 3,
+ "backend": "gazebo",
+ "git_commit": "7ee5b84ec1daef871118827ab252c4fc187ec3b4",
+ "victim": null,
+ "end_s": 180.0,
+ "coverage": {
+  "mean_pct": 97.65890730509514,
+  "end_of_run_pct": 97.85390681003585,
+  "end_of_run_min_pct": 95.77777777777777
+ },
+ "unseen": {
+  "whole": {
+   "phase_s": [
+    0.0,
+    180.0
+   ],
+   "worst_s": 67.59999990463257,
+   "cells_over_60s_pct": 39.12888888888889,
+   "cells_over_90s_pct": 0.0
+  }
+ },
+ "loss": null,
+ "revisit": null,
+ "mission_b": null,
+ "mission_c": {
+  "agent": 1,
+  "blackout_s": [
+   64.031,
+   74.031
+  ],
+  "declared_lost": true,
+  "replans_from_blackout": 2,
+  "deaf_s": 7.1499998569488525,
+  "back_in_cover_after_s": 4.800064462661737
+ },
+ "churn": {
+  "whole_per_agent_min": 0.4444444444444444,
+  "replans_by_trigger": {
+   "lost": 1,
+   "rejoin": 1
+  },
+  "replans_warmup_by_trigger": {},
+  "epoch_mismatch": {}
+ },
+ "safety": {
+  "min_separation_m": 9.98999999999998,
+  "min_separation_from_10s_m": 71.18995314219639,
+  "below_d_min_s": 0.0,
+  "infeasible_accepted": 0,
+  "infeasible_ignored": 0,
+  "per_agent": {
+   "1": {
+    "brake_s": 0.0,
+    "deaf_s": 7.1499998569488525
+   },
+   "2": {
+    "brake_s": 0.0,
+    "deaf_s": 0.0
+   },
+   "3": {
+    "brake_s": 0.0,
+    "deaf_s": 0.0
+   }
+  },
+  "brake_s": 0.0,
+  "deaf_s": 7.1499998569488525
+ },
+ "control": {
+  "min_rate_hz": 19.99999999470034,
+  "max_p99_period_s": 0.051000118255615234,
+  "max_period_s": 0.051000118255615234,
+  "max_ground_speed_ms": 11.5
+ },
+ "radio": {
+  "sent": 15054,
+  "delivered": 11788,
+  "dropped_loss": 2989,
+  "dropped_window": 270,
+  "delay_mean_s": 0.20016693019203546,
+  "delay_max_s": 0.20275115966796875,
+  "loss_pct": 20.21780303030303
+ }
+}
