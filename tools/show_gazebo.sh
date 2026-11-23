@@ -2,7 +2,8 @@
 # Run one mission on Gazebo WITH the window open and the marker overlay, for watching.
 # Usage: tools/show_gazebo.sh [run_mission.py arguments]   (default: Mission A, seed 3)
 # SWARM_DEMO=1 ... (sim/demo_world.py): the live view's drones and field.
-# SWARM_DEMO_CAMERA=1 ...: also live drone video in the web view (needs mediamtx, $MEDIAMTX).
+# SWARM_DEMO_CAMERA=1 with it: each drone's nadir camera, streamed through MediaMTX (tools/mediamtx.yml,
+# $MEDIAMTX) to the web view and saved once a second to $OUT/cam (tools/cam_bridge.py).
 # The evaluation never uses this script: it stays headless.
 cd "$(dirname "$0")/.." || exit 1
 ARGS=("$@"); [ ${#ARGS[@]} -eq 0 ] && ARGS=(--mission A --n 3 --seed 3)
@@ -41,6 +42,12 @@ sleep 8
 step "starting the marker overlay"
 nice -n 19 python3 tools/gz_markers.py > "$OUT/show_markers.out" 2>&1 &
 MARKERS_PID=$!
+CAM_PID=
+if [ "$SWARM_DEMO" = 1 ] && [ "$SWARM_DEMO_CAMERA" = 1 ]; then
+  step "starting the camera bridge"
+  nice -n 19 python3 tools/cam_bridge.py --out "$OUT" > "$OUT/show_cam_bridge.out" 2>&1 &
+  CAM_PID=$!
+fi
 # overview camera:
 # south of the area looking north, 46 deg down; the whole yellow square fills the window
 gz service -s /gui/move_to/pose --reqtype gz.msgs.GUICamera --reptype gz.msgs.Boolean \
@@ -54,6 +61,6 @@ step "camera moved to the overview: $(tr -d '\n' < "$OUT/show_camera.out")"
 echo "watching $OUT (mission pid $MISSION_PID)"
 wait "$MISSION_PID"
 step "mission ended: $(tail -n 1 run/show.out)"
-kill "$MARKERS_PID" "$GUI_PID" "$GUARD_PID" 2>/dev/null
+kill "$MARKERS_PID" "$GUI_PID" "$GUARD_PID" $CAM_PID 2>/dev/null
 grep -h "WORLD PAUSED" "$OUT/show_pause_guard.out" 2>/dev/null   # say so: the run had a glitch
 echo "finished: $OUT"
