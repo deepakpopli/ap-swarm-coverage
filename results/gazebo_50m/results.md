@@ -71,13 +71,13 @@ Cells: mean [min, max] over that victim's runs. Lanes: the victim's loop lanes i
 | Setpoint rate, slowest agent | Hz | 20.0 [20.0, 20.0] | 14 |
 | Setpoint period p99, worst agent | s | 0.051 [0.050, 0.051] | 14 |
 | Setpoint period max, worst agent | s | 0.051 [0.050, 0.053] | 14 |
-| Max ground speed, logged velocity (vx, vy; autopilot EKF estimate) | m/s | 11.49 [11.49, 11.50] | 14 |
-| Max ground speed, position differences over 1 s (EKF positions) | m/s | 11.98 [11.45, 12.01] | 14 |
+| Max ground speed, logged velocity (vx, vy; as the autopilot reports it) | m/s | 11.49 [11.49, 11.50] | 14 |
+| Max ground speed, position differences over 1 s (reported positions) | m/s | 11.98 [11.45, 12.01] | 14 |
 | Radio: loss rate | % | 20.0 [19.5, 20.5] | 14 |
 | Radio: mean delay | s | 0.200 [0.200, 0.200] | 14 |
 | Radio: max delay | s | 0.201 [0.201, 0.207] | 14 |
 
-Both speeds are the autopilots' EKF estimates (logged velocity and logged position), not simulator truth.
+Both speeds are what the autopilots report (logged velocity and position). Under Gazebo that is the simulator's own state: its JSON backend sets AHRS_EKF_TYPE 10 (no EKF), so a GPS fault there changes nothing.
 
 Re-plans by trigger, all runs: lost 14; in the warm-up: none.
 Agents' epoch columns vs ground re-plans: no mismatch.
