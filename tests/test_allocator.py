@@ -24,15 +24,6 @@ def legs(asg, xy):
     return list(zip(points, points[1:])) + [(asg.slots[-1], asg.slots[asg.loop_from])]
 
 
-def assert_tiles_area(shares):
-    shares = sorted(shares)
-    assert shares[0][0] == config.AREA[0] and shares[-1][1] == config.AREA[1]
-    for west, east in zip(shares, shares[1:]):
-        assert west[1] == east[0]                        # no gap, no overlap
-    for share in shares:
-        assert share[2:] == list(config.AREA[2:]) and share[1] > share[0]
-
-
 @pytest.fixture
 def at_alt(monkeypatch):
     """Plan lanes for the camera footprint at another altitude."""
