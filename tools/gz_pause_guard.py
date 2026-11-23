@@ -44,11 +44,10 @@ def say(text: str) -> None:
     print(f"[gz_pause_guard {stamp}] {text}", flush=True)
 
 
-def resume() -> bool:
+def resume() -> None:
     request = WorldControl()
     request.pause = False
-    ok, _ = node.request(f"/world/{WORLD}/control", request, WorldControl, Boolean, 1000)
-    return ok
+    node.request(f"/world/{WORLD}/control", request, WorldControl, Boolean, 1000)
 
 
 def main() -> int:

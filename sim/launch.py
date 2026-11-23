@@ -118,8 +118,8 @@ class Fleet:
         process = start_process(cmd, os.path.join(work_dir, "sitl.log"), cwd=work_dir)
         self.autopilots[agent_id] = process
 
-    def kill_vehicle(self, agent_id: int) -> bool:
-        """SIGKILL the agent's arducopter (sudden autopilot loss). True if a model was removed.
+    def kill_vehicle(self, agent_id: int) -> None:
+        """SIGKILL the agent's arducopter (sudden autopilot loss).
 
         gazebo: the dead model is then removed. The ardupilot_gazebo plugin waits 1 ms per
         physics step for an autopilot that does not answer, which dropped the whole world to
@@ -129,13 +129,12 @@ class Fleet:
         process.kill()
         process.wait()
         if self.backend == "sitl":
-            return False
+            return
         reply = self._gz(["service", "-s", "/world/swarm/remove", "--reqtype", "gz.msgs.Entity",
                           "--reptype", "gz.msgs.Boolean", "--timeout", "3000",
                           "--req", f'name: "iris_{agent_id - 1}" type: MODEL'])
         if "data: true" not in reply:
             raise RuntimeError(f"could not remove iris_{agent_id - 1}: {reply!r}")
-        return True
 
     def land(self, agent_id: int) -> None:
         """Fault injection, as test equipment: a component failed on board (payload, GPS) and the
