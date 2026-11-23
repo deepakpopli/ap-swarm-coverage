@@ -41,3 +41,13 @@ def test_live_view_a_drone_gone_by_itself_is_a_loss_not_an_invalid_run(monkeypat
     mission.check(10.0)
     assert "agent_2" in mission.may_exit
     assert mission.meta["unplanned_losses"][0]["agent"] == 2
+
+
+def test_victim_and_kill_time_can_be_chosen():
+    import argparse
+    from run_mission import plan
+    args = argparse.Namespace(seed=1, n=3, mission="B", scenario=None, backend="gazebo", zone=None)
+    drawn = plan(args)["faults"][0]
+    chosen = plan(argparse.Namespace(**vars(args), victim=3, kill_at=80.0))
+    assert chosen["faults"] == [(80.0, "kill", "sitl:3")] and chosen["kill_agent"] == 3
+    assert plan(argparse.Namespace(**vars(args), victim=None, kill_at=None))["faults"][0] == drawn

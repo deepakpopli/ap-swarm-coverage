@@ -69,6 +69,10 @@ def plan(args):
     rng = random.Random(args.seed)      # the same two draws as always, so seeds keep meaning
     t_event = round(rng.uniform(60.0, 90.0), 3)
     agent = rng.randint(1, args.n)
+    if getattr(args, "kill_at", None) is not None:   # a chosen fault, else the seed's draws
+        t_event = args.kill_at
+    if getattr(args, "victim", None) is not None:
+        agent = args.victim
     out = {"faults": [], "ground": [], "radio": [], "agents": {}, "kill_agent": None,
            "blackout": None, "priority_zone": None}
     kill = (t_event, "kill", f"sitl:{agent}")
@@ -340,6 +344,9 @@ def parse_args(argv=None):
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--out", required=True, help="run directory; must not exist or be empty")
     ap.add_argument("--scenario", choices=sorted(SCENARIOS))
+    ap.add_argument("--victim", type=int, help="the drone that fails (default: drawn from the seed)")
+    ap.add_argument("--kill-at", type=float, help="mission time of the fault, s (default: drawn "
+                    "from the seed in [60, 90])")
     ap.add_argument("--port-base", type=int, default=0,
                     help="added to the radio and node ports, so two runs can share the machine")
     ap.add_argument("--mission-s", type=float,
@@ -349,6 +356,8 @@ def parse_args(argv=None):
     args = ap.parse_args(argv)
     if args.scenario and SCENARIOS[args.scenario][0] != args.mission:
         ap.error(f"--scenario {args.scenario} needs --mission {SCENARIOS[args.scenario][0]}")
+    if args.victim is not None and not 1 <= args.victim <= args.n:
+        ap.error(f"--victim must be 1..{args.n}")
     if args.mission_s is None:
         args.mission_s = 240.0 if args.scenario == "obstacle" else config.MISSION_S
     out = os.path.abspath(args.out)
