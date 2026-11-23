@@ -30,7 +30,7 @@ GOLDEN = {
     "agent_2.events.jsonl": "3d9946af80e282a8264044896f2e9bc77a3818247824503d38539fb431eb4889",
     "agent_3.events.jsonl": "3f30156905f109f01591a5e4313ebf9e9381b0fa991145a0dbc40f83d3839a70",
     "ground.jsonl": "fa8d8265fab60c05bafcbcc8bdf596d4d0ed0ef74efb1e4e30998eb855df3d94",
-    "sent": "8460ee00c7d28870b15e3f6234b0f172bb1d1f27be9821fe2ac6543bcafc1cc7",
+    "sent": "454a02515c6661cbab82cd65b89d39beb1a08bfcd7ec7a598642553df7cc7034",
 }
 
 

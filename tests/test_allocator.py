@@ -182,10 +182,11 @@ def after_loss(survivors, legs):
     return before, after, motion
 
 
-def fly(plans, motion, before, seconds, dt=0.05):
-    """Fly each agent on its old plan, give it the new one ON_TIME_S later (fake vehicle and
-    coverage controller, simulated clock). Returns [(t, agent)] of its centre-lane passes:
-    northbound over the zone centre with a footprint spanning the zone."""
+def fly(plans, motion, before, seconds, dt=0.05, late=None, pace=False):
+    """Fly each agent on its old plan, give it the new one ON_TIME_S (+ late[a]) later (fake
+    vehicle and coverage controller, simulated clock); pace: the ground's phase hold, once a
+    second. Returns [(t, agent)] of its centre-lane passes: northbound over the zone centre with
+    a footprint spanning the zone."""
     t = [0.0]
     agents = {}
     for a, (xy, vel, heading) in motion.items():
@@ -196,11 +197,20 @@ def fly(plans, motion, before, seconds, dt=0.05):
         control.idx = [tuple(p) for p in before[a].slots].index(heading)
         agents[a] = (vehicle, control)
     zone_x, zone_y = 150.0, 150.0
-    passes, last_y = [], {}
+    passes, last_y, speeds, next_pace = [], {}, {}, 0.0
     while t[0] < seconds:
+        if pace and t[0] >= next_pace and all(c.epoch == 2 and c.idx >= c.loop_from
+                                              for _, c in agents.values()):
+            next_pace = t[0] + 1.0
+            motion_now = {a: (v.state().pos[:2], v.state().vel[:2], c.slots[c.idx])
+                          for a, (v, c) in agents.items()}
+            speeds = allocator.butterfly_pace(plans, MIDDLE_ZONE, motion_now, bool(speeds))
+            for a, (v, c) in agents.items():
+                c.on_assign(2, plans[a].slots, plans[a].loop_from, v.state().pos[:2],
+                            v.state().vel[:2], speeds.get(a, config.WP_SPD_MS))
         for a, (vehicle, control) in agents.items():
             st = vehicle.state()
-            if t[0] >= allocator.ON_TIME_S and control.epoch == 1:
+            if t[0] >= allocator.ON_TIME_S + (late or {}).get(a, 0.0) and control.epoch == 1:
                 control.on_assign(2, plans[a].slots, plans[a].loop_from, st.pos[:2], st.vel[:2])
             out = control.step(t[0], st.pos[:2], False)
             vehicle.send_setpoint(out.vx, out.vy, config.ALT_CRUISE_M)
@@ -247,6 +257,20 @@ def test_butterfly_phase(survivors, legs):
     assert all(a != b for (_, a), (_, b) in zip(steady, steady[1:]))   # they alternate
     spacing = [b - a for (a, _), (b, _) in zip(steady, steady[1:])]
     assert max(spacing) - min(spacing) <= 2 * allocator.PHASE_BUDGET_S
+
+
+@pytest.mark.parametrize("late", [{2: 8.0}, {3: 12.0}])
+def test_phase_hold_brings_them_back_half_a_lap_apart(late):
+    """A plan that reaches one agent late leaves the two off their half lap, and off it stays;
+    with the ground's phase hold they are back to half a lap within two laps."""
+    before, after, motion = after_loss([2, 3], {2: 1, 3: 2})
+
+    def worst_error_s(passes):         # half the difference of two gaps in a row
+        steady = [s for s, _ in passes if s > 150.0]
+        gaps = [b - a for a, b in zip(steady, steady[1:])]
+        return max(abs(b - a) / 2 for a, b in zip(gaps, gaps[1:]))
+    assert worst_error_s(fly(after, motion, before, 260.0, late=late)) > 3.0
+    assert worst_error_s(fly(after, motion, before, 260.0, late=late, pace=True)) < 1.5
 
 
 def test_butterfly_deterministic_and_kept():

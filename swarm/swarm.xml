@@ -43,6 +43,8 @@
       <field type="float[4]" name="share" units="m">xmin, xmax, ymin, ymax; all 0 with no plan.</field>
       <field type="int16_t[48]" name="slot_x" units="dm">Slot x, east.</field>
       <field type="int16_t[48]" name="slot_y" units="dm">Slot y, north.</field>
+      <extensions/>
+      <field type="uint16_t" name="speed_cms" units="cm/s">Fly no faster than this; 0 = cruise speed.</field>
     </message>
     <message id="43003" name="SWARM_INFEASIBLE">
       <description>Agent to ground, repeated until a newer epoch: a slot it could not reach in SLOT_TIMEOUT_S.</description>

@@ -469,6 +469,11 @@ def _worst_gap_s(west, east, centres, since_s, lap_s):
     return max(gaps), error_s
 
 
+def _lap_s(strip) -> float:
+    loop = _loop(strip, True, True)
+    return _legs(Assignment([], loop, 0), 0, loop[-1], (0.0, 0.0))[len(loop)][2]
+
+
 def _butterfly_plans(ids, zone, motion, blacklist, previous):
     """Two agents on the butterfly, or None (it does not fit, or every entry is blacklisted).
     Sides: the previous ones, else the western agent west (ties: lower id); no crossing. An
@@ -479,8 +484,7 @@ def _butterfly_plans(ids, zone, motion, blacklist, previous):
     strips = _butterfly_strips(zone)
     if strips is None:
         return None
-    loop = _loop(strips[0], True, True)
-    lap_s = _legs(Assignment([], loop, 0), 0, loop[-1], (0.0, 0.0))[len(loop)][2]
+    lap_s = _lap_s(strips[0])
     shares = [strip.share for strip in strips]
     perm = sorted(ids, key=lambda a: (motion[a][0][0], a))
     if any(old.share in shares and shares.index(old.share) != perm.index(a)
@@ -504,6 +508,40 @@ def _butterfly_plans(ids, zone, motion, blacklist, previous):
         if best_key is None or key < best_key:
             best_key, best = key, dict(zip(perm, (west, east)))
     return best
+
+
+# The half lap between the two agents is chosen once, at the re-plan, from a predicted transit;
+# in Gazebo it came out up to 8 s off and stayed off (zone gaps of 20 and 36 s instead of 2 x 27).
+# The phase hold: the agent whose next centre pass comes less than half a lap after the other's
+# flies slower until the two are half a lap apart again.
+PACE_SLOW = 0.8           # x cruise for the agent that is too close behind; 8 s back in ~40 s
+PACE_ON_S = 1.0           # phase error that starts the hold
+PACE_OFF_S = 0.3          # ... and that ends it
+
+
+def butterfly_pace(assignments, zone, motion, holding=False) -> dict:
+    """{agent: speed limit} for the phase hold, {} with nothing to correct or no butterfly.
+    assignments: the current plan; motion: {id: (xy, velocity, slot it heads to)}, both agents
+    on their loops. holding: a hold is on (it ends below PACE_OFF_S, not PACE_ON_S)."""
+    strips = _butterfly_strips(zone) if zone is not None and len(assignments) == 2 else None
+    ids = [next((a for a, asg in assignments.items() if asg.share == strip.share), None)
+           for strip in strips or []]
+    if not ids or None in ids:
+        return {}
+    upcoming = []
+    for a, strip in zip(ids, strips):
+        asg, (xy, vel, heading) = assignments[a], motion[a]
+        legs = _legs(asg, start_slot(asg.slots, asg.loop_from, xy, vel, heading), xy, vel)
+        centre = _point(strip.lane_xs[0], 0)[0]
+        passes = [s for s, x, north in _passes(legs, zone) if x == centre and north]
+        if not passes:
+            return {}
+        upcoming.append(passes[0])
+    lap_s = _lap_s(strips[0])
+    error_s = (upcoming[0] - upcoming[1]) % lap_s - lap_s / 2   # < 0: west too soon after east
+    if abs(error_s) < (PACE_OFF_S if holding else PACE_ON_S):
+        return {}
+    return {ids[0] if error_s < 0 else ids[1]: round(PACE_SLOW * config.WP_SPD_MS, 2)}
 
 
 # ---- active slots apart --------------------------------------------------------------------------

@@ -18,6 +18,7 @@ ground.jsonl: one JSON object per line with "t_wall", "t_mission" (null before s
   liveness    {agent, from, to, status}
   infeasible  {agent, epoch, slot_xy, accepted, why}
   blacklist   {pairs: [{agent, slot_key, expires_t_wall}]}
+  pace        {epoch, speeds: {id: m/s}}: the butterfly's phase hold ({} = all at cruise)
   end         {epoch}
 """
 import argparse
@@ -28,7 +29,7 @@ import time
 from dataclasses import dataclass
 
 from swarm import config, protocol
-from swarm.allocator import allocate, slot_key
+from swarm.allocator import allocate, butterfly_pace, slot_key
 from swarm.net import RadioLink
 
 READY_DEADLINE_S = 120.0       # plan without the agents not ready this long after the first
@@ -107,6 +108,8 @@ class Ground:
         self.blacklist = {}              # (agent, slot_key) -> expiry wall time
         self.next_assign = 0.0
         self.next_start = 0.0
+        self.pace = {}                   # id -> speed limit (allocator.butterfly_pace)
+        self.next_pace = 0.0
 
     # ---- one tick
     def step(self, now) -> bool:
@@ -124,6 +127,7 @@ class Ground:
         if self.t0 is None:
             self.maybe_start(now)
         self.maybe_swap(now)
+        self.update_pace(now)
         self.send_due(now)
         return self.t0 is None or now < self.t0 + self.mission_s
 
@@ -297,9 +301,26 @@ class Ground:
         changed = sorted(a for a in set(old) | set(new) if old.get(a) != new.get(a))
         self.epoch += 1
         self.assignments = new
+        self.pace = {}
         self.log.write(now, "assign", epoch=self.epoch, trigger=trigger, changed=changed,
                        assignments={str(a): new[a].to_dict() for a in sorted(new)})
         self.next_assign = 0.0           # send the new plan now
+
+    def update_pace(self, now):
+        """Once a second, with both butterfly agents on their loops: the phase hold's speed
+        limits (allocator.butterfly_pace), sent at once when they change."""
+        if self.priority_zone is None or now < self.next_pace:
+            return
+        self.next_pace = now + 1.0
+        pace = {}
+        if self.assignments and all(self.on_station(a) for a in self.assignments):
+            motion = {a: (self.agents[a].xy, self.agents[a].vel, self.heading_slot(a))
+                      for a in self.assignments}
+            pace = butterfly_pace(self.assignments, self.priority_zone, motion, bool(self.pace))
+        if pace != self.pace:
+            self.pace = pace
+            self.log.write(now, "pace", epoch=self.epoch, speeds={str(a): v for a, v in pace.items()})
+            self.next_assign = 0.0
 
     def heading_slot(self, a):
         """The slot agent a flies to, if it reports one of our current plan (unknown after a
@@ -316,7 +337,7 @@ class Ground:
         if now >= self.next_assign:
             for a in sorted(self.agents):
                 body = self.assignments[a].to_dict() if a in self.assignments else NO_PLAN
-                self.link.send(protocol.assign(a, self.epoch, **body))
+                self.link.send(protocol.assign(a, self.epoch, **body, speed_ms=self.pace.get(a)))
             self.next_assign = now + 1.0 / config.ASSIGN_HZ
         if self.t0 is not None and now >= self.next_start:
             self.link.send(protocol.start(self.t0))

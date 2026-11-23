@@ -55,6 +55,24 @@ def test_full_speed_through_collinear_slots_slow_into_a_sharp_turn():
     assert last_speed[3] < 6.0                              # 90 degree corner at slot 3
 
 
+def speed(out):
+    return math.hypot(out.vx, out.vy)
+
+
+def test_speed_limit_follows_the_current_epoch():
+    """An ASSIGN's speed limit applies at once, also with the same epoch and slots; a newer
+    plan without one flies at cruise again; never above cruise."""
+    run = Run()
+    run.assign(1, [[0, 500]])
+    run.fly(10.0)
+    run.cov.on_assign(1, [[0, 500]], 0, run.xy, run.vel, 9.0)
+    assert math.isclose(speed(run.fly(1.0)), 9.0)
+    run.cov.on_assign(2, [[0, 500]], 0, run.xy, run.vel)
+    assert math.isclose(speed(run.fly(1.0)), config.WP_SPD_MS)
+    run.cov.on_assign(2, [[0, 500]], 0, run.xy, run.vel, 20.0)
+    assert math.isclose(speed(run.fly(1.0)), config.WP_SPD_MS)
+
+
 def test_empty_slot_list_means_hold():
     run = Run()
     run.assign(1, [])

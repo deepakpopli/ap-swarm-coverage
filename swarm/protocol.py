@@ -10,10 +10,12 @@ MAV_COMP_ID_ONBOARD_COMPUTER, so it never looks like an autopilot.
     SWARM_START       ground -> all, repeated: t0, wall time of mission t = 0
     SWARM_ASSIGN      ground -> target_system, repeated at ASSIGN_HZ (also to a lost agent, with
                       no slots: it holds; see Ground.send_due). epoch increases on every re-plan.
+                      speed_cms: a speed limit, only to keep the butterfly's two agents half a
+                      lap apart (allocator.butterfly_pace); 0 = cruise.
     SWARM_INFEASIBLE  agent -> ground, repeated until a newer epoch arrives: the agent could not
                       reach this slot within SLOT_TIMEOUT_S.
 
-The allocator sends assignments only, never velocities.
+The allocator sends assignments (and at most a speed limit), never velocities.
 
 Agent log (agent_<id>.csv), one row per control tick, the only input of the offline metrics:
 """
@@ -61,11 +63,18 @@ def start(t0):
     return mav.MAVLink_swarm_start_message(usec(t0))
 
 
-def assign(agent_id, epoch, share, slots, loop_from):
+def assign(agent_id, epoch, share, slots, loop_from, speed_ms=None):
+    """speed_ms: a speed limit below cruise (the butterfly's phase hold), None: cruise."""
     assert len(slots) <= MAX_SLOTS, f"{len(slots)} slots do not fit in SWARM_ASSIGN"
     pad = [0] * (MAX_SLOTS - len(slots))
     return _ASSIGN(agent_id, epoch, loop_from, len(slots), share or [0.0] * 4,
-                   [dm(x) for x, _ in slots] + pad, [dm(y) for _, y in slots] + pad)
+                   [dm(x) for x, _ in slots] + pad, [dm(y) for _, y in slots] + pad,
+                   0 if speed_ms is None else round(speed_ms * 100))
+
+
+def assign_speed_ms(msg) -> float:
+    """The SWARM_ASSIGN speed limit in m/s (cruise when 0)."""
+    return msg.speed_cms / 100 if msg.speed_cms else config.WP_SPD_MS
 
 
 def assign_slots(msg) -> list:

@@ -68,12 +68,18 @@ class CoverageController:
         self.infeasible: Optional[dict] = None   # INFEASIBLE body, re-sent until a new epoch
         self.last_sent: Optional[float] = None
         self.last_now: Optional[float] = None
+        self.speed_ms = config.WP_SPD_MS   # the current epoch's speed limit
 
-    def on_assign(self, epoch: int, slots, loop_from: int, xy, vel) -> Optional[dict]:
+    def on_assign(self, epoch: int, slots, loop_from: int, xy, vel,
+                  speed_ms: float = config.WP_SPD_MS) -> Optional[dict]:
         """Apply an ASSIGN. Returns an event to log, or None for an old epoch. The same slots
-        under a newer epoch keep the active slot, its timer and its report."""
+        under a newer epoch keep the active slot, its timer and its report. The speed limit
+        follows every ASSIGN of the current epoch (it changes without a re-plan)."""
+        if self.epoch is not None and epoch == self.epoch:
+            self.speed_ms = min(speed_ms, config.WP_SPD_MS)
         if self.epoch is not None and epoch <= self.epoch:
             return None
+        self.speed_ms = min(speed_ms, config.WP_SPD_MS)
         self.epoch = epoch
         self.infeasible = None
         slots = [(s[0], s[1]) for s in slots]
@@ -150,7 +156,7 @@ class CoverageController:
         if d < 0.01:
             return 0.0, 0.0
         corner = self._corner_speed_ms()
-        speed = min(config.WP_SPD_MS, math.sqrt(corner ** 2 + 2.0 * A_SLOW_MS2 * d))
+        speed = min(self.speed_ms, math.sqrt(corner ** 2 + 2.0 * A_SLOW_MS2 * d))
         return speed * (slot[0] - xy[0]) / d, speed * (slot[1] - xy[1]) / d
 
     def _corner_speed_ms(self) -> float:
@@ -165,5 +171,5 @@ class CoverageController:
         cos_turn = ((slot[0] - self.seg_start[0]) * (nxt[0] - slot[0])
                     + (slot[1] - self.seg_start[1]) * (nxt[1] - slot[1])) / (leg_in * leg_out)
         if cos_turn >= math.cos(math.radians(TURN_PASS_DEG)):
-            return config.WP_SPD_MS
-        return max(V_TURN_MIN_MS, config.WP_SPD_MS * cos_turn)
+            return self.speed_ms
+        return max(V_TURN_MIN_MS, min(self.speed_ms, config.WP_SPD_MS * cos_turn))

@@ -476,22 +476,22 @@ class MAVLink_swarm_assign_message(MAVLink_message):
 
     id = MAVLINK_MSG_ID_SWARM_ASSIGN
     msgname = "SWARM_ASSIGN"
-    fieldnames = ["target_system", "epoch", "loop_from", "slot_count", "share", "slot_x", "slot_y"]
-    ordered_fieldnames = ["epoch", "share", "slot_x", "slot_y", "target_system", "loop_from", "slot_count"]
-    fieldtypes = ["uint8_t", "int32_t", "uint8_t", "uint8_t", "float", "int16_t", "int16_t"]
+    fieldnames = ["target_system", "epoch", "loop_from", "slot_count", "share", "slot_x", "slot_y", "speed_cms"]
+    ordered_fieldnames = ["epoch", "share", "slot_x", "slot_y", "target_system", "loop_from", "slot_count", "speed_cms"]
+    fieldtypes = ["uint8_t", "int32_t", "uint8_t", "uint8_t", "float", "int16_t", "int16_t", "uint16_t"]
     fielddisplays_by_name: Dict[str, str] = {}
     fieldenums_by_name: Dict[str, str] = {}
-    fieldunits_by_name: Dict[str, str] = {"share": "m", "slot_x": "dm", "slot_y": "dm"}
-    native_format = bytearray(b"<ifhhBBB")
-    orders = [4, 0, 5, 6, 1, 2, 3]
-    lengths = [1, 4, 48, 48, 1, 1, 1]
-    array_lengths = [0, 4, 48, 48, 0, 0, 0]
+    fieldunits_by_name: Dict[str, str] = {"share": "m", "slot_x": "dm", "slot_y": "dm", "speed_cms": "cm/s"}
+    native_format = bytearray(b"<ifhhBBBH")
+    orders = [4, 0, 5, 6, 1, 2, 3, 7]
+    lengths = [1, 4, 48, 48, 1, 1, 1, 1]
+    array_lengths = [0, 4, 48, 48, 0, 0, 0, 0]
     crc_extra = 29
-    unpacker = struct.Struct("<i4f48h48hBBB")
+    unpacker = struct.Struct("<i4f48h48hBBBH")
     instance_field = None
     instance_offset = -1
 
-    def __init__(self, target_system: int, epoch: int, loop_from: int, slot_count: int, share: Sequence[float], slot_x: Sequence[int], slot_y: Sequence[int]):
+    def __init__(self, target_system: int, epoch: int, loop_from: int, slot_count: int, share: Sequence[float], slot_x: Sequence[int], slot_y: Sequence[int], speed_cms: int = 0):
         MAVLink_message.__init__(self, MAVLink_swarm_assign_message.id, MAVLink_swarm_assign_message.msgname)
         self._fieldnames = MAVLink_swarm_assign_message.fieldnames
         self._instance_field = MAVLink_swarm_assign_message.instance_field
@@ -503,9 +503,10 @@ class MAVLink_swarm_assign_message(MAVLink_message):
         self.share = share
         self.slot_x = slot_x
         self.slot_y = slot_y
+        self.speed_cms = speed_cms
 
     def pack(self, mav: "MAVLink", force_mavlink1: bool = False) -> bytes:
-        return self._pack(mav, self.crc_extra, self.unpacker.pack(self.epoch, self.share[0], self.share[1], self.share[2], self.share[3], self.slot_x[0], self.slot_x[1], self.slot_x[2], self.slot_x[3], self.slot_x[4], self.slot_x[5], self.slot_x[6], self.slot_x[7], self.slot_x[8], self.slot_x[9], self.slot_x[10], self.slot_x[11], self.slot_x[12], self.slot_x[13], self.slot_x[14], self.slot_x[15], self.slot_x[16], self.slot_x[17], self.slot_x[18], self.slot_x[19], self.slot_x[20], self.slot_x[21], self.slot_x[22], self.slot_x[23], self.slot_x[24], self.slot_x[25], self.slot_x[26], self.slot_x[27], self.slot_x[28], self.slot_x[29], self.slot_x[30], self.slot_x[31], self.slot_x[32], self.slot_x[33], self.slot_x[34], self.slot_x[35], self.slot_x[36], self.slot_x[37], self.slot_x[38], self.slot_x[39], self.slot_x[40], self.slot_x[41], self.slot_x[42], self.slot_x[43], self.slot_x[44], self.slot_x[45], self.slot_x[46], self.slot_x[47], self.slot_y[0], self.slot_y[1], self.slot_y[2], self.slot_y[3], self.slot_y[4], self.slot_y[5], self.slot_y[6], self.slot_y[7], self.slot_y[8], self.slot_y[9], self.slot_y[10], self.slot_y[11], self.slot_y[12], self.slot_y[13], self.slot_y[14], self.slot_y[15], self.slot_y[16], self.slot_y[17], self.slot_y[18], self.slot_y[19], self.slot_y[20], self.slot_y[21], self.slot_y[22], self.slot_y[23], self.slot_y[24], self.slot_y[25], self.slot_y[26], self.slot_y[27], self.slot_y[28], self.slot_y[29], self.slot_y[30], self.slot_y[31], self.slot_y[32], self.slot_y[33], self.slot_y[34], self.slot_y[35], self.slot_y[36], self.slot_y[37], self.slot_y[38], self.slot_y[39], self.slot_y[40], self.slot_y[41], self.slot_y[42], self.slot_y[43], self.slot_y[44], self.slot_y[45], self.slot_y[46], self.slot_y[47], self.target_system, self.loop_from, self.slot_count), force_mavlink1=force_mavlink1)
+        return self._pack(mav, self.crc_extra, self.unpacker.pack(self.epoch, self.share[0], self.share[1], self.share[2], self.share[3], self.slot_x[0], self.slot_x[1], self.slot_x[2], self.slot_x[3], self.slot_x[4], self.slot_x[5], self.slot_x[6], self.slot_x[7], self.slot_x[8], self.slot_x[9], self.slot_x[10], self.slot_x[11], self.slot_x[12], self.slot_x[13], self.slot_x[14], self.slot_x[15], self.slot_x[16], self.slot_x[17], self.slot_x[18], self.slot_x[19], self.slot_x[20], self.slot_x[21], self.slot_x[22], self.slot_x[23], self.slot_x[24], self.slot_x[25], self.slot_x[26], self.slot_x[27], self.slot_x[28], self.slot_x[29], self.slot_x[30], self.slot_x[31], self.slot_x[32], self.slot_x[33], self.slot_x[34], self.slot_x[35], self.slot_x[36], self.slot_x[37], self.slot_x[38], self.slot_x[39], self.slot_x[40], self.slot_x[41], self.slot_x[42], self.slot_x[43], self.slot_x[44], self.slot_x[45], self.slot_x[46], self.slot_x[47], self.slot_y[0], self.slot_y[1], self.slot_y[2], self.slot_y[3], self.slot_y[4], self.slot_y[5], self.slot_y[6], self.slot_y[7], self.slot_y[8], self.slot_y[9], self.slot_y[10], self.slot_y[11], self.slot_y[12], self.slot_y[13], self.slot_y[14], self.slot_y[15], self.slot_y[16], self.slot_y[17], self.slot_y[18], self.slot_y[19], self.slot_y[20], self.slot_y[21], self.slot_y[22], self.slot_y[23], self.slot_y[24], self.slot_y[25], self.slot_y[26], self.slot_y[27], self.slot_y[28], self.slot_y[29], self.slot_y[30], self.slot_y[31], self.slot_y[32], self.slot_y[33], self.slot_y[34], self.slot_y[35], self.slot_y[36], self.slot_y[37], self.slot_y[38], self.slot_y[39], self.slot_y[40], self.slot_y[41], self.slot_y[42], self.slot_y[43], self.slot_y[44], self.slot_y[45], self.slot_y[46], self.slot_y[47], self.target_system, self.loop_from, self.slot_count, self.speed_cms), force_mavlink1=force_mavlink1)
 
 
 # Define name on the class for backwards compatibility (it is now msgname).
@@ -1013,7 +1014,7 @@ class MAVLink(object):
         """
         self.send(self.swarm_start_encode(t0_usec), force_mavlink1=force_mavlink1)
 
-    def swarm_assign_encode(self, target_system: int, epoch: int, loop_from: int, slot_count: int, share: Sequence[float], slot_x: Sequence[int], slot_y: Sequence[int]) -> MAVLink_swarm_assign_message:
+    def swarm_assign_encode(self, target_system: int, epoch: int, loop_from: int, slot_count: int, share: Sequence[float], slot_x: Sequence[int], slot_y: Sequence[int], speed_cms: int = 0) -> MAVLink_swarm_assign_message:
         """
         Ground to one agent, repeated at ASSIGN_HZ: its share and ordered goal
         slots.
@@ -1025,11 +1026,12 @@ class MAVLink(object):
         share                     : xmin, xmax, ymin, ymax; all 0 with no plan. [m] (type:float)
         slot_x                    : Slot x, east. [dm] (type:int16_t)
         slot_y                    : Slot y, north. [dm] (type:int16_t)
+        speed_cms                 : Fly no faster than this; 0 = cruise speed. [cm/s] (type:uint16_t)
 
         """
-        return MAVLink_swarm_assign_message(target_system, epoch, loop_from, slot_count, share, slot_x, slot_y)
+        return MAVLink_swarm_assign_message(target_system, epoch, loop_from, slot_count, share, slot_x, slot_y, speed_cms)
 
-    def swarm_assign_send(self, target_system: int, epoch: int, loop_from: int, slot_count: int, share: Sequence[float], slot_x: Sequence[int], slot_y: Sequence[int], force_mavlink1: bool = False) -> None:
+    def swarm_assign_send(self, target_system: int, epoch: int, loop_from: int, slot_count: int, share: Sequence[float], slot_x: Sequence[int], slot_y: Sequence[int], speed_cms: int = 0, force_mavlink1: bool = False) -> None:
         """
         Ground to one agent, repeated at ASSIGN_HZ: its share and ordered goal
         slots.
@@ -1041,9 +1043,10 @@ class MAVLink(object):
         share                     : xmin, xmax, ymin, ymax; all 0 with no plan. [m] (type:float)
         slot_x                    : Slot x, east. [dm] (type:int16_t)
         slot_y                    : Slot y, north. [dm] (type:int16_t)
+        speed_cms                 : Fly no faster than this; 0 = cruise speed. [cm/s] (type:uint16_t)
 
         """
-        self.send(self.swarm_assign_encode(target_system, epoch, loop_from, slot_count, share, slot_x, slot_y), force_mavlink1=force_mavlink1)
+        self.send(self.swarm_assign_encode(target_system, epoch, loop_from, slot_count, share, slot_x, slot_y, speed_cms), force_mavlink1=force_mavlink1)
 
     def swarm_infeasible_encode(self, target_system: int, epoch: int, slot: int, slot_x: int, slot_y: int) -> MAVLink_swarm_infeasible_message:
         """
