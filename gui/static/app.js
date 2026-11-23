@@ -235,6 +235,11 @@ function describe(e, past) {
   if (e.event === "kill") return `drone ${e.agent} fails (test fault)`;
   if (e.event === "start") return `mission starts in 60 s${e.late && e.late.length ? " (late: " + e.late + ")" : ""}`;
   if (e.event === "ready") return `drone ${e.agent} ready`;
+  if (e.event === "pace") {          // the butterfly's phase hold
+    const slow = Object.entries(e.speeds || {});
+    return slow.length ? `drone ${slow[0][0]} slows to ${slow[0][1]} m/s: keeps half a lap from the other`
+      : "both drones at full speed, half a lap apart";
+  }
   return e.event + (e.agent != null ? " drone " + e.agent : "");
 }
 function describePlan(e, past) {      // the new split, in words: who left, who took over
