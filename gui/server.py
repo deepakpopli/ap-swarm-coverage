@@ -302,7 +302,8 @@ class Handler(BaseHTTPRequestHandler):
                 with model_lock(model):
                     message["run"], cursor = model.delta(cursor)
                     if model.latest_wall:
-                        message["heat"] = model.heat(model.latest_wall - model.base_wall)
+                        # where the page draws: LIVE_LAG_S (gui/static/app.js) behind the newest
+                        message["heat"] = model.heat(model.latest_wall - model.base_wall - 1.0)
             self.wfile.write(b"data: " + json.dumps(message).encode() + b"\n\n")
             self.wfile.flush()
             time.sleep(LIVE_PERIOD_S)

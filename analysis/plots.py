@@ -210,8 +210,11 @@ def plot_by_drone(runs, out_dir):
     labels = []                                    # (y, text, colour) at the right end
     for drone in drones:
         color = DRONE_COLORS[(drone - 1) % len(DRONE_COLORS)]
-        mine = sorted((r for r in runs if r["m"]["victim"] == drone),
+        mine = sorted((r for r in runs if r["m"]["victim"] == drone
+                       and r["m"]["loss"]["after_mean_pct"] is not None),   # not a loss at the end
                       key=lambda r: r["m"]["loss"]["loss_s"])
+        if not mine:
+            continue
         at = [r["m"]["loss"]["loss_s"] for r in mine]
         dip = [r["m"]["loss"]["dip_pct"] for r in mine]
         after = [r["m"]["loss"]["after_mean_pct"] for r in mine]

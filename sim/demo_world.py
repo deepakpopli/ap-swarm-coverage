@@ -81,11 +81,14 @@ ZONE_W_M = 0.8
 LANE_W_M = 0.2
 if FIELD:
     ZONE_W_M = 1.2
-# the field's surroundings: trees and cars from Gazebo Fuel (in ~/.gz/fuel once downloaded).
+# the field's surroundings: trees and cars from Gazebo Fuel, fetched on the first run (about
+# 5.5 MB, then cached in ~/.gz/fuel), so the first field run needs a network connection.
 # The pine is 5 m tall and the oak 6.5 m as they come; beside a 6x drone they are scaled up.
 FUEL = "https://fuel.gazebosim.org/1.0/openrobotics/models"
 TREE_MESH = {"pine": ("pine tree/6", "pine_tree.dae", "branch_2_diffuse.png", 2.4, 3.4),
              "oak": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 1.3, 1.9)}
+
+
 def inner_track_x(y):
     """The dirt track that crosses the field from south to north (tools/field_texture.py)."""
     return 95.0 + 10.0 * math.sin(y / 70.0)
@@ -305,8 +308,9 @@ def _rectangle(prefix: str, x0, y0, x1, y1, width, z, colour) -> list:
 
 def trees() -> list:
     """(kind, x, y, yaw deg, scale) of every tree, the same on every run: hedgerows north, east
-    and (thinner) west of the field and three copses, none on the field or south of it, where
-    the track, the cars and the overview camera are."""
+    and (thinner) west of the field, three copses outside and three small ones on the field,
+    20 m or more from the priority zone, none south of the field (the track, the overview
+    camera)."""
     rng = random.Random(7)
     spots = [(x, 338.0) for x in range(-30, 340, 24)] + [(338.0, y) for y in range(-10, 320, 26)]
     spots += [(-34.0, y) for y in range(40, 330, 48)]

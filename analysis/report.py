@@ -278,7 +278,7 @@ def summarise_set(runs, refs, baselines):
         add_extras(m, level)
     attainable = summarise([m["coverage"]["mean_pct"] for m in refs])
     for m in runs:
-        if m["loss"] is not None and attainable["n"]:
+        if m["loss"] is not None and m["loss"]["after_mean_pct"] is not None and attainable["n"]:
             m["loss"]["after_over_attainable"] = m["loss"]["after_mean_pct"] / attainable["median"]
     summary = {key: summarise([lookup(m, key) for m in runs]) for key, *_ in METRICS}
     summary["attainable_pct"] = attainable
@@ -321,7 +321,7 @@ def how_to_read(s, refs, baselines):
              "means it never fell below 0.9 x P, not an instant recovery."]
     if share["n"] and dip["n"] and dip["min"] >= share["max"]:
         lines.append(
-            f"- The task's (N-1)/N x P check (about {share['max']:.0f} %) is passed trivially "
+            f"- The task's (N-1)/N x P check (at most {share['max']:.1f} %) is passed trivially "
             f"at this altitude: the lowest dip of any run is {dip['min']:.1f} %. The stronger "
             "comparison is against the no-loss N-1 reference (\"attainable with N-1\").")
     elif share["n"] and dip["n"]:
