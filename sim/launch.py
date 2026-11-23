@@ -93,7 +93,7 @@ class Fleet:
         positions = [config.start_xy(i, self.n) for i in range(self.n)]
         sdf = gazebo_world.generate(gz_dir, positions, config.ORIGIN_LLA, DEMO, DEMO_ZONE)
         self.gz = start_process(["gz", "sim", "-s", "-r", "-v", "2", sdf],
-                         os.path.join(self.run_dir, "gz.log"), env=self.env)
+                                os.path.join(self.run_dir, "gz.log"), env=self.env)
 
     def _start_autopilot(self, agent_id: int) -> None:
         instance = agent_id - 1
