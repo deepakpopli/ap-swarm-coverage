@@ -1,0 +1,2 @@
+payload failure (the drone lands itself), each drone at 75 s, gazebo, 2026-11-23
+  d1_t75, d2_t75, d3_t75: ok on attempt 1
