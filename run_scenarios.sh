@@ -16,7 +16,7 @@ FORCE=${FORCE:-0}
 RUNS=runs/scenarios
 RESULTS=results/scenarios
 
-for scenario in swap obstacle agentdeath gpsfail groundloss radiooutage; do
+for scenario in swap obstacle agentdeath payloadfail groundloss radiooutage; do
   run_one $RUNS $scenario --mission A --scenario $scenario --n 3 --seed 1
 done
 run_one $RUNS C_s1 --mission C --n 3 --seed 1

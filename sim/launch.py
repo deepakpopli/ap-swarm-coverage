@@ -137,18 +137,22 @@ class Fleet:
             raise RuntimeError(f"could not remove iris_{agent_id - 1}: {reply!r}")
         return True
 
-    def gps_off(self, agent_id: int) -> None:
-        """Fault injection, as test equipment: SIM_GPS1_ENABLE = 0 over the autopilot's second
-        MAVLink port (SITL SERIAL1 = tcp:2, the agent holds SERIAL0). Its failsafes land it."""
+    def land(self, agent_id: int) -> None:
+        """Fault injection, as test equipment: a component failed on board (payload, GPS) and the
+        autopilot lands, the way its own failsafe would: mode LAND over its second MAVLink port
+        (SITL SERIAL1 = tcp:2, the agent holds SERIAL0). A GPS cut (SIM_GPS1_ENABLE = 0) does not
+        do this here: the Gazebo JSON backend runs AHRS_EKF_TYPE 10 (the simulator's own state),
+        so it flies on without a fix."""
         from pymavlink import mavutil
         link = mavutil.mavlink_connection(f"tcp:127.0.0.1:{config.sitl_tcp_port(agent_id) + 2}")
         try:
             link.wait_heartbeat(timeout=5)
-            link.mav.param_set_send(agent_id, 1, b"SIM_GPS1_ENABLE", 0,
-                                    mavutil.mavlink.MAV_PARAM_TYPE_INT8)
-            reply = link.recv_match(type="PARAM_VALUE", blocking=True, timeout=3)
-            if reply is None or reply.param_value != 0:
-                raise RuntimeError(f"agent {agent_id}: SIM_GPS1_ENABLE not set ({reply})")
+            land = link.mode_mapping()["LAND"]
+            link.set_mode(land)
+            hb = link.recv_match(type="HEARTBEAT", blocking=True, timeout=3,
+                                 condition=f"HEARTBEAT.custom_mode == {land}")
+            if hb is None:
+                raise RuntimeError(f"agent {agent_id}: did not switch to LAND")
         finally:
             link.close()
 

@@ -12,7 +12,7 @@ A fault is (t_mission, action, target):
   kill sitl:<id>    SIGKILL the arducopter only; the agent must notice and go silent by itself
   kill agent:<id>   SIGKILL the onboard process only; the autopilot's failsafe lands the vehicle
   kill ground, kill radio, start radio
-  gps_off sitl:<id> the autopilot loses its GPS (SIM_GPS1_ENABLE = 0): it lands by itself
+  land sitl:<id>    a component fails on board: the autopilot lands, still talking
 The fake backend has no arducopter, so there "kill sitl" kills the agent (its vehicle lives in it).
 
 Missions: A = seeded kill of a seeded victim at t in [60, 90]; ref = no fault; B = priority zone
@@ -50,7 +50,7 @@ SCENARIOS = {
     "swap": ("A", "re-plan with the lane groups reversed at 30 s: agents cross at cruise"),
     "obstacle": ("A", "an unknown obstacle on a loop slot from 30 s: infeasible, re-plan"),
     "agentdeath": ("A", "kill the victim's agent process instead of its autopilot"),
-    "gpsfail": ("A", "the victim's GPS fails instead of the kill: it lands, the others re-plan"),
+    "payloadfail": ("A", "the victim's payload fails instead of the kill: it lands, the others re-plan"),
     "radiooutage": ("A", "the radio is down from 60 s to 70 s"),
     "groundloss": ("A", "ground down from 40 s for good, then the Mission A kill"),
 }
@@ -88,10 +88,10 @@ def plan(args):
         out["agents"][agent] = ["--obstacle", f"{x},{y},{OBSTACLE_RADIUS_M},{OBSTACLE_AT_S}"]
         out["obstacle"] = {"agent": agent, "xy": [x, y], "radius_m": OBSTACLE_RADIUS_M,
                            "t_mission": OBSTACLE_AT_S}
-    if args.scenario == "gpsfail":
+    if args.scenario == "payloadfail":
         if args.backend == "fake":
-            raise SystemExit("gpsfail needs an autopilot: --backend gazebo or sitl")
-        out["faults"].append((t_event, "gps_off", f"sitl:{agent}"))
+            raise SystemExit("payloadfail needs an autopilot: --backend gazebo or sitl")
+        out["faults"].append((t_event, "land", f"sitl:{agent}"))
     if args.scenario == "agentdeath":
         out["faults"].append((t_event, "kill", f"agent:{agent}"))
     if args.scenario == "groundloss":
@@ -102,7 +102,7 @@ def plan(args):
         out["faults"] = [(t, a, target.replace("sitl:", "agent:"))
                          for t, a, target in out["faults"]]
     for _, action, target in out["faults"]:
-        if action in ("kill", "gps_off") and ":" in target:
+        if action in ("kill", "land") and ":" in target:
             out["kill_agent"] = int(target.split(":")[1])
     return out
 
@@ -215,8 +215,8 @@ class Mission:
         action, target = fault["action"], fault["target"]
         fault["wall"] = time.time()
         log(f"t = {fault['wall'] - self.meta['t0_wall']:.1f} s: {action} {target}")
-        if action == "gps_off":
-            self.fleet.gps_off(int(target.split(":")[1]))
+        if action == "land":
+            self.fleet.land(int(target.split(":")[1]))
         elif target.startswith("sitl:"):
             agent = int(target.split(":")[1])
             if LIVE and agent not in self.fleet.autopilots:
