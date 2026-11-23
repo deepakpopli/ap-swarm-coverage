@@ -5,7 +5,7 @@ body{margin:0;background:#0d1117;color:#c9d1d9;font:13px system-ui,sans-serif}
 header{display:flex;gap:16px;align-items:center;padding:6px 12px;background:#161b22;border-bottom:1px solid #30363d}
 header b{font-size:15px} .observer{color:#d29922;border:1px solid #d29922;border-radius:4px;padding:2px 8px}
 main{display:flex;gap:12px;padding:10px}
-.col{display:flex;flex-direction:column;gap:8px} .side{width:440px}
+.col{display:flex;flex-direction:column;gap:8px} .side{width:600px}
 .box{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px}
 .box h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;color:#8b949e;letter-spacing:.05em}
 select,input,button{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:3px 6px;font:inherit}
@@ -15,8 +15,8 @@ table{border-collapse:collapse;width:100%} td,th{padding:2px 6px;text-align:left
 th{color:#8b949e;font-weight:normal}
 #log{height:150px;overflow-y:auto;font:12px ui-monospace,monospace;white-space:pre-wrap}
 #tail{max-height:110px;overflow:auto;font:11px ui-monospace,monospace;white-space:pre-wrap;margin:4px 0 0;color:#8b949e}
-#slider{flex:1} .big{font-size:20px;color:#e6edf3} .dim{color:#8b949e} .huge{font-size:40px;font-weight:600}
-.bar{height:8px;background:#30363d;border-radius:4px;margin:4px 0 6px} .bar div{height:100%;border-radius:4px}
+#slider{flex:1} .big{font-size:20px;color:#e6edf3} .dim{color:#8b949e} .huge{font-size:26px;font-weight:600}
+.bar{height:5px;background:#30363d;border-radius:3px;margin:2px 0 4px} .bar div{height:100%;border-radius:4px}
 #map{border-radius:6px}
 .legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 3px 0 10px;vertical-align:-1px}
 </style></head><body>
@@ -25,7 +25,7 @@ th{color:#8b949e;font-weight:normal}
 <span id="source" class="dim"></span></header>
 <main>
 <div class="col">
-  <canvas id="map" width="700" height="700"></canvas>
+  <canvas id="map" width="620" height="620"></canvas>
   <div class="box row">
     <button id="play">pause</button>
     <button data-speed="1" class="on">1x</button><button data-speed="4">4x</button><button data-speed="10">10x</button>
@@ -37,7 +37,7 @@ th{color:#8b949e;font-weight:normal}
   &nbsp; ground last seen:<span style="background:#96c6fa"></span>just now<span style="background:#bdd5ef"></span>30 s ago<span style="background:#e4e4e4"></span>60 s+ ago<span style="background:#fff"></span>never</div>
 </div>
 <div class="col side">
-  <div class="box"><h3>Start a mission</h3><div class="row">
+  <div class="box" hidden><h3>Start a mission</h3><div class="row">
     <select id="mission"></select> seed <input id="seed" type="number" value="1" style="width:50px">
     n <input id="n" type="number" value="3" min="1" max="8" style="width:40px">
     <select id="backend"></select></div>

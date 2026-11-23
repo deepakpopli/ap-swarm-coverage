@@ -25,7 +25,7 @@
 
   function makePlayer(id) {
     const cell = document.createElement("div");
-    cell.style.cssText = "flex:1;min-width:0;position:relative";
+    cell.style.cssText = "min-width:0;position:relative";
     cell.innerHTML = `<div class="vlabel" style="font-size:11px;color:#fff;padding:1px 6px;border-radius:3px 3px 0 0;display:inline-block">drone ${id}</div>` +
       `<video muted autoplay playsinline style="width:100%;aspect-ratio:16/9;background:#000;display:block;border-radius:0 3px 3px 3px"></video>` +
       `<div class="vmsg dim" style="position:absolute;left:0;right:0;top:45%;text-align:center">no video</div>`;
@@ -33,6 +33,10 @@
       label: cell.querySelector(".vlabel"), pc: null, timer: null, on: false};
     p.label.style.background = COLORS[(id - 1) % COLORS.length];
     p.video.onplaying = () => (p.msg.hidden = true);
+    p.video.title = "click: full screen";
+    p.video.style.cursor = "zoom-in";
+    p.video.onclick = () => (document.fullscreenElement ? document.exitFullscreen()
+      : p.video.requestFullscreen && p.video.requestFullscreen());
     return p;
   }
 
@@ -73,10 +77,10 @@
     }
   }
 
-  const row = document.createElement("div");
-  row.className = "row";
-  row.style.alignItems = "flex-start";
+  const row = document.createElement("div");   // two on top, the third centred below
+  row.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px";
   for (let id = 1; id <= N; id++) { const p = makePlayer(id); players.push(p); row.appendChild(p.cell); }
+  if (N % 2) players[N - 1].cell.style.cssText += ";grid-column:1 / span 2;justify-self:center;width:calc(50% - 4px)";
   box.appendChild(row);
   players.forEach((p) => stop(p, false));
   setInterval(() => {
