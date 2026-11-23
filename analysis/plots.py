@@ -3,8 +3,11 @@
 python -m analysis.plots --out results/<set> RUN_DIR... [--ref RUN_DIR...] [--baseline RUN_DIR...]
 Set figures: coverage_vs_time, before_after, recovery_steps, by_drone.
 One-run figures (from the first RUN_DIR): age_maps, assignments, separation.
+python -m analysis.plots --out DIR --compare NAME=SET_DIR... : the same grid of runs (each drone
+failing at each time) flown by different code, side by side: compare.png.
 """
 import argparse
+import glob
 import os
 
 import matplotlib
@@ -231,6 +234,43 @@ def plot_by_drone(runs, out_dir):
     save(fig, out_dir, "by_drone.png")
 
 
+SET_COLORS = ["#2a78d6", "#eb6834", "#1baf7a"]
+
+
+def plot_compare(sets, out_dir):
+    """sets: [(name, runs)]. Per drone: coverage from 60 s after the fault, and in Mission B
+    how old the zone got once the new split had taken over, against the time of the fault."""
+    rows = [("loss.after_mean_pct", "area seen in the last 60 s (%),\nmean from 60 s after the fault")]
+    if all(r["m"].get("mission_b") for _, runs in sets for r in runs):
+        rows.append(("mission_b.settled_worst_s", "zone: longest unseen from\n40 s after the loss (s)"))
+    drones = sorted({r["m"]["victim"] for _, runs in sets for r in runs})
+    fig, axes = plt.subplots(len(rows), len(drones), figsize=(11, 3.4 * len(rows)), squeeze=False,
+                             sharey="row")
+    for col, drone in enumerate(drones):
+        for row, (key, label) in enumerate(rows):
+            ax = axes[row][col]
+            for k, (name, runs) in enumerate(sets):
+                mine = sorted((r for r in runs if r["m"]["victim"] == drone),
+                              key=lambda r: r["m"]["loss"]["loss_s"])
+                ax.plot([r["m"]["loss"]["loss_s"] for r in mine],
+                        [report.lookup(r["m"], key) for r in mine], "-o",
+                        color=SET_COLORS[k % len(SET_COLORS)], lw=2, ms=7, mec="white", mew=1.5,
+                        label=name)
+            if key.startswith("mission_b"):
+                ax.axhline(config.PRIORITY_REVISIT_S, color=CRITICAL, lw=1, ls="--")
+                ax.annotate("30 s limit", (1, config.PRIORITY_REVISIT_S), xycoords=("axes fraction", "data"),
+                            xytext=(-4, 3), textcoords="offset points", ha="right", fontsize=8,
+                            color=CRITICAL)
+            if row == 0:
+                ax.set_title(f"Drone {drone} fails")
+            if row == len(rows) - 1:
+                ax.set_xlabel("time of the fault (mission s)")
+            if col == 0:
+                ax.set_ylabel(label)
+    axes[0][0].legend(fontsize=8, loc="lower left")
+    save(fig, out_dir, "compare.png")
+
+
 # ------------------------------------------------------------------- one-run figures
 
 def plot_age_maps(run, out_dir):
@@ -341,11 +381,21 @@ def plot_separation(run, out_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="figures for a set of runs")
-    parser.add_argument("runs", nargs="+")
+    parser.add_argument("runs", nargs="*")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--compare", nargs="*", default=[], metavar="NAME=SET_DIR")
     parser.add_argument("--ref", nargs="*", default=[])
     parser.add_argument("--baseline", nargs="*", default=[])
     args = parser.parse_args()
+    if args.compare:
+        sets = [(name, [load(os.path.dirname(f)) for f in
+                        sorted(glob.glob(os.path.join(path, "*", "metrics.json")))])
+                for name, path in (item.split("=", 1) for item in args.compare)]
+        report.refuse_fake_in_results(args.out, {r["m"]["backend"] for _, rs in sets for r in rs})
+        os.makedirs(args.out, exist_ok=True)
+        plot_compare(sets, args.out)
+        print(f"figure -> {args.out}/compare.png")
+        return
     runs = [load(d) for d in args.runs]
     refs = [load(d) for d in args.ref]
     baselines = [load(d) for d in args.baseline]
