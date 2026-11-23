@@ -24,11 +24,11 @@ Live runs in Gazebo with the web view beside them. Click a picture to play it on
 | Mission A (the evaluated one), 2:33 | Mission B (priority zone), 3:14 |
 |---|---|
 | [![Mission A](https://img.youtube.com/vi/5SAeGOS1C4w/hqdefault.jpg)](https://youtu.be/5SAeGOS1C4w) | [![Mission B](https://img.youtube.com/vi/0mboWFfk0E8/hqdefault.jpg)](https://youtu.be/0mboWFfk0E8) |
-| 0:00 the drones take up their loops. 0:17 three drones cover the area. 1:07 drone 1 is killed (SIGKILL, mission time 71.5 s). 1:20 the ground declares it lost (83.8 s) and the two survivors take over its lanes. From 1:30 coverage recovers. | 0:00 the drones take up their loops. 0:25 three drones cover the area; one owns the red 60 m x 60 m zone. 1:28 drone 3 is killed (63.2 s). 1:40 it is declared lost (75.4 s) and the two survivors switch to loops that both pass through the zone. The zone stays covered; the rest of the area settles lower, at about 79 %. |
+| 0:00 the drones take up their loops. 0:17 three drones cover the area. 1:07 drone 1 is killed (SIGKILL, mission time 71.5 s). 1:20 the ground declares it lost (83.8 s) and the two survivors take over its lanes. From 1:30 coverage recovers. | 0:00 the drones take up their loops. 0:25 three drones cover the area; one owns the red 60 m x 60 m zone. 1:28 drone 3 is killed (63.2 s). 1:40 it is declared lost (75.4 s) and the two survivors switch to loops that both pass through the zone. The zone stays covered; coverage of the whole area settles lower, at about 79 % (the evaluated median). |
 
 Each video says its playback speed in the top corner (real time to 1.5x). The required top-down
 animation of a Mission A run, under 60 s with the dropout, is `results/replay_representative.mp4` (47 s,
-seed 14, the median run).
+seed 14, the run whose coverage after recovery is the median, 94.3 %).
 
 ## Architecture
 
@@ -58,7 +58,7 @@ its share; on a loss it only changes who owns which lanes.
 In pseudo-code:
 
 ```
-allocate(alive drones, positions, blacklist, previous plan, priority zone or none):
+allocate(alive drones, positions, velocities, blacklist, previous plan, priority zone or none):
     lanes  = ceil(area width / camera footprint) north-south lanes, evenly spread
     groups = the cut of lanes into N contiguous groups whose longest loop is shortest
              (try every cut; ties: the first one)
@@ -76,7 +76,7 @@ allocate(alive drones, positions, blacklist, previous plan, priority zone or non
                the other lanes; with two drones, both fly a "butterfly" through the zone
                (where it fits)
     new plans whose first slots come too close to another drone's: move their transit slots
-    return {drone: slots}   # deterministic; positions only, never velocities
+    return {drone: slots}   # deterministic; the plan is positions only, never velocities
 ```
 
 ### What happens when something fails
@@ -86,7 +86,7 @@ allocate(alive drones, positions, blacklist, previous plan, priority zone or non
 | Autopilot (the Mission A kill) | its agent stops sending at once; the ground declares it lost after 12 s of silence | the ground re-plans the survivors over the dead drone's lanes | lost 12.1 s after the kill |
 | Agent process | its autopilot lands after 3 s (heartbeat lost); the ground: lost after 12 s | the same re-plan | lost 12.1 s after the kill, coverage after 95.5 % |
 | Payload | the drone lands and reports failsafe; the ground: lost at once | re-plan right away | lost 1.3 to 1.5 s after the failure |
-| Ground station | nobody needs it to fly | the drones keep their last plan and stay safe; no re-plan in this version (a leader-follower fallback is my next step; in progress, not in this repo yet) | with a drone also lost: coverage 75.1 % after |
+| Ground station | nobody needs it to fly | the drones keep their last plan and stay safe; no re-plan in this version (a leader-follower fallback is my next step; it is not in this repo) | with a drone also lost: coverage 75.1 % after |
 | Radio | each drone is deaf after 3 s of hearing nobody | it stops and holds at its own altitude; no re-plan | 10 s outage: 7.2 s deaf, nobody declared lost |
 
 The scenario runs behind these numbers are in `results/scenarios/` and REPORT.md section 2.
@@ -110,9 +110,12 @@ The scenario runs behind these numbers are in `results/scenarios/` and REPORT.md
 | Lost declared after the kill | 12.1 s [11.8, 12.2] |
 | Minimum 3D separation from t = 10 s / time below 8 m | 74.9 m [60.4, 75.0] / 0 s in every run |
 
-- **Mission B** (priority zone): once the survivors' new split runs, the zone is seen within
-  30 s in every run; the rest of the area stays at about 79 %
-  ([results/gazebo_grid_B/results.md](results/gazebo_grid_B/results.md)).
+- **Mission B** (priority zone, 12 runs: each victim killed at 60, 70, 80 and 90 s): from 40 s
+  after the loss, when the survivors' new split runs, the zone is seen within 30 s in every run
+  (oldest 23.9 s [23.3, 26.1]). During the changeover it is not: over the whole run the zone's
+  longest unseen time is 29.3 s [26.5, 57.3], worst when the zone's owner is the one killed.
+  Coverage of the whole area settles at about 79 % and does not come back to 0.9 x before in
+  any run ([results/gazebo_grid_B/results.md](results/gazebo_grid_B/results.md)).
 - **Mission C** (10 s blackout of one drone): it is not declared lost and needs no re-plan
   (`results/scenarios/C_s1.metrics.json`).
 

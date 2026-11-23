@@ -1,163 +1,115 @@
 # Report: resilient multi-drone coverage on ArduPilot SITL
 
-For each requirement I say what I built, why, and where the evidence is. Every number comes from a file under `results/`, given as median [min, max] over runs. The reasons for the bigger choices are in [DECISIONS.md](DECISIONS.md).
+For each requirement I state what I built, why I built it that way, and where the evidence is. Every measured number comes from a file under `results/` and is given as median [min, max] over runs unless I say otherwise. The reasons for the larger design choices are in [DECISIONS.md](DECISIONS.md). `./setup.sh --build` builds the stack, and `./run_eval.sh` runs the whole evaluation headless.
 
-Conventions:
-
-- The area is 300 m x 300 m, in metres east and north of its south-west corner (`swarm/config.py`).
-- Drone ids are 1..N and equal each autopilot's MAVLink system id. The ground station is 255. N = 3 unless stated.
-- Mission time t = 0 is 60 s after every drone is on its coverage loop, so the 60 s coverage window is already full at t = 0.
-- L is the moment of the loss. P is a run's own coverage in the 60 s before the loss. B is the no-loss three-drone baseline.
-- A seed fixes a run's random choices (victim, kill time, dropped packets), so the same seed gives the same faults.
-
-`./setup.sh --build` builds the stack (ArduCopter SITL and ardupilot_gazebo at pinned commits). `./run_eval.sh` runs the whole evaluation headless.
+Conventions: the area is 300 m x 300 m, there are N = 3 drones unless stated, and the drone ids are 1..N. L is the moment of the loss, and P is a run's own coverage in the 60 s before it. A seed fixes the victim, the kill time and the dropped packets, so the same seed always gives the same faults.
 
 ## Summary
 
-Over 17 seeded headless Gazebo runs of Mission A, mean coverage is 97.6 % [97.0, 97.8] in the 60 s before the loss and 94.3 % [92.8, 95.7] after recovery. That is 0.99 [0.94, 1.01] of what a no-loss two-drone run holds, and 1.45 [1.36, 1.47] times the (N-1)/N share the task asks for.
+- **Mission A** (17 seeded headless Gazebo runs, one drone killed in each): coverage is 97.6 % [97.0, 97.8] before the loss and 94.3 % [92.8, 95.7] after recovery. That is 0.99 [0.94, 1.01] of a no-loss two-drone run and 1.45 [1.36, 1.47] times the (N-1)/N share.
+- The ground declares the dead drone lost 12.1 s [11.8, 12.2] after the kill and re-plans once. In 12 of 17 runs coverage fell below 90 % of its pre-loss value and came back, after 65.8 s [37.2, 77.1]; in the other 5 it never fell that far. No two drones came closer than 8 m.
+- The loss is still visible. The dip is 83.3 % at the median and 66.9 % in the worst run, and some cells go unseen for up to 142.5 s, against about 68 s normally. At 50 m the field is also over-provisioned (a no-loss two-drone run holds 95.1 % against 97.0 % for three), which is part of why the loss looks mild.
+- **Mission B**: once the survivors' new split runs, the priority zone is seen within 30 s in every run. It is not held during the change-over or when the zone's own drone is lost (up to 57.3 s), and coverage of the whole area stays at about 79 %.
+- **Mission C**: a drone that is silent for 10 s is not declared lost and needs no re-plan.
 
-The ground declares the dead drone lost 12.1 s [11.8, 12.2] after the kill and re-plans once. In 12 of 17 runs coverage fell below 90 % of its pre-loss value and came back, after 65.8 s [37.2, 77.1]. In 5 runs it never fell that far. No two drones came closer than 8 m (`results/gazebo_50m/results.md`).
-
-The loss is still visible. The dip is 83.3 % at the median and 66.9 % in the worst run. Some cells go unseen for up to 142.5 s, against about 68 s normally. Losing drone 3, which holds 2 of the 4 lanes, is the worst case: coverage dips to 67-81 % and takes 65-77 s to recover. At 50 m the field is also over-provisioned (a no-loss two-drone run holds 95.1 % against 97.0 % for three), which is part of why the loss looks mild.
-
-So yes, it degrades gracefully, at a cost I chose: a 12 s wait before re-planning, so that a drone that is only silent (Mission C) is not given up.
-
-Mission B: once the survivors' new split runs, the priority zone is seen within 30 s in every run. It is not held during the change-over or when the zone's own drone is lost, and the rest of the area stays at about 79 %. Mission C: a drone silent for 10 s is not declared lost and needs no re-plan.
+So the system does degrade gracefully, at a cost I chose deliberately: a 12 s wait before re-planning, so that a drone that is only silent is not given up.
 
 ## 1. Simulation
 
-**What.** Every drone is its own `arducopter` SITL process (SITL is ArduPilot's software-in-the-loop autopilot running on a PC). Instance id is drone id - 1, with MAVLink on TCP 5760 + 10 x instance. All drones fly in one Gazebo Harmonic (robot simulator) world with the ardupilot_gazebo iris model and JSON backend (`sim/launch.py`, `sim/gazebo_world.py`). Lock-step is off: with it on, one killed autopilot froze the whole world. The middleware is plain pymavlink, no ROS (DECISIONS.md, "mavlink for everything"). For tests, the same code also runs on SITL's own physics and on a fake with no simulator.
+**What.** Every drone is its own `arducopter` SITL process, and all of them fly in one Gazebo Harmonic world with the ardupilot_gazebo iris model (`sim/launch.py`). Lock-step is off, because with it on a single killed autopilot froze the whole world. The middleware is plain pymavlink, without ROS.
 
-**GUIDED at 20 Hz.** GUIDED is the mode where the autopilot follows targets sent from outside. Each agent sends one position target per tick at `CONTROL_HZ = 20` (`swarm/config.py`). Measured in every evaluation run: slowest agent 20.0 Hz, worst 99th-percentile setpoint period 0.051 s [0.050, 0.051], longest single period 0.089 s (`results/gazebo_50m/results.md`).
+**GUIDED at 20 Hz.** Each agent sends one position target per tick at `CONTROL_HZ = 20` (`swarm/config.py`). Measured over every evaluation run, the slowest agent sent at 20.0 Hz and the worst 99th-percentile setpoint period was 0.051 s [0.050, 0.051].
 
-**12 m/s through ArduPilot parameters.** `swarm/mav_vehicle.py` sets `WP_SPD = 11.5` m/s before arming. It reads every parameter back, refuses to arm on a mismatch, and logs the values. I send position targets placed ahead of the drone, not velocity targets, because in GUIDED WP_SPD caps only position targets (measured; see `swarm/mav_vehicle.py`). So the autopilot enforces the cap, not my code.
+**12 m/s through ArduPilot parameters.** `swarm/mav_vehicle.py` sets `WP_SPD = 11.5` m/s before arming. It reads every parameter back, refuses to arm on a mismatch and logs the values. I send position targets rather than velocity targets, because in GUIDED mode WP_SPD caps only position targets. The autopilot therefore enforces the cap; my safety filter also clips its own output to 11.5 m/s, but that is not what holds the limit.
 
-I chose 11.5 and not 12 because the vehicle overshoots WP_SPD by a small tracking error; a lower `PSC_NE_JERK` keeps it small. Measured maximum ground speed: 11.50 [11.49, 11.50] m/s from the reported velocity, and 11.53 [11.44, 11.99] m/s from position differences over 1 s (`results/gazebo_50m/results.md`). In the grid sets the position-difference maximum reaches 12.01 m/s in some runs (`results/gazebo_grid_A/results.md`). That is 0.01 over the limit on a 1 s difference of reported positions. I report it rather than round it away.
+I chose 11.5 rather than 12 because the vehicle overshoots WP_SPD after braking. At `PSC_NE_JERK` 12 it overshot after a brake, so I set it to 4 (comment at `swarm/mav_vehicle.py:41`). The maximum reported velocity in the evaluation was 11.50 [11.49, 11.50] m/s. Speeds computed from 1 s differences of reported positions reach 12.01 m/s in some grid runs (`results/gazebo_grid_A/results.md`); that is 0.01 over the limit on a 1 s difference of reported positions, while the autopilot's own reported velocity never exceeded 11.50 m/s. I report it rather than round it away.
 
-Every failsafe that could choose RTL (return to launch) is set to Land or off (`PARAMS` in `swarm/mav_vehicle.py`). RTL would fly a drone straight across the others' lanes.
+Every failsafe that could choose RTL (return to launch) is set to Land or off, because RTL would fly a drone straight across the other drones' lanes.
 
 ## 2. Architecture, and what happens when each component dies
 
-Hybrid. What needs the whole picture runs on the ground. What keeps the drone safe runs onboard.
+The design is hybrid. What needs the whole picture runs on the ground, and what keeps the drone safe runs onboard.
 
 ![Architecture](docs/architecture.png)
 
 | Process | Where | Does |
 |---|---|---|
 | `arducopter` x N | drone (autopilot) | flight control, the speed cap |
-| `swarm/agent.py` x N | drone (companion computer) | coverage controller, safety filter, STATE at 5 Hz, its own log |
+| `swarm/agent.py` x N | drone (companion computer) | coverage controller, safety filter, STATE at 5 Hz |
 | `swarm/ground.py` | ground station | liveness, the allocator, the blacklist, START |
 | `sim/radio.py` | stands in for the air link | loss, delay, blackouts |
 
-The safety filter and coverage controller are onboard, so they keep working when the ground or the radio fails. The allocator is on the ground because it needs every drone's state and is not time-critical. It sends only lanes and slots, so a late or lost ASSIGN is never dangerous. ASSIGN is re-sent every second and carries an epoch (a plan version number), so a repeat changes nothing.
+The safety filter and the coverage controller run onboard, so they keep working when the ground or the radio fails. The allocator runs on the ground because it needs every drone's state and is not time-critical. It sends only lanes and slots, so a late or lost ASSIGN costs coverage, not separation. ASSIGN is re-sent every second with an epoch (a plan version number), so each lost packet costs one more second.
 
-What happens when one component dies:
+| What dies | What happens | Measured |
+|---|---|---|
+| An autopilot (Mission A) | The agent stops sending and exits after 2 s; the ground marks it suspect after 2 s and lost after 12 s, then re-plans | every survivor on its new plan 12.4 s [12.2, 15.3] after the kill |
+| An agent process | The autopilot loses the agent's heartbeat and lands after 3 s; the rest is as above | `agentdeath`: lost 12.1 s after the kill, coverage after 95.5 % |
+| The payload | The drone lands itself and reports `failsafe`; the ground treats it as lost at once | lost 1.3 to 1.5 s after the failure (`gazebo_payload/`) |
+| The ground | The drones keep flying their last plan and the safety filter keeps working, but nothing re-plans | `groundloss`: 75.1 % after a loss, not recovered in the run; still 1.15 x the (N-1)/N share |
+| The radio | After 3 s without hearing anyone a drone is "deaf": it stops at its private hold altitude (60, 40, 70 m for ids 1, 2, 3; cruise is 50 m) | `radiooutage` (10 s): 7.2 s deaf per drone, nobody lost, no re-plan, 96.4 % |
 
-- **An autopilot (the Mission A fault).** The agent sees its MAVLink link fail, sends nothing more (so nobody gets a stale position with a fresh time stamp) and exits after 2 s (`swarm/agent.py`). The others mark it suspect after 2 s and lost after 12 s, and the ground re-plans the survivors. Measured: every survivor holds its new plan 12.4 s [12.2, 15.3] after the kill (`results/gazebo_50m/results.md`).
-- **An agent process.** Its autopilot loses the agent's heartbeat and lands after 3 s (`FS_GCS_ENABLE = 5`, `FS_GCS_TIMEOUT = 3`). The rest is as above. Scenario `agentdeath`: lost 12.1 s after the kill, one re-plan, coverage after 95.5 %, never below 90 % of before (`results/scenarios/agentdeath.metrics.json`).
-- **The payload.** The drone lands itself and keeps talking with status `failsafe`, which the ground treats as lost at once. Lost 1.3 to 1.5 s after the failure in the three runs in `results/gazebo_payload/`, and 1.4 s in `results/scenarios/payloadfail.metrics.json`.
-- **The ground station.** The drones keep flying their last assignment and keep hearing each other, so the safety filter works as before. But nothing re-plans, so a drone lost meanwhile leaves its lanes unflown. Scenario `groundloss` (ground down for good from 40 s, then the Mission A kill at 64 s): coverage 97.6 % before, 75.1 % mean after, dip 73.1 %, never recovered; still 1.15 x the (N-1)/N share (`results/scenarios/groundloss.metrics.json`). A restarted ground listens 3 s, jumps its epoch 1000 above any it hears and keeps t0 from its log (tested in `tests/test_ground.py`, not flown). In this version no drone takes over the ground's job.
-- **The radio.** After 3 s without hearing anyone a drone is "deaf": it stops and goes to its private hold altitude (cruise is 50 m; hold is 60, 40, 70 m for ids 1, 2, 3), so deaf drones are vertically apart. Scenario `radiooutage` (radio down 60-70 s): 7.2 s deaf per drone, nobody declared lost, no re-plan, mission mean coverage 96.4 %, no time below 8 m (`results/scenarios/radiooutage.metrics.json`).
-
-The ground is the single point of failure for re-planning (see Limitations).
+A restarted ground listens for 3 s and jumps its epoch 1000 above any it hears, so the drones accept its plans (tested in `tests/test_ground.py`, not flown). The ground is therefore the single point of failure for re-planning, which I return to under Limitations.
 
 ## 3. Sensing
 
-**Payload.** A SIYI A8 mini gimbal camera pointing straight down (`swarm/sensor.py`, which links the product page and manual). It weighs 95 g (SIYI's specification page) and is sold for small multirotors. Horizontal field of view is 81 deg. Every recording mode is 16:9, so the vertical field of view is 51.3 deg (derived). At 50 m above flat ground the footprint is 85.4 m across the track x 48.0 m along it. The rectangle turns with the drone's logged yaw.
+**Payload.** The modelled sensor is a SIYI A8 mini gimbal camera pointing straight down (`swarm/sensor.py`, which links the product page and the manual). It weighs 95 g and is sold for small multirotors. Its horizontal field of view is 81 deg, and every recording mode is 16:9, so the vertical field of view is 51.3 deg. At 50 m the footprint is 85.4 m across the track and 48.0 m along it, and the rectangle turns with the drone's logged yaw.
 
-**Range and rate: what I assumed.** Anything inside the footprint counts as seen. I do not model resolution, so "seen" means "imaged", not "a person detected". At 50 m the 4K mode gives about 2.2 cm per pixel across (85.4 m over 3840 pixels), so 50 m is the range I use. Coverage uses the positions the autopilot reports at 20 Hz (one log row per control tick), not the camera's frame rate. At 11.5 m/s a drone moves 0.6 m between rows against a 48 m footprint, so the difference is small.
-
-**Coverage only from footprint and logged position.** `analysis/metrics.py` reads only each drone's own log (`agent_<id>.csv`, positions from its autopilot), on a 2 m grid, once a second. A dead drone's rows stop at its loss.
+**Range and rate.** Anything inside the footprint counts as seen. I do not model resolution, so "seen" means "imaged", not "a person detected". At 50 m the 4K mode gives about 2.2 cm per pixel, so 50 m is the range I use. Update rate: I count a sighting at each logged autopilot position (20 Hz), not at the camera's frame rate. At 11.5 m/s the drone moves 0.6 m between rows against a 48 m footprint, so the difference is small. `analysis/metrics.py` computes coverage only from each drone's own log and footprint, on a 2 m grid.
 
 ## 4. Allocation
 
-**What.** `swarm/allocator.py` is a pure function of (live ids, last positions, blacklist, previous plan). The area gets fixed north-south lanes one footprint wide: ceil(300 / 85) = 4 lanes at x = 37.5, 112.5, 187.5 and 262.5 m. They are cut into contiguous groups, one per drone, choosing the cut whose longest loop is shortest. With three drones that is 1 + 1 + 2 lanes.
+**What.** `swarm/allocator.py` is a pure function of (live ids, last positions, blacklist, previous plan), plus each drone's velocity and active slot, used to predict where it starts a new plan, and the priority zone in Mission B. The area is divided into fixed north-south lanes at most one footprint wide, which gives 4 lanes at x = 37.5, 112.5, 187.5 and 262.5 m. The lanes are cut into contiguous groups, one per drone, choosing the cut whose longest loop is shortest; with three drones that is 1 + 1 + 2 lanes. Each drone gets a closed back-and-forth loop over its lanes, with slots at most 79 m apart. Ties break by id, and the same inputs always give the same plan (`tests/test_allocator.py`).
 
-In short:
+![Allocator](docs/allocator.png)
 
-```
-allocate(alive drones, positions, blacklist, previous plan, priority zone or none):
-    lanes  = ceil(area width / camera footprint) north-south lanes, evenly spread
-    groups = the cut of lanes into N contiguous groups whose longest loop is shortest
-             (try every cut; ties: the first one)
-    owners = the previous owners if every group still has its live previous owner,
-             else the drone-to-group match with least total distance to the loops
-             (ties: the first match over the sorted ids)
-    for each drone and its group:
-        if same group as before and none of its old slots blacklisted for it: keep the old plan
-        else: loop = back-and-forth over its lanes, closed, a slot at most every 79 m
-                     (4 start corners, nearest first; take the first with no blacklisted
-                      (drone, slot); if all have one, drop those slots from the nearest)
-              plan = slots from the drone to the loop's start, then the loop, repeated
-    more drones than lanes: spares get no slots and hold
-    Mission B: one drone owns a short lane through the priority zone, the rest share
-               the other lanes; with two drones, both fly a "butterfly" through the zone
-               (where it fits)
-    new plans whose first slots come too close to another drone's: move their transit slots
-    return {drone: slots}   # deterministic; positions only, never velocities
-```
+**Why.** The lanes never move; only their owners change. A re-plan therefore does not disturb drones whose share stays the same: such a drone keeps its old plan and its active slot, unless one of its slots is blacklisted; only the epoch number changes. The reasons for fixed lanes and for three drones are in DECISIONS.md.
 
-Each drone gets its share (a rectangle) and an ordered list of slots: a closed back-and-forth loop over its lanes, like mowing a lawn, with points no more than 79 m apart. Ties break by id, and ids are sorted everywhere. The same inputs give the same plan (`tests/test_allocator.py`).
+**Re-plan.** The ground re-plans on a lost drone, on a rejoin, or on an accepted INFEASIBLE report. Measured: the changes beyond the one forced by the loss were 0 [0, 0] in every run.
 
-**Re-plan.** On a lost drone, a rejoin, or an accepted INFEASIBLE report (`swarm/ground.py`). Lanes never move; only owners change. A drone whose share did not change keeps its old plan and epoch. Measured: "changes beyond the one forced by the loss" 0 [0, 0] in every evaluation run (`results/gazebo_50m/results.md`).
-
-**Assignments only.** The allocator outputs shares and slots. SWARM_ASSIGN has one more field, a speed limit, used only by the Mission B phase hold (below) to slow one drone to 0.8 or 0.6 x cruise. It is a cap the coverage controller respects, not a velocity command, and the safety filter still sits after it. In Mission A it is always 0 (= cruise).
-
-Why fixed lanes and three drones: DECISIONS.md, "Why 3 drones and not 4 or 5".
+**Assignments only:** shares and slots, never velocities. ASSIGN has one more field, a speed limit, used only by the Mission B phase hold. It is a cap the coverage controller respects, not a velocity command, and in Mission A it is always 0 (= cruise).
 
 ## 5. Coverage and redistribution
 
-**Coverage controller** (`swarm/coverage.py`, onboard). It flies straight at the active slot at cruise, slowing only before sharp turns, and moves on when within 5 m of it or past it, looping after the last slot. On a new plan it starts at the slot it already heads to, or the nearest one ahead, so a re-plan does not turn it round. Its output is a horizontal velocity; the safety filter decides what reaches the autopilot.
+**Coverage controller** (`swarm/coverage.py`, onboard). It flies straight at the active slot at cruise speed, slowing only before sharp turns, moves on when it is within 5 m of it, and loops after the last slot. On a new plan it starts at the slot ahead, so a re-plan does not turn it round unless the way ahead is too long. Its output is a horizontal velocity, and the safety filter decides what reaches the autopilot.
 
-**Redistribution.** When a drone is lost, the two survivors split the four lanes 2 + 2. The first survivor is on its new loop 12.3 s [12.1, 12.4] after the kill (`results/gazebo_50m/results.md`). `assignments.png` in each results set shows the shares over time: one step at the re-plan, flat otherwise.
+**Redistribution.** When a drone is lost, the two survivors split the four lanes 2 + 2. The first survivor is on its new loop 12.3 s [12.1, 12.4] after the kill. `assignments.png` in each results set with a `results.md` shows the shares over time: one step at the re-plan, and flat otherwise.
 
-Why 12 s: DECISIONS.md, "Dead or just silent?". `results/lost4/` flew seeds 1-5 with 4 s: loss is declared about 4 s after the kill, but in Mission C the silent drone is declared dead and comes back, costing two re-plans.
+**Why 12 s** (DECISIONS.md, "Dead or just silent?"). I also flew seeds 1-5 with a 4 s timeout (`results/lost4/`): loss is declared about 4 s after the kill, but in Mission C the silent drone is declared dead and comes back, costing two re-plans.
 
 ## 6. Safety filter
 
-**Where.** `swarm/safety.py`, onboard, every tick, between the coverage controller and the autopilot. It uses only the drone's own state from its autopilot and the last SWARM_STATE heard from each neighbour. It has no I/O, so `tests/test_safety.py` drives it directly.
+**Where.** `swarm/safety.py` runs onboard, every tick, between the coverage controller and the autopilot. It uses only the drone's own state and the last SWARM_STATE heard from each neighbour.
 
-**What it enforces.** Any two drones at least 8 m apart in 3D. For each neighbour, either their altitude bands are 8 m apart (a drone only ever targets cruise or its own hold altitude, 10 m apart), or the filter stays out of a keep-out disc around the neighbour's predicted position and closes on it no faster than it can still stop. Both drones of a pair apply the same rule and each takes half.
+**What it enforces.** Any two drones stay at least 8 m apart in 3D. For each neighbour, either their altitude bands are 8 m apart, or the drone stays out of a keep-out disc around the neighbour's predicted position and closes on it no faster than it can still stop. Both drones of a pair apply the same rule and each takes half. The disc grows with the age of the neighbour's last state (9.0 m when fresh, 28.1 m at 2 s, up to 88.5 m), and a neighbour silent for 12 s is dropped. If the drone could not stop before a disc at its actual velocity, it brakes to zero.
 
-**Stale states.** The disc grows with the age of the neighbour's last state: 9.0 m when fresh, 14.5 m at 1 s, 28.1 m at 2 s, 64.5 m at 4.6 s (by then a silent neighbour has itself gone deaf and braked), up to 88.5 m (computed from `SafetyParams.radius_m`). Late or out-of-order states are ignored. A neighbour silent for 12 s is dropped. A neighbour in failsafe is landing, so only the air above its last height is free.
+**When it cannot satisfy every constraint.** The filter first removes the excess closing speed toward each disc; head-on, where almost no sideways speed is left, it also steps to the right (`SIDESTEP_BELOW_MS` in `swarm/safety.py`). If that breaks another disc's limit, it scales the whole velocity down until none is broken, down to zero if needed. So when the constraints conflict the drone slows and stops; it does not escape. Coverage gives way, separation does not. A drone held still like this reports its slot infeasible after 15 s, goes to its hold altitude, and the ground re-plans around it (section 7).
 
-**Brake and deaf.** If the drone could not stop before a disc at its actual velocity, the filter commands zero (`brake`). A deaf drone (section 2) holds zero horizontal speed at its hold altitude until it hears someone and is clear again.
+Inside a disc it may never close further, but nothing pushes it out either. Take-off is outside the filter: a drone climbs straight up only after listening 1 s and seeing no neighbour within 9 m.
 
-**When it cannot satisfy every constraint.** Each disc sets a maximum closing speed. The filter first removes the excess closing speed toward each disc, with a step to the right in a head-on case. If that breaks another disc's limit, it scales the whole velocity down until none is broken, down to zero if needed. So when constraints conflict, the drone slows and stops; it does not escape sideways. Coverage gives way, separation does not.
+**Evidence.** Time below 8 m is 0 s in every Gazebo run, and the minimum 3D separation from t = 10 s was 60.4 m or more in the evaluation. In the `headon` scenario two drones are sent straight at each other at the same altitude, where without the filter they would pass at about 0 m. They passed at 23.9 m, the filter braked for 0.25 s and 0.40 s, and there was no deadlock. This is one run, so it shows the filter working, not a measured margin.
 
-A drone held still like this reports its slot infeasible after 15 s, goes to its hold altitude (clear of the cruise layer) and the ground re-plans around it (section 7). Inside a disc it may never close further, but nothing pushes it out either.
-
-**Take-off is outside the filter.** A drone climbs straight up to its hold altitude only after listening 1 s and seeing no neighbour within 9 m horizontally (8 m plus position error). The start line is 10 m apart, so take-off is clear by construction.
-
-**Evidence.** In the normal Gazebo flights the drones never came close. Minimum 3D separation from t = 10 s was 60.4 m or more in the evaluation and 24.2 m or more across every other Gazebo set in `results/` (the lowest is in `gazebo_grid_B_old`). Time below 8 m is 0 s everywhere. The 10.0 m minimum over the whole flight is the start line on the ground. `tests/test_safety.py` covers the hard cases, including head-on crossings at cruise and a 10 s blackout while a neighbour approaches.
-
-To test the filter in flight, the `headon` scenario sends the two closest drones straight at each other at the same 50 m cruise altitude; without the filter they would pass at about 0 m. In Gazebo they passed at 23.9 m, with no time below 8 m. The filter braked for 0.25 s and 0.40 s, and the two got past each other with no deadlock (`results/scenarios/headon.metrics.json`, `headon_separation.png`). The pass is wide because the keep-out disc grows with the age of each position report and leaves room to stop. This is one run on one seed, so it shows the filter working in a real encounter, not a measured safety margin. The `obstacle` scenario also exercises it in Gazebo (section 7).
-
-**Why the logs show braking.** The summed `brake` time per evaluation run is 0.4 s [0.0, 13.9] over all drones (`results/gazebo_50m/results.md`); 11 of 17 runs brake at all. All of it falls between L + 3.6 s and L + 12.0 s, after the kill and before the dead drone's state is dropped. The cause is the dead drone's keep-out disc: its last state ages, so the disc grows (88.5 m at 12 s), and the brake rule assumes the neighbour takes half of the avoidance, which a dead drone does not. So survivors brake once the disc edge is about 100 m away. The braking drones were 76 to 202 m from the dead drone and 71 m or more from any live one. This is the price of not knowing whether a silent drone is dead or still flying: a little coverage before the re-plan, nothing in separation.
+The braking in the evaluation (0.4 s [0.0, 13.9] per run, all drones together) I attribute to the dead drone's growing disc before it is dropped at 12 s; I did not measure this separately. It costs a little coverage and nothing in separation.
 
 ## 7. Feasibility feedback
 
-**Detection.** A slot not reached 15 s after it became active is infeasible (`swarm/coverage.py`). Slots are at most 79 m apart, under 10 s from a standing start, so an unblocked drone always makes it. The timer pauses while the drone is deaf, but not while the safety filter blocks it: a blocked slot is exactly what the ground must hear about. The drone then holds and repeats SWARM_INFEASIBLE every second until a newer epoch arrives.
+**Detection.** A slot not reached 15 s after it became active is infeasible (`swarm/coverage.py`). Slots are at most 79 m apart, so an unblocked drone reaches any slot in under 10 s. The drone then holds and repeats SWARM_INFEASIBLE every second until a newer epoch arrives.
 
-**No reissue, no oscillation.** The ground accepts the first report, blacklists the (drone, slot) pair for 60 s and re-plans. Repeats are ignored, and a report survives an unrelated re-plan (`swarm/ground.py`). The allocator never issues a blacklisted pair; it re-spaces that leg's points to step around it. When the blacklist expires nothing re-plans. Unchanged shares keep their plan, so other drones see no churn (assignment changes).
+**No reissue, no oscillation.** The ground accepts the first report, blacklists the (drone, slot) pair for 60 s and re-plans; repeats are ignored. The allocator never issues a blacklisted pair. When the blacklist expires, nothing re-plans.
 
-**Evidence.** Scenario `obstacle`: an obstacle only one drone knows about appears on one of its loop slots at 30 s, in a 240 s run so the blacklist expires inside it. The filter held the drone at the obstacle's edge (16.9 s braking) and the slot timed out. The ground accepted one INFEASIBLE, ignored none and re-planned once: churn 0.08 changes per drone per minute, coverage 97.0 % mean, no second report after the expiry (`results/scenarios/obstacle.metrics.json`). Unit tests: `tests/test_coverage.py`, `tests/test_ground.py`, `tests/test_allocator.py`.
+**Evidence.** In the `obstacle` scenario, an obstacle that only one drone knows about appears on one of its slots. The ground accepted one INFEASIBLE and re-planned once; churn was 0.08 changes per drone per minute, coverage 97.0 %, and there was no second report after the expiry (`results/scenarios/obstacle.metrics.json`).
 
 ## 8. Faults and comms
 
-**The kill.** `run_mission.py` sends SIGKILL to the victim's `arducopter` at a seeded time in [60, 90] s; the seed picks the victim too. No landing, no goodbye. In Gazebo the dead model is then removed from the world (`sim/launch.py`): otherwise the ardupilot_gazebo plugin waits for an autopilot that never answers, and it slowed the whole world to about 0.6 x real time.
+**The kill.** `run_mission.py` sends SIGKILL to the victim's `arducopter` at a seeded time in [60, 90] s. There is no landing and no goodbye. In Gazebo the dead model is then removed from the world, because otherwise the plugin waits for an autopilot that never answers and slows the whole world.
 
-**The radio.** `sim/radio.py` is one UDP relay. Every node sends every MAVLink packet to it. It drops each copy per receiver with probability 0.2 and forwards the rest 200 ms later. Each (sender, receiver) pair has its own seeded random stream, so the k-th message from A to B is dropped in every run of a seed or in none. Measured over the evaluation: loss 20.0 % [19.4, 20.5], mean delay 0.200 s, max 0.203 [0.201, 0.224] s (`results/gazebo_50m/results.md`, from each run's `radio.jsonl`). Messages are a small MAVLink 2 dialect, 51 bytes for a state (DECISIONS.md).
+**The radio.** `sim/radio.py` is one UDP relay. It drops each copy per receiver with probability 0.2 and forwards the rest 200 ms later, with a seeded random stream per (sender, receiver) pair. Measured over the evaluation: loss 20.0 % [19.4, 20.5] and mean delay 0.200 s.
 
-**No side channel.** Agents talk to their own autopilot over TCP and to everyone else only through the radio (`swarm/protocol.py`, `swarm/net.py`). The runner reads `ground.jsonl` only to learn t0 for the fault schedule and never sends to the swarm. Gazebo knows every position, but only the live view reads it, and the evaluation never starts it.
-
-**Stale states.** The safety filter acts on the last state received from each neighbour, aged from its time stamp (section 6).
+**No side channel.** Agents talk to their own autopilot directly and to everyone else only through the radio. Stale states are handled by the safety filter (section 6).
 
 ## Evaluation: Mission A
 
-`./run_eval.sh`: 17 seeds (1-17), 180 s each, plus one no-loss N = 3 baseline and one no-loss N = 2 reference. Definitions are in `analysis/metrics.py` and at the top of `results/gazebo_50m/results.md`. "Before" is the 60 s before the loss. "After recovery" is from the recovery time to the end of the run.
-
-Seeds 1-17 are all reported, none left out. The seeds lose drone 1 six times, drone 2 five times and drone 3 six times.
+`./run_eval.sh` flies 17 seeds (1-17) of 180 s each, all of them reported, plus one no-loss N = 3 baseline and one no-loss N = 2 reference. "After recovery" runs from the recovery time to the end of the run. The definitions are in `analysis/metrics.py` and `results/gazebo_50m/results.md`.
 
 | Metric | Before the loss | After recovery |
 |---|---|---|
@@ -168,69 +120,42 @@ Seeds 1-17 are all reported, none left out. The seeds lose drone 1 six times, dr
 | Recovery time (s) | - | 65.8 [37.2, 77.1] over the 12 runs that fell below 0.9 x P; 5 runs never did |
 | Assignment churn (changes / drone / min) | 0.00 [0.00, 0.00] | 0.31 [0.26, 0.59] (from the loss on) |
 
-Coverage from L + 60 s, when the dead drone's last sightings have left the window: 93.9 % [89.0, 95.7]. Mean over the whole mission: 94.6 % [89.2, 96.4].
+- **(N-1)/N check.** (N-1)/N x P is 65.1 % [64.7, 65.2], and coverage after recovery is 1.45 [1.36, 1.47] times that. This check is easy at 50 m, where the field is over-provisioned: even the worst dip, 66.9 %, is above it. The harder comparison is the no-loss two-drone run, and coverage after recovery is 0.99 [0.94, 1.01] of it.
+- **Recovery** means coverage back within 10 % of its pre-loss value and staying there. The dip, 83.3 % [66.9, 91.5], comes late because coverage has a 60 s memory: the dead drone's last sightings fade out of the window while the survivors are already on their new loops.
+- **By victim** (mean [min, max] over that victim's runs). Losing drone 3, which flew two lanes, hurts most: coverage from L + 60 s is 91.5 % [89.0, 93.6], against 94.9 % [94.1, 95.7] for drone 1 and 94.0 % [92.7, 95.0] for drone 2.
+- **Per drone and fault time** (`results/gazebo_grid_A/`, flown on earlier commits c68ee22 and f459190): each drone was killed at 60, 70, 80 and 90 s, 12 runs in all. Coverage after recovery is 94.5 % [91.6, 95.8], which is 0.99 [0.96, 1.00] of the N-1 reference.
 
-- **(N-1)/N check.** (N-1)/N x P is 65.1 % [64.7, 65.2], and after recovery is 1.45 [1.36, 1.47] times that. This check is easy at 50 m: even the lowest dip of any run, 66.9 %, is above it. The harder comparison is the no-loss two-drone run (one run, like the baseline): after recovery is 0.99 [0.94, 1.01] of it. Measured against the no-loss baseline B instead of each run's own P, 5 of 17 runs never fell below 0.9 x B; 12 did and all came back, in 65.3 s [36.2, 76.4].
-- **Recovery** means coverage back within 10 % of its pre-loss value and staying there. The dip is 83.3 % [66.9, 91.5] and comes late, 46.1 s [26.3, 115.9] after the loss, because coverage has a 60 s memory: the dead drone's last sightings fade out of the window while the survivors are already on their new loops.
-- **Worst revisit gap** (longest time a cell goes unseen). Before the loss it is about the 2-lane loop's period, 67.7 s. Over the loss, cells on the dead drone's lane wait up to 107.8 s [72.8, 142.5]. Once the new split runs, the steady gap is back to 68.0 s.
-- **By victim.** Losing drone 3, which flew two lanes, hurts most: coverage from L + 60 s is 91.5 % [89.0, 93.6] and recovery 65 to 77 s, against 94.9 % (drone 1) and 94.0 % (drone 2).
-- **Safety and control.** Minimum 3D separation from t = 10 s: 74.9 m [60.4, 75.0]. Time below 8 m: 0 s in every run. Setpoints: 20.0 Hz for the slowest agent in every run.
-
-**Per drone and fault time** (`results/gazebo_grid_A/`, flown on commits c68ee22 and f459190): each drone killed at 60, 70, 80 and 90 s, 12 runs. Before 97.5 % [97.2, 97.8], after recovery 94.5 % [91.6, 95.8], after / N-1 reference 0.99 [0.96, 1.00], recovery 63.8 s [51.0, 74.8] over the 9 runs that fell below, churn after 0.32 [0.25, 0.67]. `by_drone.png` shows it per drone and fault time.
-
-Figures in each set: `coverage_vs_time.png`, `before_after.png`, `recovery_steps.png`, `age_maps.png`, `assignments.png`, `separation.png`. The animation is `results/replay_representative.mp4` (47 s, top-down, includes the dropout): seed 14, the median run by coverage after recovery (94.3 %). Drone 3 is lost at 63.2 s and coverage dips to 80.5 %.
+Loss timeline: `docs/loss_timeline.png`. Each results set with a `results.md` also contains `coverage_vs_time.png`, `before_after.png` and `recovery_steps.png`. The animation is `results/replay_representative.mp4` (47 s, includes the dropout), showing seed 14, the median run.
 
 ## Mission B: priority zone
 
-**Limits first.** The 60 m x 60 m zone is seen at least every 30 s while all three drones fly and once the new split has settled. It is not held in these cases:
-
-- During the change-over after a loss (about 40 s), the zone can go a few seconds over 30 s unseen: up to 33.8 s when drone 1 or 3 is lost (whole run, mean [min, max] over that victim's 4 runs: 28.7 s [26.5, 33.8] and 27.7 s [26.5, 30.6]).
-- When the drone that flies the zone is the one lost, the zone waits for the 12 s lost timeout plus the survivors' travel: 50.3 s [42.8, 57.3] (mean [min, max], 4 runs) when drone 2 is lost (58.7 s in the no-hold set).
-- During a blackout of 10 s or more of the zone drone: it holds deaf and nothing re-plans.
-- With one survivor only the zone strip is covered.
-
-**What.** With three drones, one flies a short out-and-back lane through the zone, its ends close enough to the zone centre (126.5 m) to be back within the 30 s. The other two share the rest. Two survivors fly a "butterfly" instead, each a two-lane loop: north on a centre lane 8 m beside the zone centre, then south on a wing lane one footprint further out. Both centre lanes see the whole zone. The two drones are kept half a lap apart, so the zone is seen twice a lap (`swarm/allocator.py`). The half lap is set at the re-plan from a predicted transit, and in Gazebo it came out up to 8 s off. So the ground runs a phase hold: the drone too close behind the other gets a speed limit of 0.8 x cruise (0.6 x when more than 3 s off) until they are half a lap apart again.
-
-**Results** (each drone killed at 60-90 s, 12 runs per set):
-
-| Set | Zone longest unseen (s) | Zone oldest from L + 40 s (s) | Coverage from L + 60 s (%) |
-|---|---|---|---|
-| `gazebo_grid_B` (butterfly, phase hold) | 29.3 [26.5, 57.3] | 23.9 [23.3, 26.1] | 79.0 [76.3, 81.1] |
-| `gazebo_grid_B_nohold` (butterfly, no hold) | 30.6 [26.4, 58.7] | 26.0 [22.9, 31.9] | 79.1 [77.1, 81.9] |
-| `gazebo_grid_B_old` (one zone owner) | 27.3 [26.5, 65.4] | 26.2 [26.2, 27.2] | 68.6 [64.5, 73.4] |
-
-The old split held the zone but left the rest at 68.6 %, close to the (N-1)/N line. The butterfly lifts that to about 79 % even without the hold. With the phase hold, once the new split runs (from L + 40 s), the zone's oldest cell is 23.9 s [23.3, 26.1], under 30 s in all 12 runs (no hold: up to 31.9 s). The 58.7 s maximum in the no-hold set is the zone drone's own loss (victim 2). `compare.png` in `gazebo_grid_B/` puts the sets side by side. `gazebo_grid_B` was flown on the final code (dcc35c7).
-
-Outside the zone the loss is not recovered. Coverage falls from 100 % before the loss to about 79 %: 0 of 12 runs recover to 0.9 x P in every Mission B set.
+- **What flies.** With three drones, one flies a short out-and-back lane through the 60 m x 60 m zone and the other two share the rest. Two survivors fly a "butterfly" instead: each flies a two-lane loop whose centre lane sees the whole zone, and the two are kept half a lap apart by a ground phase hold (a speed cap of 0.8 or 0.6 x cruise).
+- **Result.** With the phase hold, once the new split runs (from L + 40 s), the zone's oldest cell is 23.9 s [23.3, 26.1], under 30 s in all 12 runs. Coverage of the whole area stays at 79.0 % [76.3, 81.1] (from L + 60 s), against 68.6 % with the old single-owner split. Outside the zone the loss is not recovered: 0 of 12 runs return to 0.9 x P (`results/gazebo_grid_B/`).
+- **Not held:** during the change-over (up to 33.8 s); when the zone's own drone is lost (50.3 s on average, up to 57.3 s: the 12 s timeout plus travel); during a long blackout of the zone drone; and with one survivor.
 
 ## Mission C: comms blackout
 
-Every message to and from one drone is dropped for 10 s. With the 12 s lost timeout the silent drone is never declared lost. It goes deaf after 3 s, holds 7.2 s at its hold altitude, and is back on its loop 1.7 s after the blackout. No re-plan; mission mean coverage 97.7 % (`results/scenarios/C_s1.metrics.json`).
-
-With a 4 s timeout the same run declares it lost and re-plans, then re-plans again when it rejoins. It is back covering 4.8 s after the blackout (`results/lost4/C_s1.metrics.json`, an earlier commit with the same code). Telling silent from dead over the radio alone needs a timeout longer than the longest silence. DECISIONS.md explains the numbers and a camera-based check I tried and dropped.
+Every message to and from one drone is dropped for 10 s. With the 12 s timeout the drone is not declared lost in this run: it goes deaf after 3 s, holds for 7.2 s at its hold altitude, and is covering again 1.7 s after the blackout. There is no re-plan, and coverage is 97.7 % (`results/scenarios/C_s1.metrics.json`). With a 4 s timeout the same run declares the drone lost and re-plans twice (`results/lost4/C_s1.metrics.json`). Telling a silent drone from a dead one over the radio alone needs a timeout longer than the longest silence (DECISIONS.md).
 
 ## Live demo (not part of the evaluation)
 
-`./demo.sh` runs one mission with the Gazebo window, scenery, live drone cameras and the web view (`python3 -m gui`). None of it runs in the evaluation or feeds the swarm.
+`./demo.sh` runs one mission with the Gazebo window, drone cameras and the web view. None of it runs in the evaluation, and none of it feeds the swarm.
 
 ## Limitations and next steps
 
-- **Lane tracking.** The coverage controller flies at slots, not along the lane line. Tracking the lane would make footprint overlap more predictable.
-- **The ground is a single point of failure for re-planning.** While it is down, a lost drone's lanes stay unflown (75.1 % in `groundloss`). Next step, designed and in progress (not part of this submission, not in this repo yet): a leader-follower fallback. If the drones hear no ground for 10 s, the lowest-id live drone (its MAV_SYSID) runs the same ground code onboard and sends the plans over the radio. If it dies, the next lowest takes over. A returning ground takes back control with a higher plan epoch.
-- **No EKF under Gazebo.** The EKF is the autopilot's position estimator. The JSON backend sets `AHRS_EKF_TYPE 10`: positions are the simulator's truth, so GPS faults and estimate errors are not exercised.
+- **Lane tracking.** The coverage controller flies at slots, not along the lane line. Tracking the lane would make the footprint overlap more predictable.
+- **The ground is a single point of failure for re-planning.** While it is down, a lost drone's lanes stay unflown (75.1 % in `groundloss`). The next step, in progress and not in this repo, is a leader-follower fallback in which the lowest-id live drone runs the ground code onboard.
+- **No EKF under Gazebo.** The JSON backend sets `AHRS_EKF_TYPE 10`, so positions are the simulator's truth, and GPS faults and estimate errors are not exercised.
 - **The dead drone is removed from Gazebo**, so the others never meet a falling airframe.
-- **N = 3 only.** More drones would degrade more gently (DECISIONS.md). The allocator handles any N, but I flew only three.
-- **Small samples.** 17 + 12 runs for Mission A, 12 per Mission B set, one run per scenario. Medians with min and max, no confidence intervals.
+- **N = 3 only.** The allocator handles any N (unit tests only), but I flew only three drones, plus the two-drone no-loss reference.
+- **Small samples.** There are 17 + 12 runs for Mission A, 12 per Mission B set, and one run per scenario. I give medians with min and max, not confidence intervals.
 - **One-way radio failures** (a drone that hears but is not heard) are not emulated; the blackouts are two-way.
 
 ## Reuse and citations
 
-- ArduPilot (ArduCopter SITL), GPLv3, pinned commit in `setup.sh`. Run as a binary, not modified.
-- ardupilot_gazebo (plugin and the iris model), pinned commit in `setup.sh`. The live view's drones are copies of `iris_with_standoffs` with colours and an optional camera.
-- Gazebo Harmonic.
-- pymavlink and mavgen: `swarm/swarm_mav.py` is generated by mavgen from my `swarm/swarm.xml`.
-- Gazebo Fuel models, live view only, fetched at run time. All by OpenRobotics and all CC0 1.0 (Creative Commons Zero) on their Fuel pages: Cessna C-172, Base Station, Water tower, Pine Tree, Oak tree, SUV, Pickup, Hatchback and Hatchback blue. Licences checked on 24 Nov 2026.
-- MediaMTX (live video only), ffmpeg, numpy, matplotlib, Pillow (photo mosaic and camera bridge).
+- ArduPilot (ArduCopter SITL), GPLv3, and ardupilot_gazebo (plugin, iris model), at pinned commits in `setup.sh`, not modified.
+- Gazebo Harmonic; pymavlink and mavgen (`swarm/swarm_mav.py` is generated from my `swarm/swarm.xml`).
+- Gazebo Fuel models by OpenRobotics (CC0 1.0, live view only); MediaMTX, ffmpeg, numpy, matplotlib, Pillow.
 
 I did not copy a swarm framework. The allocator, coverage controller, safety filter, radio emulator, ground station and metrics are written for this project.
 
