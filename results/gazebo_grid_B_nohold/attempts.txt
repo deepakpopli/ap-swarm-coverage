@@ -10,3 +10,6 @@ d3_t80: ok on attempt 1
 d1_t90: ok on attempt 1
 d2_t90: ok on attempt 1
 d3_t90: ok on attempt 1
+
+Flown on commit e8f0526 (a side branch): the butterfly without the phase hold; its swarm/ and
+run_mission.py are identical to ccf1d13 here. Same runs as gazebo_grid_B (seed 100+k, V, T).

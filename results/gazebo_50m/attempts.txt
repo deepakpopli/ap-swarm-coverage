@@ -15,3 +15,7 @@ evaluation gazebo_50m, 2026-11-23 03:23-04:45, mission 180 s, seeds: 1 2 3 4 5 6
   seed_17: ok on attempt 1
   baseline_n3: ok on attempt 1
   ref_n2: ok on attempt 1
+
+Seeds: 1-12 drew drone 1 five times, drone 2 three times and drone 3 four times. 13 and 14 draw
+drone 3 again and 15 drone 1, so 16 and 17 (both drone 2) were flown instead, to give each drone
+four or five runs. gazebo_grid_A has every drone at every fault time.

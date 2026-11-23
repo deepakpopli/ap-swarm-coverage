@@ -10,3 +10,7 @@ d3_t80: ok on attempt 1
 d1_t90: ok on attempt 1
 d2_t90: ok on attempt 1
 d3_t90: ok on attempt 1
+
+Flown on commit c68ee22. Each run: run_mission.py --mission A --n 3 --seed 100+k --victim V
+--kill-at T --mission-s 180, k = 1..12 over T = 60, 70, 80, 90 (outer) and V = 1, 2, 3 (inner).
+Mission A is unchanged by the later Mission B commits (tests/test_golden_run.py pins its logs).
