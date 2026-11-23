@@ -1,7 +1,7 @@
 """Ground station: tracks liveness, runs the allocator, sends assignments (never velocities).
 
     python -m swarm.ground --n 3 --port-base 0 --log run/ground.jsonl [--mission-s 180]
-                           [--priority-zone xmin,ymin,xmax,ymax] [--swap-at T]
+                           [--priority-zone xmin,ymin,xmax,ymax] [--swap-at T] [--headon-at T]
 
 Plans when all n agents are ready (or READY_DEADLINE_S after the first). Once every assigned
 agent has reached a slot of its loop (or ON_STATION_DEADLINE_S), START sets t0 one coverage
@@ -13,7 +13,8 @@ Re-plan on: lost, rejoin, accepted INFEASIBLE. Restart: see Ground.maybe_plan_fi
 ground.jsonl: one JSON object per line with "t_wall", "t_mission" (null before start), "event":
   ready       {agent}
   assign      {epoch, trigger, assignments: {id: {share, slots, loop_from}}, changed: [ids]};
-              trigger: start, restart, lost, rejoin, infeasible, swap
+              trigger: start, restart, lost, rejoin, infeasible, swap,
+              headon_stage, headon, headon_end (test hooks)
   start       {t0, late: [ids not on station]}
   liveness    {agent, from, to, status}
   infeasible  {agent, epoch, slot_xy, accepted, why}
@@ -23,13 +24,14 @@ ground.jsonl: one JSON object per line with "t_wall", "t_mission" (null before s
 """
 import argparse
 import json
+import math
 import os
 import signal
 import time
 from dataclasses import dataclass
 
 from swarm import config, protocol
-from swarm.allocator import allocate, butterfly_pace, slot_key
+from swarm.allocator import Assignment, allocate, butterfly_pace, slot_key
 from swarm.net import RadioLink
 
 READY_DEADLINE_S = 120.0       # plan without the agents not ready this long after the first
@@ -40,6 +42,8 @@ EPOCH_STRIDE = 1000            # a restarted ground jumps this far above any epo
 FLYING = ("ready", "cover", "hold")
 NO_PLAN = {"share": [], "slots": [], "loop_from": 0}   # ASSIGN body for an agent not in the plan
 LOOP_S = 0.02
+HEADON_GAP_M = 80.0            # "headon" test hook: the pair faces each other this far apart
+HEADON_PHASE_S = 40.0          # each of its phases ends after this at the latest
 
 
 class JsonLines:
@@ -90,13 +94,14 @@ class AgentRecord:
 
 class Ground:
     def __init__(self, n, link, log, mission_s=config.MISSION_S, priority_zone=None,
-                 previous_t0=None, swap_at=None):
+                 previous_t0=None, swap_at=None, headon_at=None):
         self.n = n
         self.link = link
         self.log = log
         self.mission_s = mission_s
         self.priority_zone = priority_zone
         self.swap_at = swap_at           # test hook, see maybe_swap
+        self.headon = None if headon_at is None else {"at": headon_at, "phase": "wait"}
         self.previous_t0 = previous_t0   # from the log of a ground that ran before this one
         self.agents = {}                 # id -> AgentRecord
         self.first_ready = None          # when the first agent reported "ready"
@@ -127,6 +132,7 @@ class Ground:
         if self.t0 is None:
             self.maybe_start(now)
         self.maybe_swap(now)
+        self.maybe_headon(now)
         self.update_pace(now)
         self.send_due(now)
         return self.t0 is None or now < self.t0 + self.mission_s
@@ -245,6 +251,54 @@ class Ground:
         self.swap_at = None
         self.replan(now, "swap", reverse=True)
 
+    # ---- test hook for the "headon" scenario
+    def maybe_headon(self, now):
+        """From headon_at: the two closest agents each get a one-slot plan, HEADON_GAP_M apart
+        on the line through them (stage); once both hover there, each gets the other's slot, so
+        they fly straight at each other at cruise (headon); once both arrive, a normal re-plan
+        (headon_end). Each phase ends after HEADON_PHASE_S at the latest; any other re-plan in
+        between ends the hook. Only the plans are made up: they go out as ASSIGN like any other."""
+        h = self.headon
+        if h is None or h["phase"] == "done" or self.t0 is None or now < self.t0 + h["at"]:
+            return
+        if h["phase"] != "wait" and self.epoch != h["epoch"]:
+            h["phase"] = "done"          # someone else re-planned: lost, infeasible, ...
+            return
+        if h["phase"] == "wait":
+            alive = sorted(a for a in self.assignments if self.agents[a].liveness == "alive")
+            if len(alive) < 2:
+                return
+            pairs = [(a, b) for i, a in enumerate(alive) for b in alive[i + 1:]]
+            a, b = min(pairs, key=lambda p: math.dist(self.agents[p[0]].xy, self.agents[p[1]].xy))
+            (xa, ya), (xb, yb) = self.agents[a].xy, self.agents[b].xy
+            d = max(math.hypot(xb - xa, yb - ya), 1e-6)
+            ux, uy = (xb - xa) / d, (yb - ya) / d
+            inset = HEADON_GAP_M / 2 + 2 * config.SLOT_REACH_M
+            mx = min(max((xa + xb) / 2, config.AREA[0] + inset), config.AREA[1] - inset)
+            my = min(max((ya + yb) / 2, config.AREA[2] + inset), config.AREA[3] - inset)
+            half = HEADON_GAP_M / 2
+            h["slots"] = {a: [round(mx - ux * half, 1), round(my - uy * half, 1)],
+                          b: [round(mx + ux * half, 1), round(my + uy * half, 1)]}
+            self.headon_plan(now, h, "stage", h["slots"])
+        elif h["phase"] == "stage":
+            if self.headon_arrived(h["slots"]) or now > h["since"] + HEADON_PHASE_S:
+                a, b = sorted(h["slots"])
+                h["slots"] = {a: h["slots"][b], b: h["slots"][a]}
+                self.headon_plan(now, h, "cross", h["slots"])
+        elif self.headon_arrived(h["slots"]) or now > h["since"] + HEADON_PHASE_S:
+            h["phase"] = "done"
+            self.replan(now, "headon_end")
+
+    def headon_plan(self, now, h, phase, slots):
+        """One-slot plans for the pair; a point as its share, so no later plan keeps them."""
+        fixed = {a: Assignment([x, x, y, y], [[x, y]], 0) for a, (x, y) in slots.items()}
+        self.replan(now, "headon" if phase == "cross" else "headon_stage", fixed=fixed)
+        h.update(phase=phase, since=now, epoch=self.epoch)
+
+    def headon_arrived(self, slots) -> bool:
+        return all(math.dist(self.agents[a].xy, xy) <= config.SLOT_REACH_M
+                   and math.hypot(*self.agents[a].vel) < 1.0 for a, xy in slots.items())
+
     # ---- liveness
     def update_liveness(self, now):
         for a in sorted(self.agents):
@@ -288,10 +342,13 @@ class Ground:
         self.log.write(now, "blacklist", pairs=pairs)
 
     # ---- planning and sending
-    def replan(self, now, trigger, reverse=False):
+    def replan(self, now, trigger, reverse=False, fixed=None):
+        """fixed: test hooks only, {id: Assignment} put over the current plan."""
         members = sorted(a for a, r in self.agents.items() if r.liveness != "lost")
         new = {}
-        if members:
+        if fixed is not None:
+            new = {**self.assignments, **fixed}
+        elif members:
             positions = {a: self.agents[a].xy for a in members}
             velocities = {a: self.agents[a].vel for a in members}
             heading = {a: self.heading_slot(a) for a in members}
@@ -364,6 +421,8 @@ def main(argv=None):
                     help="Mission B: xmin,ymin,xmax,ymax")
     ap.add_argument("--swap-at", type=float, default=None,
                     help="test hook: re-plan with the groups reversed at this mission time")
+    ap.add_argument("--headon-at", type=float, default=None,
+                    help="test hook: fly the two closest agents head-on from this mission time")
     args = ap.parse_args(argv)
     signal.signal(signal.SIGTERM, _exit_on_signal)
     signal.signal(signal.SIGINT, _exit_on_signal)
@@ -372,7 +431,7 @@ def main(argv=None):
     link = RadioLink(config.GROUND_ID, args.port_base)
     try:
         Ground(args.n, link, log, args.mission_s, args.priority_zone, previous_t0,
-               args.swap_at).run()
+               args.swap_at, args.headon_at).run()
     finally:
         log.close()
         link.close()

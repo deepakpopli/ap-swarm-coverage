@@ -244,3 +244,30 @@ def test_swap_hook_reverses_the_groups_once(tmp_path):
     sim.run(5.0)
     assert [r["trigger"] for r in sim.events("assign")] == ["start", "swap"]
     assert [sim.plan(a).share[0] for a in (1, 2, 3)] == west_first[::-1]
+
+
+def test_headon_hook_stages_then_sends_the_pair_at_each_other(tmp_path):
+    """Two agents 30 m apart: staged 80 m apart on their line, then each gets the other's slot
+    (one-slot plans through the normal ASSIGN), then a normal re-plan once both arrived."""
+    sim = Sim(tmp_path)
+    sim.ground.headon = {"at": 5.0 - config.COVERAGE_WINDOW_S, "phase": "wait"}
+    sim.run(2.0)
+    third = sim.plan(3)
+    sim.agents[1].xy, sim.agents[2].xy, sim.agents[3].xy = [100.0, 150.0], [130.0, 150.0], [250.0, 50.0]
+    sim.run(5.0)
+    assert [r["trigger"] for r in sim.events("assign")] == ["start", "headon_stage"]
+    stage = {a: sim.plan(a).slots for a in (1, 2)}
+    assert stage == {1: [[75.0, 150.0]], 2: [[155.0, 150.0]]}       # 80 m apart, same centre
+    assert sim.plan(3) == third                                      # the third flies on
+    sim.run(2.0)
+    assert len(sim.events("assign")) == 2                            # not there yet: wait
+    sim.agents[1].xy, sim.agents[2].xy = [76.0, 150.0], [154.0, 150.0]
+    sim.run(1.0)
+    assert sim.events("assign")[-1]["trigger"] == "headon"
+    assert {a: sim.plan(a).slots for a in (1, 2)} == {1: stage[2], 2: stage[1]}
+    sim.agents[1].xy, sim.agents[2].xy = [155.0, 150.0], [75.0, 150.0]
+    sim.run(1.0)
+    assert sim.events("assign")[-1]["trigger"] == "headon_end"
+    assert all(len(sim.plan(a).slots) > 1 for a in (1, 2, 3))         # back to coverage
+    sim.run(5.0)
+    assert len(sim.events("assign")) == 4                            # once only

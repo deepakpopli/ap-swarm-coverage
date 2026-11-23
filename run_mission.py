@@ -48,6 +48,7 @@ LIVE = os.environ.get("SWARM_LIVE") == "1"
 # scenario -> (the mission it modifies, what it tests)
 SCENARIOS = {
     "swap": ("A", "re-plan with the lane groups reversed at 30 s: agents cross at cruise"),
+    "headon": ("A", "from 30 s the two closest agents are sent straight at each other at cruise"),
     "obstacle": ("A", "an unknown obstacle on a loop slot from 30 s: infeasible, re-plan"),
     "agentdeath": ("A", "kill the victim's agent process instead of its autopilot"),
     "payloadfail": ("A", "the victim's payload fails instead of the kill: it lands, the others re-plan"),
@@ -87,6 +88,8 @@ def plan(args):
         out["radio"] += ["--blackout", f"{agent}:{t_event}:{t_event + 10.0}"]
     if args.scenario == "swap":
         out["ground"] += ["--swap-at", "30"]
+    if args.scenario == "headon":
+        out["ground"] += ["--headon-at", "30"]
     if args.scenario == "obstacle":
         x, y = obstacle_slot(agent, args.n)
         out["agents"][agent] = ["--obstacle", f"{x},{y},{OBSTACLE_RADIUS_M},{OBSTACLE_AT_S}"]

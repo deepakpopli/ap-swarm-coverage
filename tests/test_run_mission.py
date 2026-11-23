@@ -51,3 +51,12 @@ def test_victim_and_kill_time_can_be_chosen():
     chosen = plan(argparse.Namespace(**vars(args), victim=3, kill_at=80.0))
     assert chosen["faults"] == [(80.0, "kill", "sitl:3")] and chosen["kill_agent"] == 3
     assert plan(argparse.Namespace(**vars(args), victim=None, kill_at=None))["faults"][0] == drawn
+
+
+def test_headon_only_adds_the_ground_hook():
+    import argparse
+    from run_mission import plan
+    args = argparse.Namespace(seed=1, n=3, mission="A", scenario="headon", backend="fake", zone=None)
+    out = plan(args)
+    assert out["ground"] == ["--headon-at", "30"]
+    assert out["faults"] == [] and out["agents"] == {} and out["kill_agent"] is None
