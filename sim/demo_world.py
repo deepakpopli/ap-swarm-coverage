@@ -86,6 +86,7 @@ if FIELD:
 # The pine is 5 m tall and the oak 6.5 m as they come; beside a 6x drone they are scaled up.
 # A bush is a small oak.
 FUEL = "https://fuel.gazebosim.org/1.0/openrobotics/models"
+# Fuel OpenRobotics "Pine Tree" and "Oak tree": CC0 1.0 (Fuel licence field)
 TREE_MESH = {"pine": ("pine tree/6", "pine_tree.dae", "branch_2_diffuse.png", 2.4, 3.4),
              "oak": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 1.3, 1.9),
              "bush": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 0.45, 0.6)}
@@ -99,6 +100,7 @@ def inner_track_x(y):
 # parked beside the track south of the field (tools/field_texture.py draws it at y about -38),
 # three on the track across the field, for the drones to fly over, and two in the farmyard
 YARD = (28.0, 100.0, 64.0, 128.0)       # gravel yard west of the track: x0, y0, x1, y1
+# Fuel OpenRobotics "SUV", "Pickup", "Hatchback", "Hatchback blue": CC0 1.0 (Fuel licence field)
 CARS = [("suv", 118.0, -32.0, 5.0), ("pickup", 127.0, -31.5, -4.0), ("hatchback", 182.0, -43.0, 170.0),
         ("pickup", round(inner_track_x(60.0) + 3.0, 1), 60.0, 85.0),
         ("suv", round(inner_track_x(215.0) + 3.0, 1), 215.0, -95.0),
