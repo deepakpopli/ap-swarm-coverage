@@ -22,7 +22,7 @@ def start_xy(index, n):
 V_MAX_MS = 12.0          # task limit
 # Cruise speed and the autopilot's WP_SPD. The vehicle overshoots WP_SPD by a tracking error
 # that grows with PSC_NE_JERK; the low jerk, not a lower cruise, keeps it under V_MAX_MS
-# (measured 11.71 m/s worst).
+# (measured: 11.50 m/s from the reported velocity; up to 12.01 m/s from 1 s position differences, REPORT.md).
 WP_SPD_MS = 11.5
 CONTROL_HZ = 20.0        # setpoint rate to the autopilot (task: 10 Hz or faster)
 ALT_CRUISE_M = 50.0
