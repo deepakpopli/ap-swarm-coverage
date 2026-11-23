@@ -1,0 +1,12 @@
+d1_t60: ok on attempt 1
+d2_t60: ok on attempt 1
+d3_t60: ok on attempt 1
+d1_t70: ok on attempt 1
+d2_t70: ok on attempt 1
+d3_t70: ok on attempt 1
+d1_t80: ok on attempt 1
+d2_t80: ok on attempt 1
+d3_t80: ok on attempt 1
+d1_t90: ok on attempt 1
+d2_t90: ok on attempt 1
+d3_t90: ok on attempt 1
