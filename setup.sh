@@ -29,6 +29,13 @@ clone_at() {   # $1 = url, $2 = directory, $3 = commit
 }
 
 build() {
+  # waf runs python3: it needs the packages ArduPilot's install-prereqs put into the user site
+  # (22.04), which a venv hides. ArduPilot's own venv (24.04) has them, so check, not refuse.
+  if [ -n "${VIRTUAL_ENV:-}" ] && ! python3 -c 'import em, pexpect, future, dronecan' 2> /dev/null; then
+    echo ">> deactivate the venv ($VIRTUAL_ENV) first: ArduPilot's build needs em, pexpect," \
+         "future and dronecan from its install-prereqs-ubuntu.sh, which this venv does not see"
+    exit 1
+  fi
   echo ">> ArduCopter SITL in $ARDUPILOT_HOME (prerequisites: Tools/environment_install/)"
   clone_at https://github.com/ArduPilot/ardupilot.git "$ARDUPILOT_HOME" "$ARDUPILOT_COMMIT" \
     && (cd "$ARDUPILOT_HOME" && ./waf configure --board sitl && nice -n 19 ./waf copter -j 4) \
@@ -70,11 +77,14 @@ for package in $(sed -n 's/^dependencies = \[\(.*\)\]/\1/p' "$ROOT/pyproject.tom
   if python3 -c "import $package" 2> /dev/null; then
     row OK "$package" "$(python3 -c "import importlib.metadata as m; print(m.version('$package'))")"
   else
-    row MISSING "$package" "python3 -m pip install --user -r $ROOT/requirements.txt"
+    row MISSING "$package" "python3 -m pip install -r $ROOT/requirements.txt (in the venv)"
   fi
 done
 if ! python3 -c 'import pytest' 2> /dev/null; then   # the tests only, not run_eval.sh
-  printf '%-8s %-24s %s\n' NOTE pytest "for the tests: python3 -m pip install --user pytest"
+  printf '%-8s %-24s %s\n' NOTE pytest "for the tests: python3 -m pip install pytest (in the venv)"
+fi
+if ! python3 -c 'import PIL' 2> /dev/null; then   # the web view, the live demo and the tests
+  printf '%-8s %-24s %s\n' NOTE Pillow "web view and tests: python3 -m pip install -r $ROOT/requirements.txt"
 fi
 if ! command -v "${MEDIAMTX:-mediamtx}" > /dev/null; then   # live drone video only
   printf '%-8s %-24s %s\n' NOTE mediamtx "live video only: github.com/bluenviron/mediamtx/releases (PATH or MEDIAMTX=)"
@@ -83,6 +93,11 @@ if command -v ffmpeg > /dev/null; then
   row OK ffmpeg "$(command -v ffmpeg)"
 else
   row MISSING ffmpeg "sudo apt install ffmpeg"
+fi
+if command -v flock > /dev/null; then   # one simulator at a time
+  row OK flock "$(command -v flock)"
+else
+  row MISSING flock "sudo apt install util-linux"
 fi
 if [ -x "$ARDUPILOT_HOME/build/sitl/bin/arducopter" ]; then
   row OK "arducopter SITL" "$ARDUPILOT_HOME/build/sitl/bin/arducopter"

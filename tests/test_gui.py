@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 
+import numpy as np
 import pytest
 
 from swarm import sensor
@@ -99,7 +100,9 @@ def test_footprint_corners_match_sensor(yaw):
     corners = geom(f"g.footprintCorners(150, 80, 50, {yaw}, {sensor.TAN_HALF_ACROSS},"
                    f" {sensor.TAN_HALF_ALONG})")
     expected = sensor.footprint_polygon(150, 80, 50, yaw)
-    assert sorted(map(tuple, corners)) == pytest.approx(sorted(map(tuple, expected)))
+    # pytest.approx does not compare nested lists on newer pytest; same rel 1e-6 tolerance
+    assert np.allclose(sorted(map(tuple, corners)), sorted(map(tuple, expected)),
+                       rtol=1e-6, atol=1e-12)
 
 
 @needs_node

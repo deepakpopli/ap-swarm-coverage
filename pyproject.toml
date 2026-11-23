@@ -12,7 +12,8 @@ dev = ["pytest", "ruff"]
 pythonpath = ["."]
 testpaths = ["tests"]
 markers = ["slow: real-time or subprocess tests (run them with -m slow)"]
-addopts = "-m 'not slow'"     # slow tests are opt-in
+# slow tests are opt-in; the ROS 2 launch plugins (on PYTHONPATH when ROS is sourced) break collection
+addopts = "-m 'not slow' -p no:launch_testing -p no:launch_pytest -p no:launch_ros"
 
 [tool.ruff]
 line-length = 100
