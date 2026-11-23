@@ -19,6 +19,7 @@ N, SIZE_M = 2048, 2000.0
 CROPS = [(74, 96, 52), (62, 84, 48), (88, 98, 56), (98, 100, 60), (70, 90, 62), (58, 78, 44)]
 TILLED = [(116, 100, 74), (104, 90, 68), (124, 110, 82)]
 MEADOW, HEDGE, TRACK = (72, 90, 56), (34, 48, 30), (138, 124, 96)
+CONCRETE, GRAVEL = (118, 117, 112), (122, 114, 98)   # darker than the white Cessna on it
 rng = np.random.default_rng(11)
 
 
@@ -64,12 +65,19 @@ margin = np.clip(blur(edge & ~hedged, 1.2) * 2.0, 0.0, 0.35)        # a pale mar
 track = np.abs(y + 45.0 - 14.0 * np.sin(x / 260.0)) < 2.6          # one track south of the field,
 track |= (np.abs(x - 452.0 - 12.0 * np.sin(y / 190.0)) < 2.2) & (y > -45.0)   # one going north
 track |= (np.abs(x - np.vectorize(demo_world.inner_track_x)(y)) < 2.2) & (y > -45.0) & (y < 338.0)   # one across the field
+x0, y0, x1, y1 = demo_world.YARD                           # the farmyard and its lane to the track
+track |= (np.abs(y - (y0 + y1) / 2) < 2.2) & (x > x1) & (x < demo_world.inner_track_x((y0 + y1) / 2))
 track = blur(track, 1.0)
+yard = blur((x > x0) & (x < x1) & (y > y0) & (y < y1), 1.5)
+x0, y0, x1, y1 = demo_world.APRON                          # concrete under the priority zone's asset
+apron = blur((x > x0) & (x < x1) & (y > y0) & (y < y1), 0.8)
+apron_edge = blur((x > x0 - 3) & (x < x1 + 3) & (y > y0 - 3) & (y < y1 + 3), 1.2)
 under = np.zeros((N, N), dtype=bool)                       # dark undergrowth below each tree
 for _, tx, ty, _, _ in demo_world.trees():
     under |= (x - tx) ** 2 + (y - ty) ** 2 < 6.0 ** 2
 hedge = np.maximum(hedge, blur(under, 3.0))
-for mask, colour in ((margin, TRACK), (hedge, HEDGE), (track, TRACK)):
+for mask, colour in ((margin, TRACK), (hedge, HEDGE), (track, TRACK), (yard, GRAVEL),
+                     (apron_edge, GRAVEL), (apron, CONCRETE)):
     rgb = rgb * (1.0 - mask[..., None]) + (np.array(colour) + 5.0 * smooth(300)[..., None]) * mask[..., None]
 rgb += rng.normal(0.0, 2.0, (N, N, 1))                     # grain
 Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8)).save(demo_world.FIELD_TEXTURE, quality=82)

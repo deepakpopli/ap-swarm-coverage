@@ -81,12 +81,14 @@ ZONE_W_M = 0.8
 LANE_W_M = 0.2
 if FIELD:
     ZONE_W_M = 1.2
-# the field's surroundings: trees and cars from Gazebo Fuel, fetched on the first run (about
-# 5.5 MB, then cached in ~/.gz/fuel), so the first field run needs a network connection.
+# the field's surroundings: trees, cars and the rest from Gazebo Fuel, fetched on the first run
+# (about 10 MB, then cached in ~/.gz/fuel), so the first field run needs a network connection.
 # The pine is 5 m tall and the oak 6.5 m as they come; beside a 6x drone they are scaled up.
+# A bush is a small oak.
 FUEL = "https://fuel.gazebosim.org/1.0/openrobotics/models"
 TREE_MESH = {"pine": ("pine tree/6", "pine_tree.dae", "branch_2_diffuse.png", 2.4, 3.4),
-             "oak": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 1.3, 1.9)}
+             "oak": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 1.3, 1.9),
+             "bush": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 0.45, 0.6)}
 
 
 def inner_track_x(y):
@@ -95,10 +97,28 @@ def inner_track_x(y):
 
 
 # parked beside the track south of the field (tools/field_texture.py draws it at y about -38),
-# and two on the track across the field, for the drones to fly over
+# three on the track across the field, for the drones to fly over, and two in the farmyard
+YARD = (28.0, 100.0, 64.0, 128.0)       # gravel yard west of the track: x0, y0, x1, y1
 CARS = [("suv", 118.0, -32.0, 5.0), ("pickup", 127.0, -31.5, -4.0), ("hatchback", 182.0, -43.0, 170.0),
         ("pickup", round(inner_track_x(60.0) + 3.0, 1), 60.0, 85.0),
-        ("suv", round(inner_track_x(215.0) + 3.0, 1), 215.0, -95.0)]
+        ("suv", round(inner_track_x(215.0) + 3.0, 1), 215.0, -95.0),
+        ("hatchback blue", round(inner_track_x(285.0) - 3.0, 1), 285.0, 100.0),
+        ("pickup", 56.0, 106.0, 180.0), ("hatchback", 60.5, 112.0, 175.0)]
+# the farmyard: a water tower (Fuel, CC0, 23 m), a shed and two containers (boxes)
+WATER_TOWER = (34.0, 121.0)
+SHEDS = [("shed", 52.0, 122.0, 14.0, 8.0, 4.5, (0.42, 0.44, 0.45)),       # name, x, y, sx, sy, sz, rgb
+         ("container_0", 38.0, 105.0, 12.2, 2.44, 2.6, (0.20, 0.30, 0.42)),
+         ("container_1", 38.0, 108.2, 12.2, 2.44, 2.6, (0.45, 0.24, 0.14))]
+# the asset in the priority zone: a Cessna C-172 (Fuel OpenRobotics "Cessna C-172", CC0, real
+# size: 8.3 m long, 11 m span) on a concrete apron, and a ground station tent beside it (Fuel
+# OpenRobotics "Base Station", CC0). The Cessna is mesh visuals in a static model: as an
+# <include> it is 11 jointed links resting on the ground.
+CESSNA = (150.0, 150.0, 35.0)           # x, y, heading deg
+CESSNA_MESHES = ["body", "left_aileron", "left_flap", "right_aileron", "right_flap", "elevators",
+                 "rudder", "cessna_prop", "cessna_front_wheel", "cessna_rear_left_wheel",
+                 "cessna_rear_right_wheel"]
+BASE_STATION = (163.0, 141.0, -55.0)
+APRON = (132.0, 135.0, 168.0, 165.0)    # concrete under them: x0, y0, x1, y1
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)   # run_mission.py MIDDLE_ZONE (Mission B default)
 
 # Only rendering uses these (the window); the physics ignores them.
@@ -309,8 +329,8 @@ def _rectangle(prefix: str, x0, y0, x1, y1, width, z, colour) -> list:
 def trees() -> list:
     """(kind, x, y, yaw deg, scale) of every tree, the same on every run: hedgerows north, east
     and (thinner) west of the field, three copses outside and three small ones on the field,
-    20 m or more from the priority zone, none south of the field (the track, the overview
-    camera)."""
+    single trees along the inner track and bushes round the yard, all 20 m or more from the
+    priority zone, none south of the field (the track, the overview camera)."""
     rng = random.Random(7)
     spots = [(x, 338.0) for x in range(-30, 340, 24)] + [(338.0, y) for y in range(-10, 320, 26)]
     spots += [(-34.0, y) for y in range(40, 330, 48)]
@@ -323,12 +343,34 @@ def trees() -> list:
         kind = "oak" if rng.random() < 0.4 else "pine"
         out.append((kind, x + rng.uniform(-4, 4), y + rng.uniform(-4, 4), rng.uniform(0, 360),
                     rng.uniform(*TREE_MESH[kind][3:])))
+    rng = random.Random(8)      # added later: the trees above stay where they were
+    for k, y in enumerate((22.0, 78.0, 232.0, 262.0, 298.0, 322.0)):
+        x = inner_track_x(y) + (9.0 if k % 2 else -9.0)
+        out.append(("oak", x, y, rng.uniform(0, 360), rng.uniform(*TREE_MESH["oak"][3:])))
+    x0, y0, x1, y1 = YARD
+    for x, y in ((x0 - 5, y0 + 4), (x0 - 4, y1 - 2), (x1 + 4, y1 + 3), (x0 + 10, y1 + 5)):
+        out.append(("bush", x, y, rng.uniform(0, 360), rng.uniform(*TREE_MESH["bush"][3:])))
+    return out
+
+
+def _box(name: str, x: float, y: float, sx: float, sy: float, sz: float, colour: tuple) -> str:
+    return (f'<visual name="{name}"><pose>{x:.1f} {y:.1f} {sz / 2:.2f} 0 0 0</pose><geometry><box>'
+            f"<size>{sx:g} {sy:g} {sz:g}</size></box></geometry>{_material(colour, 0.0)}</visual>")
+
+
+def props() -> list:
+    """(entity name, x, y, height m) of everything placed on the field besides the trees."""
+    out = [("cessna", CESSNA[0], CESSNA[1], 2.7), ("base_station", BASE_STATION[0], BASE_STATION[1], 3.2),
+           ("water_tower", WATER_TOWER[0], WATER_TOWER[1], 23.2)]
+    out += [(name, x, y, sz) for name, x, y, _, _, sz, _ in SHEDS]
+    out += [(f"parked_{name.replace(' ', '_')}_{k}", x, y, 2.0) for k, (name, x, y, _) in enumerate(CARS)]
     return out
 
 
 def scenery_sdf() -> str:
-    """The trees as one static model of visuals only (nothing to collide with, and an <include>
-    cannot scale) and the parked cars as Fuel includes. Empty without SWARM_DEMO_GROUND=field."""
+    """The trees, the Cessna and the yard's shed and containers as static models of visuals only
+    (nothing to collide with, and an <include> cannot scale), the cars, the water tower and the
+    base station as Fuel includes. Empty without SWARM_DEMO_GROUND=field."""
     if not FIELD:
         return ""
     visuals = []
@@ -342,10 +384,24 @@ def scenery_sdf() -> str:
                 f"<material><double_sided>{two}</double_sided><diffuse>1 1 1</diffuse><pbr><metal>"
                 f"<albedo_map>{FUEL}/{model}/files/materials/textures/{texture}</albedo_map>"
                 "</metal></pbr></material></visual>")
-    cars = [f'    <include><uri>{FUEL}/{name}</uri><name>parked_{name}_{k}</name>'
-            f'<pose degrees="true">{x} {y} 0 0 0 {yaw}</pose></include>' for k, (name, x, y, yaw) in enumerate(CARS)]
+    cx, cy, heading = CESSNA
+    props_ = []
+    for mesh in CESSNA_MESHES:     # the model frame is 0.495 m up (wheels on the ground)
+        x, z = (1.79, 0.855 + 0.495) if mesh == "cessna_prop" else (0.0, 0.495)
+        props_.append(f'<visual name="cessna_{mesh}"><pose degrees="true">{cx + x * math.cos(math.radians(heading)):.2f} '
+                      f"{cy + x * math.sin(math.radians(heading)):.2f} {z:.3f} 0 0 {heading:g}</pose>"
+                      f"<geometry><mesh><uri>{FUEL}/cessna c-172/3/files/meshes/{mesh}.dae</uri></mesh></geometry></visual>")
+    props_ += [_box(*shed) for shed in SHEDS]
+    includes = [f'    <include><uri>{FUEL}/{name}</uri><name>parked_{name.replace(" ", "_")}_{k}</name>'
+                f'<pose degrees="true">{x} {y} 0 0 0 {yaw}</pose></include>' for k, (name, x, y, yaw) in enumerate(CARS)]
+    includes += [f"    <include><uri>{FUEL}/water tower/3</uri><name>water_tower</name>"
+                 f"<pose>{WATER_TOWER[0]} {WATER_TOWER[1]} 0 0 0 0</pose></include>",
+                 f"    <include><uri>{FUEL}/base station/9</uri><name>base_station</name>"
+                 f'<pose degrees="true">{BASE_STATION[0]} {BASE_STATION[1]} 0 0 0 {BASE_STATION[2]}</pose></include>']
     return ('    <model name="demo_trees"><static>1</static><link name="link">\n      '
-            + "\n      ".join(visuals) + "\n    </link></model>\n" + "\n".join(cars) + "\n")
+            + "\n      ".join(visuals) + "\n    </link></model>\n"
+            + '    <model name="demo_props"><static>1</static><link name="link">\n      '
+            + "\n      ".join(props_) + "\n    </link></model>\n" + "\n".join(includes) + "\n")
 
 
 def overlays_sdf(lane_xs_m: list, zone: bool = False) -> str:
