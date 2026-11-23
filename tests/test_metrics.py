@@ -348,3 +348,12 @@ def test_longest_untouched_counts_any_zone_cell():
     seen = [(-5.0, np.array([0])), (10.0, np.array([5])), (20.0, np.array([1, 6]))]
     assert metrics.longest_untouched(seen, zone, 30.0) == 25.0      # -5 -> 20; 10 is outside
     assert metrics.longest_untouched([], zone, 30.0) == 30.0
+
+
+def test_zone_worst_age_from_ignores_the_time_before():
+    zone = np.zeros(8, dtype=bool)
+    zone[:2] = True
+    seen = [(0.0, np.array([0, 1])), (50.0, np.array([0])), (70.0, np.array([1])),
+            (75.0, np.array([0]))]
+    # from 40: cell 1 unseen 40 -> 70 (30 s, not 70 s); cell 0 50 -> 75 (25 s); end 80
+    assert metrics.zone_worst_age_from(seen, zone, 40.0, 80.0) == 30.0

@@ -99,6 +99,8 @@ METRICS = [   # (key = path in metrics.json, label, unit, digits)
     ("radio.delay_max_s", "Radio: max delay", "s", 3),
     ("mission_b.longest_unseen_s", "Priority zone: longest unseen (limit 30 s)", "s", 1),
     ("mission_b.whole_zone_fresh_pct", "Priority zone: time all seen within 30 s", "%", 1),
+    ("mission_b.settled_worst_s", "Priority zone: oldest from L + 40 s (the new split)", "s", 1),
+    ("mission_b.longest_untouched_s", "Priority zone: longest with no part of it seen", "s", 1),
     ("mission_c.declared_lost", "Blackout agent declared lost (1 = yes)", "", 0),
     ("mission_c.replans_from_blackout", "Re-plans from the blackout start", "count", 0),
     ("mission_c.deaf_s", "Blackout agent: time deaf", "s", 1),
@@ -417,13 +419,19 @@ def per_victim_table(runs):
              "in the first plan.", "",
              "| Victim | Lanes before the loss | n runs | Coverage from L + 60 s, mean (%) "
              "| Recovery to 0.9 x P | Dip (%) | Longest unseen, whole (s) |", "|---" * 7 + "|"]
+    zone = all(m.get("mission_b") for m in runs)
+    if zone:                                           # Mission B: how the zone was held
+        lines[-2] = lines[-2][:-1] + "| Zone oldest, whole run (s) | Zone oldest from L + 40 s (s) |"
+        lines[-1] = "|---" * 9 + "|"
     for victim, group in victim_groups(runs).items():
         lines.append(
             f"| {victim} | {lanes_text(group)} | {len(group)} "
             f"| {mean_cell([m['loss']['after_mean_pct'] for m in group])} "
             f"| {victim_recovery_text(group)} "
             f"| {mean_cell([m['loss']['dip_pct'] for m in group])} "
-            f"| {mean_cell([lookup(m, 'unseen.whole.worst_s') for m in group])} |")
+            f"| {mean_cell([lookup(m, 'unseen.whole.worst_s') for m in group])} |"
+            + (f" {mean_cell([m['mission_b']['longest_unseen_s'] for m in group])} "
+               f"| {mean_cell([m['mission_b']['settled_worst_s'] for m in group])} |" if zone else ""))
     return lines
 
 

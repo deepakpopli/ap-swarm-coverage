@@ -396,6 +396,25 @@ def longest_untouched(sightings_list, zone, end_s):
     return float(max(b - a for a, b in zip(times, times[1:]))) if len(times) > 1 else end_s
 
 
+ZONE_SETTLE_S = 40.0     # after a loss: the new split has taken over the zone by then
+
+
+def zone_worst_age_from(sightings_list, zone, from_s, end_s):
+    """The longest any zone cell went unseen from from_s on, counting no time before from_s
+    (as longest_unseen, with every cell fresh at from_s): how the zone is held once the new
+    split has taken over."""
+    last = np.full(zone.size, -np.inf)
+    worst = 0.0
+    for t, cells in sightings_list:
+        if t >= end_s:
+            break
+        mine = cells[zone[cells]]
+        if t >= from_s and mine.size:
+            worst = max(worst, float((t - np.maximum(last[mine], from_s)).max()))
+        last[cells] = t
+    return max(worst, float((end_s - np.maximum(last[zone], from_s)).max()))
+
+
 def priority_zone_block(run, sightings_list, ticks):
     xmin, ymin, xmax, ymax = run.meta["priority_zone"]
     zone = (CELL_X_M >= xmin) & (CELL_X_M <= xmax) & (CELL_Y_M >= ymin) & (CELL_Y_M <= ymax)
@@ -403,6 +422,8 @@ def priority_zone_block(run, sightings_list, ticks):
     return {"zone": [xmin, ymin, xmax, ymax],
             "longest_unseen_s": float(longest_unseen(sightings_list, run.end_s)[zone].max()),
             "longest_untouched_s": longest_untouched(sightings_list, zone, run.end_s),
+            "settled_worst_s": None if run.victim is None else zone_worst_age_from(
+                sightings_list, zone, run.loss_s + ZONE_SETTLE_S, run.end_s),
             "limit_s": config.PRIORITY_REVISIT_S,
             "whole_zone_fresh_pct": 100.0 * float(np.mean(fresh == 100.0))}
 
