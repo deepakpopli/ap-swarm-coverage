@@ -9,6 +9,7 @@ import pytest
 
 from swarm import sensor
 from gui import server
+from gui import mosaic
 from gui.model import RunModel
 
 GEOM_JS = os.path.join(os.path.dirname(server.__file__), "static", "geom.js")
@@ -158,3 +159,67 @@ def test_video_box_uses_the_mediamtx_webrtc_port_and_page_host():
     port = int(video.split("WHEP_PORT = ")[1].split(";")[0])
     assert f"webrtcAddress: :{port}\n" in conf and "rtspAddress: :8554\n" in conf
     assert "location.hostname" in video and "localhost" not in video   # works from a VPN address
+
+
+# ---- the photo mosaic (gui/mosaic.py)
+def cam_frame(x, y, yaw, t=0.0, z=50.0, file="f.jpg"):
+    return {"drone": 1, "t_wall": t, "x": x, "y": y, "z": z, "yaw": yaw, "file": file,
+            "w": 480, "h": 270, "hfov_deg": 81.0}
+
+
+def mosaic_px(x, y):
+    return int((x - mosaic.EXTENT_M[0]) / mosaic.RES_M), int((mosaic.EXTENT_M[1] - y) / mosaic.RES_M)
+
+
+def test_mosaic_footprint_is_the_sensor_footprint():
+    assert mosaic.footprint_m(cam_frame(0, 0, 0)) == pytest.approx(sensor.footprint_size(50.0))
+
+
+@pytest.mark.parametrize("yaw, north, east", [(0.0, (240, 0), (480, 135)),
+                                              (math.pi / 2, (0, 135), (240, 0))])
+def test_ground_to_image_top_is_the_nose(yaw, north, east):
+    """North edge and east edge of the footprint: at yaw 0 north is the top, at yaw 90 east is."""
+    f = cam_frame(100.0, 200.0, yaw)
+    across, along = mosaic.footprint_m(f)
+    half_n = along / 2 if yaw == 0 else across / 2
+    half_e = across / 2 if yaw == 0 else along / 2
+    assert mosaic.ground_to_image(100.0, 200.0, f, 480, 270) == pytest.approx((240, 135))
+    assert mosaic.ground_to_image(100.0, 200.0 + half_n, f, 480, 270) == pytest.approx(north)
+    assert mosaic.ground_to_image(100.0 + half_e, 200.0, f, 480, 270) == pytest.approx(east)
+
+
+def nose_image():
+    """Top half (the nose side) green, bottom half red."""
+    from PIL import Image
+    image = Image.new("RGB", (480, 270), (255, 0, 0))
+    image.paste((0, 255, 0), (0, 0, 480, 135))
+    return image
+
+
+@pytest.mark.parametrize("yaw, ahead", [(0.0, (0, 1)), (math.pi / 2, (1, 0)), (math.pi, (0, -1))])
+def test_paste_frame_lands_on_the_footprint_nose_ahead(yaw, ahead):
+    from PIL import Image
+    canvas = Image.new("RGB", (mosaic.SIZE_PX, mosaic.SIZE_PX), mosaic.BACKGROUND)
+    mosaic.paste_frame(canvas, cam_frame(150.0, 150.0, yaw), nose_image())
+    at = lambda d: canvas.getpixel(mosaic_px(150.0 + d * ahead[0], 150.0 + d * ahead[1]))
+    assert at(15) == (0, 255, 0) and at(-15) == (255, 0, 0)
+    side = (ahead[1], -ahead[0])            # to the right: 85 m across, so 40 m is still inside
+    assert canvas.getpixel(mosaic_px(150.0 + 40 * side[0], 150.0 + 40 * side[1])) != mosaic.BACKGROUND
+    assert at(30) == mosaic.BACKGROUND      # 48 m along: 30 m ahead is outside
+
+
+def test_mosaic_paints_in_time_order_and_seeks_back(tmp_path):
+    from PIL import Image
+    cam = tmp_path / "cam"
+    cam.mkdir()
+    Image.new("RGB", (480, 270), (0, 0, 255)).save(cam / "a.jpg")
+    Image.new("RGB", (480, 270), (255, 255, 0)).save(cam / "b.jpg")
+    frames = [cam_frame(150, 150, 0, t=10.0, file="b.jpg"), cam_frame(150, 150, 0, t=5.0, file="a.jpg")]
+    (cam / "frames.jsonl").write_text("".join(json.dumps(f) + "\n" for f in frames))
+    m = mosaic.Mosaic(str(cam))
+    centre = lambda: m.canvas.getpixel(mosaic_px(150, 150))
+    assert len(m.jpeg(1.0)) > 0 and centre() == mosaic.BACKGROUND
+    m.jpeg(20.0)
+    assert centre()[2] < 60              # yellow, painted after blue
+    m.jpeg(6.0)
+    assert centre()[2] > 200             # back to blue only

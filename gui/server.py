@@ -225,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
         routes = {"/api/runs": self.api_runs, "/api/run": self.api_run, "/api/heat": self.api_heat,
                   "/api/status": lambda q: self.send_json(self.dash.runner.status()),
-                  "/api/live": self.api_live}
+                  "/api/live": self.api_live, "/api/mosaic": self.api_mosaic}
         try:
             if url.path in routes:
                 routes[url.path](q)
@@ -280,6 +280,20 @@ class Handler(BaseHTTPRequestHandler):
         model = self.dash.model(q.get("dir"))
         with model_lock(model):
             self.send_json(model.heat(float(q.get("t", 0))))
+
+    def api_mosaic(self, q):
+        model = self.dash.model(q.get("dir"))
+        with model_lock(model):
+            data = model.mosaic_jpeg(float(q.get("t", 0)))
+        if data is None:
+            self.send_json({"error": "this run has no camera frames"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(data)
 
     def api_live(self, q):
         """Server-Sent Events: a delta of the run every LIVE_PERIOD_S, plus the runner status."""

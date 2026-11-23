@@ -12,6 +12,7 @@ import os
 
 import numpy as np
 
+from gui import mosaic
 from swarm import config, sensor
 
 GROUND_IDS = (0, 255)          # the ground's node id: 0 in old logs, 255 after the rewrite
@@ -113,6 +114,8 @@ class RunModel:
         self.last_pos = {}           # agent id -> (t_wall, x, y, z) for the separation
         self.min_dist_m = None
         self.latest_wall = None
+        self.mosaic = mosaic.Mosaic(os.path.join(run_dir, "cam"),
+                                    lambda f: self.is_dead(f.get("drone"), f["t_wall"]))
 
     # ---- reading
     def refresh(self):
@@ -227,7 +230,7 @@ class RunModel:
                    "victim": meta.get("kill_agent"), "outcome": meta.get("outcome"),
                    "mission": meta.get("mission"), "seed": meta.get("seed"),
                    "zone": meta.get("priority_zone"), "loss": self.metrics_loss(),
-                   "end_t": self.rel(self.latest_wall)}
+                   "end_t": self.rel(self.latest_wall), "photos": self.mosaic.exists()}
         return payload, cursor
 
     def metrics_loss(self):
@@ -258,6 +261,12 @@ class RunModel:
                 "t": t_rel, "cols": len(COLUMN_X_M), "rows": len(ROW_Y_M), "cell_m": CELL_M,
                 "age_s": self.view.ages_s(t_wall), "pct": round(self.view.fresh_pct(t_wall), 1)}
 
+    def mosaic_jpeg(self, t_rel):
+        """The photo mosaic up to t_rel, JPEG bytes; None for a run without camera frames."""
+        if self.base_wall is None or not self.mosaic.exists():
+            return None
+        return self.mosaic.jpeg(self.base_wall + t_rel)
+
 
 def radio_summary(stats):
     """Measured loss and mean delay, split into ground links and agent-agent links."""
@@ -278,4 +287,5 @@ def footprint_geometry():
     """The browser draws the footprint with sensor.py's numbers instead of its own."""
     return {"tan_half_across": sensor.TAN_HALF_ACROSS, "tan_half_along": sensor.TAN_HALF_ALONG,
             "area": config.AREA, "d_min_m": config.D_MIN_M, "window_s": WINDOW_S,
-            "colors": DRONE_COLORS, "zone_limit_s": config.PRIORITY_REVISIT_S}
+            "colors": DRONE_COLORS, "zone_limit_s": config.PRIORITY_REVISIT_S,
+            "mosaic_extent": mosaic.EXTENT_M}
