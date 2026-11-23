@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Run one mission on Gazebo WITH the window open and the marker overlay, for watching.
 # Usage: tools/show_gazebo.sh [run_mission.py arguments]   (default: Mission A, seed 3)
-# SWARM_DEMO=1 ... (sim/demo_world.py): the live view's drones and field; run/live_demo.sh.
+# SWARM_DEMO=1 ... (sim/demo_world.py): the live view's drones and field.
 # The evaluation never uses this script: it stays headless.
 cd "$(dirname "$0")/.." || exit 1
 ARGS=("$@"); [ ${#ARGS[@]} -eq 0 ] && ARGS=(--mission A --n 3 --seed 3)
 OUT=runs/show/$(date +%H%M%S)
+mkdir -p run
 # SWARM_LIVE=1: a drone removed in the window (right click, Remove) is a loss the swarm handles
 SWARM_LIVE=1 nice -n 19 python3 run_mission.py --backend gazebo "${ARGS[@]}" --out "$OUT" > run/show.out 2>&1 &
 MISSION_PID=$!
