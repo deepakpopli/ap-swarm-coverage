@@ -93,9 +93,11 @@ def interval(z: float, targets, z_track_m: float) -> Tuple[float, float]:
 
 
 def neighbour_interval(nid: int, nb: Neighbour, z_track_m: float) -> Tuple[float, float]:
-    """A neighbour only ever targets cruise or its own hold altitude (unknown in failsafe)."""
+    """A neighbour only ever targets cruise or its own hold altitude. In failsafe it lands (every
+    failsafe action is Land, mav_vehicle), so it only goes down: below its last height. The test
+    obstacle has no known height."""
     if nb.failsafe:
-        return -math.inf, math.inf
+        return -math.inf, (math.inf if nid == OBSTACLE_ID else nb.pos[2] + z_track_m)
     return interval(nb.pos[2], (config.ALT_CRUISE_M, config.hold_alt(nid)), z_track_m)
 
 

@@ -139,12 +139,15 @@ def test_hold_and_cruise_agents_are_vertically_separated():
     assert (cmd.vx, cmd.flags) == (5.0, [])
 
 
-def test_failsafe_neighbour_is_never_vertically_separated():
+@pytest.mark.parametrize("z, avoided", [(CRUISE, True), (CRUISE + 20, True), (0.0, False)])
+def test_failsafe_neighbour_lands_so_only_below_it_is_free(z, avoided):
+    """Landing at our height or above: avoided. Landed (or low enough): it can not come up."""
     f = SafetyFilter(1)
-    f.update_neighbour(2, (15.0, 0.0, CRUISE), (0.0, 0.0, 0.0), 0.0, "failsafe")
+    f.holding = False
+    f.update_neighbour(2, (15.0, 0.0, z), (0.0, 0.0, 0.0), 0.0, "failsafe")
     f.heard(0.0)
-    cmd = f.step(0.0, (0.0, 0.0, config.hold_alt(1)), (0.0, 0.0, 0.0), (5.0, 0.0), True)
-    assert cmd.vx < 5.0 and "filtered" in cmd.flags
+    cmd = f.step(0.0, (0.0, 0.0, CRUISE), (0.0, 0.0, 0.0), (5.0, 0.0), False)
+    assert ("filtered" in cmd.flags) == avoided
 
 
 def test_brakes_on_actual_speed_not_command():
