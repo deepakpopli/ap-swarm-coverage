@@ -204,14 +204,15 @@ def test_each_prop_hub_sits_on_its_motor_shaft():
         assert math.hypot(shaft[0] * s + bx - lx, shaft[1] * s + by - ly) < 0.001 * s
 
 
-def test_field_ground_has_trees_outside_the_field_and_no_lanes(monkeypatch):
+def test_field_ground_has_trees_clear_of_the_zone_and_no_lanes(monkeypatch):
     assert demo_world.scenery_sdf() == ""          # the white field: nothing added
     monkeypatch.setattr(demo_world, "FIELD", True)
     trees = demo_world.trees()
-    assert trees == demo_world.trees() and 30 <= len(trees) <= 60
-    assert not any(-15 < x < 315 and -15 < y < 315 for _, x, y, _, _ in trees)
+    assert trees == demo_world.trees() and 30 <= len(trees) <= 70
+    zx0, zy0, zx1, zy1 = demo_world.MIDDLE_ZONE      # 20 m clear round the priority zone
+    assert not any(zx0 - 20 < x < zx1 + 20 and zy0 - 20 < y < zy1 + 20 for _, x, y, _, _ in trees)
     scenery = ET.fromstring("<world>" + demo_world.scenery_sdf() + "</world>")
     assert len(scenery.findall("model/link/visual")) == 2 * len(trees)
-    assert scenery.find(".//collision") is None and len(scenery.findall("include")) == 3
+    assert scenery.find(".//collision") is None and len(scenery.findall("include")) == len(demo_world.CARS)
     overlay = ET.fromstring(demo_world.overlays_sdf([60.0, 120.0], zone=True))
     assert not [v for v in overlay.iter("visual") if v.get("name").startswith("lane_")]

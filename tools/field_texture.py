@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Write sim/field.jpg, the live view's farmland ground (SWARM_DEMO_GROUND=field): a patchwork of
-crop parcels, hedges, a dirt track, and a calm meadow where the 300 m field is. North is up;
+crop parcels, hedges and dirt tracks, calmer on the 300 m field so the footprints read. North is up;
 2048 px over the 2000 m ground plane centred on the field. The same picture on every run.
 
     python3 tools/field_texture.py
@@ -45,26 +45,25 @@ for k, (su, sv) in enumerate(seeds):
     d = np.maximum(np.abs(u - su), np.abs(v - sv) * 1.6)
     parcel[d < nearest], nearest = k, np.minimum(nearest, d)
 on_field = (np.abs(x - 150.0) < 163.0) & (np.abs(y - 150.0) < 163.0)   # the field and its margin
-parcel[on_field] = len(seeds)
 
 tilled = rng.random(len(seeds) + 1) < 0.2
 tone = np.array([(TILLED if t else CROPS)[rng.integers(3 if t else 6)] for t in tilled], np.float32)
-tone[-1], tilled[-1] = MEADOW, False
 angle = rng.uniform(0.0, np.pi, len(seeds) + 1)[parcel]    # row direction of each parcel
 rows = np.sin((x * np.cos(angle) + y * np.sin(angle)) * 2 * np.pi / 7.0)
-rows *= np.where(tilled[parcel], 6.0, 2.5) * ~on_field     # faint rows, none on the meadow
-shade = rows + np.where(on_field, 3.0, 9.0) * smooth(24) + 4.0 * smooth(160)
+rows *= np.where(tilled[parcel], 6.0, 2.5) * np.where(on_field, 0.4, 1.0)   # fainter on the field
+shade = rows + np.where(on_field, 4.0, 9.0) * smooth(24) + 4.0 * smooth(160)
 rgb = tone[parcel] + shade[..., None]
+rgb[on_field] = MEADOW + (rgb[on_field] - MEADOW) * 0.6   # the field: the same parcels, calmer
 
 edge = np.zeros((N, N), dtype=bool)                        # parcel edges
 edge[:, 1:] |= parcel[:, 1:] != parcel[:, :-1]
 edge[1:, :] |= parcel[1:, :] != parcel[:-1, :]
-edge &= ~((np.abs(x - 150.0) < 166.0) & (np.abs(y - 150.0) < 166.0))   # no line round the meadow
 hedged = (rng.random(len(seeds) + 1) < 0.45)[parcel] & ~on_field
 hedge = np.clip(blur(edge & hedged, 2.5) * 4.0, 0.0, 1.0)          # dark hedges on some
 margin = np.clip(blur(edge & ~hedged, 1.2) * 2.0, 0.0, 0.35)        # a pale margin on the rest
 track = np.abs(y + 45.0 - 14.0 * np.sin(x / 260.0)) < 2.6          # one track south of the field,
 track |= (np.abs(x - 452.0 - 12.0 * np.sin(y / 190.0)) < 2.2) & (y > -45.0)   # one going north
+track |= (np.abs(x - np.vectorize(demo_world.inner_track_x)(y)) < 2.2) & (y > -45.0) & (y < 338.0)   # one across the field
 track = blur(track, 1.0)
 under = np.zeros((N, N), dtype=bool)                       # dark undergrowth below each tree
 for _, tx, ty, _, _ in demo_world.trees():

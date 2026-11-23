@@ -16,6 +16,7 @@ the iris in slow motion. body_model() scales the body, physical_plugins() the bl
 motors, physical_params() the autopilot. Without SWARM_DEMO_PHYSICS (or with scale 1) the
 drones are the stock iris.
 """
+import math
 import os
 import random
 import shutil
@@ -85,8 +86,16 @@ if FIELD:
 FUEL = "https://fuel.gazebosim.org/1.0/openrobotics/models"
 TREE_MESH = {"pine": ("pine tree/6", "pine_tree.dae", "branch_2_diffuse.png", 2.4, 3.4),
              "oak": ("oak tree/7", "oak_tree.dae", "branch_diffuse.png", 1.3, 1.9)}
-# parked beside the track south of the field (tools/field_texture.py draws it at y about -38)
-CARS = [("suv", 118.0, -32.0, 5.0), ("pickup", 127.0, -31.5, -4.0), ("hatchback", 182.0, -43.0, 170.0)]
+def inner_track_x(y):
+    """The dirt track that crosses the field from south to north (tools/field_texture.py)."""
+    return 95.0 + 10.0 * math.sin(y / 70.0)
+
+
+# parked beside the track south of the field (tools/field_texture.py draws it at y about -38),
+# and two on the track across the field, for the drones to fly over
+CARS = [("suv", 118.0, -32.0, 5.0), ("pickup", 127.0, -31.5, -4.0), ("hatchback", 182.0, -43.0, 170.0),
+        ("pickup", round(inner_track_x(60.0) + 3.0, 1), 60.0, 85.0),
+        ("suv", round(inner_track_x(215.0) + 3.0, 1), 215.0, -95.0)]
 MIDDLE_ZONE = (120.0, 120.0, 180.0, 180.0)   # run_mission.py MIDDLE_ZONE (Mission B default)
 
 # Only rendering uses these (the window); the physics ignores them.
@@ -301,7 +310,9 @@ def trees() -> list:
     rng = random.Random(7)
     spots = [(x, 338.0) for x in range(-30, 340, 24)] + [(338.0, y) for y in range(-10, 320, 26)]
     spots += [(-34.0, y) for y in range(40, 330, 48)]
-    for cx, cy, n in ((385.0, 385.0, 7), (400.0, -95.0, 6), (-100.0, 300.0, 6)):
+    # copses outside, then three small ones on the field, 20 m or more from the priority zone
+    for cx, cy, n in ((385.0, 385.0, 7), (400.0, -95.0, 6), (-100.0, 300.0, 6),
+                      (45.0, 250.0, 5), (245.0, 70.0, 4), (240.0, 245.0, 3)):
         spots += [(cx + rng.uniform(-28, 28), cy + rng.uniform(-28, 28)) for _ in range(n)]
     out = []
     for x, y in spots:
@@ -327,8 +338,8 @@ def scenery_sdf() -> str:
                 f"<material><double_sided>{two}</double_sided><diffuse>1 1 1</diffuse><pbr><metal>"
                 f"<albedo_map>{FUEL}/{model}/files/materials/textures/{texture}</albedo_map>"
                 "</metal></pbr></material></visual>")
-    cars = [f'    <include><uri>{FUEL}/{name}</uri><name>parked_{name}</name>'
-            f'<pose degrees="true">{x} {y} 0 0 0 {yaw}</pose></include>' for name, x, y, yaw in CARS]
+    cars = [f'    <include><uri>{FUEL}/{name}</uri><name>parked_{name}_{k}</name>'
+            f'<pose degrees="true">{x} {y} 0 0 0 {yaw}</pose></include>' for k, (name, x, y, yaw) in enumerate(CARS)]
     return ('    <model name="demo_trees"><static>1</static><link name="link">\n      '
             + "\n      ".join(visuals) + "\n    </link></model>\n" + "\n".join(cars) + "\n")
 
