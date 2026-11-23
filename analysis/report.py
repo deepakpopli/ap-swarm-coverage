@@ -319,11 +319,15 @@ def how_to_read(s, refs, baselines):
              "lost. Churn: [0, L) and [L, end].",
              "- Recovery = first time from which coverage stays >= 0.9 x P to the end. 0.0 s "
              "means it never fell below 0.9 x P, not an instant recovery."]
-    if share["n"] and dip["n"]:
+    if share["n"] and dip["n"] and dip["min"] >= share["max"]:
         lines.append(
             f"- The task's (N-1)/N x P check (about {share['max']:.0f} %) is passed trivially "
             f"at this altitude: the lowest dip of any run is {dip['min']:.1f} %. The stronger "
             "comparison is against the no-loss N-1 reference (\"attainable with N-1\").")
+    elif share["n"] and dip["n"]:
+        lines.append(
+            f"- The task's (N-1)/N x P check (about {share['max']:.0f} %) is not trivial here: "
+            f"the lowest dip of any run is {dip['min']:.1f} %. See After / ((N-1)/N x P) below.")
     names = ", ".join(os.path.basename(os.path.normpath(m["dir"])) for m in baselines + refs)
     lines.append(f"- Reference runs used: {names or 'none'}.")
     return lines + [""]

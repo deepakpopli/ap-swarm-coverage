@@ -11,7 +11,7 @@ Code: commit c68ee2279695 (from each run's meta.json).
 - coverage(t) = % of 2 m cells seen in (t - 60 s, t], every 1 s. Windows: before = [L - 60 s, L); dip = lowest coverage(t) on [L, end]; from L + 60 s = [L + 60 s, end] (the victim's last sightings have left the window); after recovery = [L + recovery, end] (a run that never fell below 0.9 P counts as recovered at L); end of run = the last 30 s; mission mean and the no-loss references = [0, end].
 - Longest unseen: before = [0, L), from L on = [L, end] (a gap counts where it ends). Steady revisit gap: before = [0, L), from L on = [R, end], R = declared lost. Churn: [0, L) and [L, end].
 - Recovery = first time from which coverage stays >= 0.9 x P to the end. 0.0 s means it never fell below 0.9 x P, not an instant recovery.
-- The task's (N-1)/N x P check (about 67 %) is passed trivially at this altitude: the lowest dip of any run is 59.4 %. The stronger comparison is against the no-loss N-1 reference ("attainable with N-1").
+- The task's (N-1)/N x P check (about 67 %) is not trivial here: the lowest dip of any run is 59.4 %. See After / ((N-1)/N x P) below.
 - Reference runs used: none.
 
 | Metric | Before [L - 60 s, L) | From L on [L, end] | From L + 60 s | After recovery [L + rec, end] | End of run (last 30 s) | Attainable with N-1 (no-loss ref) | (N-1)/N x P | n |
