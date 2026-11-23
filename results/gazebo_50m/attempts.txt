@@ -1,4 +1,4 @@
-evaluation gazebo_50m, 2026-11-23 03:23-04:45, mission 180 s, seeds: 1 2 3 4 5 6 7 8 9 10 11 12 16 17
+evaluation gazebo_50m, mission 180 s, seeds: 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17
   seed_1: ok on attempt 1
   seed_2: ok on attempt 1
   seed_3: ok on attempt 1
@@ -11,11 +11,22 @@ evaluation gazebo_50m, 2026-11-23 03:23-04:45, mission 180 s, seeds: 1 2 3 4 5 6
   seed_10: ok on attempt 1
   seed_11: ok on attempt 1
   seed_12: ok on attempt 1
+  seed_13: ok on attempt 1
+  seed_14: ok on attempt 1
+  seed_15: ok on attempt 1
   seed_16: ok on attempt 1
   seed_17: ok on attempt 1
   baseline_n3: ok on attempt 1
   ref_n2: ok on attempt 1
 
-Seeds: 1-12 drew drone 1 five times, drone 2 three times and drone 3 four times. 13 and 14 draw
-drone 3 again and 15 drone 1, so 16 and 17 (both drone 2) were flown instead, to give each drone
-four or five runs. gazebo_grid_A has every drone at every fault time.
+Flown on commit 1dbc16b. Its Mission A code is identical to this commit's (tests/test_golden_run.py
+pins it); later commits changed only the live view, the cameras and Mission B.
+Each run: run_mission.py --mission A --n 3 --seed S --mission-s 180; baseline_n3 and ref_n2 are
+the no-loss N = 3 and N = 2 runs (--mission ref, seed 1).
+Seeds: every seed 1-17 is reported, none left out. 13, 14 and 15 were flown after the other 14
+(same commit, same command). gazebo_grid_A has every drone at every fault time.
+seed_14's first flight (02:56) was stopped by the operator, not by the simulator: the driver was
+paused to record a live demo and its process group was killed. That flight is kept in the raw runs as
+failed/seed_14_*_replaced; seed 14 was flown again after the demo and that flight is ok.
+The meta.json of seeds 13, 14 and 15 shows commit 1dbc16b...-dirty because that worktree had modified
+result files, not code (no changes under swarm/, sim/ or run_mission.py); the flight code is 1dbc16b.

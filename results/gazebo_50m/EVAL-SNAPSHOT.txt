@@ -1,1 +1,1 @@
-evaluated on commit f459190, clean checkout
+flown on commit 1dbc16b (see attempts.txt); analysis from this commit's analysis/
